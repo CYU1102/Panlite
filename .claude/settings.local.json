@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /d/27199/Documents/xinyue-search-main -type f | head -200)",
+      "Read(//d/27199/Documents/xinyue-search-main/**)",
+      "Bash(ls -la /d/27199/Documents/xinyue-search-main/)",
+      "Read(//d/27199/Documents/xinyue-search-main//**)",
+      "Bash(npm run *)",
+      "Bash(cd \"d:/27199/Documents/PanLite/src/adapters\" && rm -f 115.ts 139yun.ts 189cloud.ts lanzou.ts mopan.ts weiyun.ts yunpan360.ts pikpak.ts doubao.ts guangyapan.ts google_drive.ts google_photo.ts onedrive.ts && echo \"Deleted 13 adapter files\")",
+      "Bash(./node_modules/.bin/tsc --noEmit -p tsconfig.node.json)"
+    ],
+    "additionalDirectories": [
+      "d:\\27199\\Documents\\PanLite\\src\\adapters"
+    ]
+  }
+}

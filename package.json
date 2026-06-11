@@ -1,0 +1,40 @@
+{
+  "name": "panlite",
+  "version": "0.1.0",
+  "description": "PanLite - 网盘管理工具",
+  "main": "dist/main/main/index.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.node.json --watch\" \"node scripts/wait-and-start.js\"",
+    "build": "vite build && tsc -p tsconfig.node.json",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.node.json",
+    "pack": "npm run build && electron-builder --win",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "better-sqlite3": "^11.8.1",
+    "cheerio": "^1.0.0-rc.12",
+    "electron-log": "^5.3.3",
+    "element-plus": "^2.9.7",
+    "lucide-vue-next": "^0.474.0",
+    "p-queue": "^6.6.2",
+    "pinia": "^3.0.2",
+    "sqlite3": "^6.0.1",
+    "uuid": "^11.1.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^10.1.0",
+    "electron": "^33.4.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vue-tsc": "^2.2.8"
+  }
+}

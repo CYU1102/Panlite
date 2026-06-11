@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="cloudGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90D9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#357ABD;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="folderGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFD700;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FFA500;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- 背景圆角矩形 -->
+  <rect x="16" y="16" width="224" height="224" rx="32" ry="32" fill="url(#cloudGrad)"/>
+
+  <!-- 云朵主体 -->
+  <path d="M180 100
+           C180 78 162 60 140 60
+           C132 60 124 64 120 70
+           C114 58 100 50 84 50
+           C62 50 44 68 44 90
+           C44 92 44 94 44 96
+           C30 100 20 114 20 130
+           C20 150 36 166 56 166
+           L172 166
+           C192 166 208 150 208 130
+           C208 114 198 102 184 98
+           C182 98 180 98 180 100
+           Z"
+        fill="white" opacity="0.95"/>
+
+  <!-- 文件夹图标 -->
+  <path d="M80 110
+           L80 100
+           C80 96 84 92 88 92
+           L108 92
+           L116 100
+           L168 100
+           C172 100 176 104 176 108
+           L176 150
+           C176 154 172 158 168 158
+           L88 158
+           C84 158 80 154 80 150
+           Z"
+        fill="url(#folderGrad)" stroke="#E8A000" stroke-width="2"/>
+
+  <!-- 文件夹前页 -->
+  <path d="M80 116
+           L176 116
+           L176 150
+           C176 154 172 158 168 158
+           L88 158
+           C84 158 80 154 80 150
+           Z"
+        fill="#FFE44D" stroke="#E8A000" stroke-width="2"/>
+
+  <!-- 连接点 -->
+  <circle cx="68" cy="190" r="8" fill="white" opacity="0.8"/>
+  <circle cx="128" cy="190" r="8" fill="white" opacity="0.8"/>
+  <circle cx="188" cy="190" r="8" fill="white" opacity="0.8"/>
+
+  <!-- 连接线 -->
+  <line x1="76" y1="190" x2="120" y2="190" stroke="white" stroke-width="3" opacity="0.6"/>
+  <line x1="136" y1="190" x2="180" y2="190" stroke="white" stroke-width="3" opacity="0.6"/>
+</svg>

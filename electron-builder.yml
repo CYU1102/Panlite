@@ -1,0 +1,25 @@
+appId: com.panlite.app
+productName: PanLite
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - "!node_modules/**/*"
+  - "node_modules/better-sqlite3/**/*"
+  - "node_modules/p-queue/**/*"
+  - "node_modules/event-iterator/**/*"
+  - "node_modules/p-timeout/**/*"
+  - "node_modules/electron-log/**/*"
+  - "node_modules/uuid/**/*"
+win:
+  target:
+    - nsis
+  icon: build/icon.svg
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+extraResources:
+  - from: "node_modules/better-sqlite3"
+    to: "node_modules/better-sqlite3"
