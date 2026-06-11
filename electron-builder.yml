@@ -15,7 +15,7 @@ files:
 win:
   target:
     - nsis
-  icon: build/icon.svg
+  icon: build/icon.png
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
