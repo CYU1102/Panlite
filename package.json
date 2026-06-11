@@ -9,7 +9,8 @@
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.node.json",
     "pack": "npm run build && electron-builder --win",
-    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -33,6 +34,7 @@
     "cross-env": "^10.1.0",
     "electron": "^33.4.0",
     "electron-builder": "^25.1.8",
+    "electron-rebuild": "^3.2.9",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vue-tsc": "^2.2.8"

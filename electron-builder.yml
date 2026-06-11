@@ -4,19 +4,25 @@ directories:
   output: release
   buildResources: build
 files:
-  - dist/**/*
-  - "!node_modules/**/*"
+  - "dist"
+  - "package.json"
+  - "node_modules/better-sqlite3/**/*"
   - "node_modules/p-queue/**/*"
   - "node_modules/event-iterator/**/*"
   - "node_modules/p-timeout/**/*"
   - "node_modules/electron-log/**/*"
   - "node_modules/uuid/**/*"
+  - "!node_modules/**/*"
+asar: true
 asarUnpack:
+  - "**/*.node"
   - "node_modules/better-sqlite3/**/*"
+npmRebuild: true
 win:
   target:
     - nsis
   # icon: build/icon.png  # 暂时使用默认图标
+  signAndEditExecutable: false
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
