@@ -1,6 +1,6 @@
 {
   "name": "panlite",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "PanLite - 网盘管理工具",
   "license": "MIT",
   "main": "dist/main/main/index.js",
