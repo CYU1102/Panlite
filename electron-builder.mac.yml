@@ -42,6 +42,7 @@ compression: maximum
 mac:
   target:
     - dmg
+  icon: build/mac-icon.png
   artifactName: "${productName}-${version}-mac-${arch}.${ext}"
   category: public.app-category.productivity
   identity: null
