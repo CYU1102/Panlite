@@ -65,6 +65,5 @@ function extractLinks() {
 // 监听主进程发来的消息
 ipcRenderer.on('extract-links', () => {
   const links = extractLinks()
-  // 通过 console.message 发送回主进程
-  console.log(JSON.stringify({ type: 'extracted-links', links }))
+  ipcRenderer.sendToHost('extracted-links', links)
 })

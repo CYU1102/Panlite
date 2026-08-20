@@ -94,7 +94,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { Loader2 } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
 import type { DriveAccount, ArchiveMeta, ArchiveFileInfo } from '@shared/types'
@@ -102,7 +102,7 @@ import { formatFileSize } from '@shared/utils'
 
 const props = defineProps<{
   modelValue: boolean
-  account: DriveAccount | null
+  account: Omit<DriveAccount, 'credential'> | null
   fileId: string
   fileName: string
 }>()
@@ -188,7 +188,7 @@ async function extractFiles(files?: string[]) {
     )
 
     if (result.success) {
-      ElMessage.success('解压完成')
+      ElMessage.success(result.taskId ? '解压任务已创建，可在任务日志查看进度' : '解压完成')
       emit('success')
       onClose()
     } else {

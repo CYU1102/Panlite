@@ -3,6 +3,19 @@ import { join, extname } from 'path'
 import { pipeline } from 'stream/promises'
 import type { ArchiveFileInfo, ArchiveMeta } from '../shared/types'
 import log from 'electron-log'
+import { ARCHIVE_LIMITS, assertArchiveLimits, resolveArchiveEntryPath } from './archive-security'
+
+export interface ArchiveOperationOptions {
+  signal?: AbortSignal
+  onProgress?: (completed: number, total: number) => void
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  const error = new Error('操作已取消')
+  error.name = 'AbortError'
+  throw error
+}
 
 // ── 支持的压缩包格式 ──
 
@@ -50,6 +63,7 @@ async function listZipFiles(filePath: string, password?: string): Promise<{ file
     const directory = await unzipper.Open.file(filePath)
 
     for (const entry of directory.files) {
+      if (files.length >= ARCHIVE_LIMITS.maxEntries) throw new Error('压缩包文件数量超过限制')
       // 检测是否加密（encrypted bit in general purpose bit flag）
       if (entry.flags && (entry.flags & 0x01) !== 0) {
         isEncrypted = true
@@ -72,17 +86,18 @@ async function listZipFiles(filePath: string, password?: string): Promise<{ file
   }
 }
 
-async function extractZip(filePath: string, outputDir: string, password?: string, files?: string[]): Promise<void> {
+async function extractZip(filePath: string, outputDir: string, password?: string, files?: string[], runtime: ArchiveOperationOptions = {}): Promise<void> {
   try {
     const unzipper = require('unzipper')
 
     const directory = await unzipper.Open.file(filePath)
 
-    for (const entry of directory.files) {
+    const selectedEntries = directory.files.filter((entry: { path: string }) => !files || files.includes(entry.path))
+    let completed = 0
+    for (const entry of selectedEntries) {
+      throwIfAborted(runtime.signal)
       // 如果指定了文件，只解压指定的文件
-      if (files && !files.includes(entry.path)) continue
-
-      const targetPath = join(outputDir, entry.path)
+      const targetPath = resolveArchiveEntryPath(outputDir, entry.path)
 
       if (entry.type === 'Directory') {
         mkdirSync(targetPath, { recursive: true })
@@ -94,8 +109,9 @@ async function extractZip(filePath: string, outputDir: string, password?: string
         // 解压文件
         const readStream = entry.stream(password)
         const writeStream = createWriteStream(targetPath)
-        await pipeline(readStream, writeStream)
+        await pipeline(readStream, writeStream, { signal: runtime.signal })
       }
+      runtime.onProgress?.(++completed, selectedEntries.length)
     }
   } catch (err) {
     log.error('Failed to extract ZIP:', err)
@@ -122,6 +138,7 @@ async function listRarFiles(filePath: string, password?: string): Promise<Archiv
     const fileHeaders = list.fileHeaders
 
     for (const header of fileHeaders) {
+      if (files.length >= ARCHIVE_LIMITS.maxEntries) throw new Error('压缩包文件数量超过限制')
       files.push({
         name: header.name.split('/').pop() || header.name,
         path: header.name,
@@ -139,7 +156,7 @@ async function listRarFiles(filePath: string, password?: string): Promise<Archiv
   }
 }
 
-async function extractRar(filePath: string, outputDir: string, password?: string, files?: string[]): Promise<void> {
+async function extractRar(filePath: string, outputDir: string, password?: string, files?: string[], runtime: ArchiveOperationOptions = {}): Promise<void> {
   try {
     const unrar = require('node-unrar-js')
     const fs = require('fs')
@@ -151,10 +168,13 @@ async function extractRar(filePath: string, outputDir: string, password?: string
     const archive = await unrar.createExtractorFromData({ data: buffer, password: password || '' })
 
     // 解压文件
+    throwIfAborted(runtime.signal)
     const extracted = archive.extract({ files: files || undefined })
 
+    let completed = 0
     for (const file of extracted.files) {
-      const targetPath = join(outputDir, file.fileHeader.name)
+      throwIfAborted(runtime.signal)
+      const targetPath = resolveArchiveEntryPath(outputDir, file.fileHeader.name)
 
       if (file.fileHeader.flags?.directory) {
         mkdirSync(targetPath, { recursive: true })
@@ -166,6 +186,7 @@ async function extractRar(filePath: string, outputDir: string, password?: string
         // 写入文件
         fs.writeFileSync(targetPath, file.extraction)
       }
+      runtime.onProgress?.(++completed, extracted.files.length)
     }
   } catch (err) {
     log.error('Failed to extract RAR:', err)
@@ -178,22 +199,30 @@ async function extractRar(filePath: string, outputDir: string, password?: string
 async function list7zFiles(filePath: string, password?: string): Promise<ArchiveFileInfo[]> {
   try {
     const Seven = require('node-7z')
+    const { path7za } = require('7zip-bin')
     const files: ArchiveFileInfo[] = []
 
-    // 使用 7z 列出文件
-    const seven = new Seven()
-    const result = await seven.list(filePath, {
+    const stream = Seven.list(filePath, {
+      $bin: path7za,
       password: password || '',
     })
+    const result = await new Promise<any[]>((resolve, reject) => {
+      const entries: any[] = []
+      stream.on('data', (entry: any) => entries.push(entry))
+      stream.once('error', reject)
+      stream.once('end', () => resolve(entries))
+    })
 
-    for (const file of result.files) {
+    for (const file of result) {
+      if (files.length >= ARCHIVE_LIMITS.maxEntries) throw new Error('压缩包文件数量超过限制')
+      if (!file.file) continue
       files.push({
-        name: file.name.split('/').pop() || file.name,
-        path: file.name,
+        name: file.file.split('/').pop() || file.file,
+        path: file.file,
         size: file.size || 0,
-        isDir: file.isDirectory || false,
-        compressedSize: file.compressed,
-        modifiedAt: file.date ? new Date(file.date).getTime() : undefined,
+        isDir: typeof file.attributes === 'string' && file.attributes.startsWith('D'),
+        compressedSize: file.sizeCompressed,
+        modifiedAt: file.datetime ? new Date(file.datetime).getTime() : undefined,
       })
     }
 
@@ -204,18 +233,35 @@ async function list7zFiles(filePath: string, password?: string): Promise<Archive
   }
 }
 
-async function extract7z(filePath: string, outputDir: string, password?: string, files?: string[]): Promise<void> {
+async function extract7z(filePath: string, outputDir: string, password?: string, files?: string[], runtime: ArchiveOperationOptions = {}): Promise<void> {
   try {
     const Seven = require('node-7z')
+    const { path7za } = require('7zip-bin')
 
     // 确保输出目录存在
     mkdirSync(outputDir, { recursive: true })
 
-    // 解压文件
-    const seven = new Seven()
-    await seven.extract(filePath, outputDir, {
+    throwIfAborted(runtime.signal)
+    const stream = Seven.extractFull(filePath, outputDir, {
+      $bin: path7za,
       password: password || '',
       $cherryPick: files || undefined,
+    })
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        stream._childProcess?.kill()
+        const error = new Error('操作已取消')
+        error.name = 'AbortError'
+        reject(error)
+      }
+      runtime.signal?.addEventListener('abort', abort, { once: true })
+      let completed = 0
+      stream.on('data', () => runtime.onProgress?.(++completed, 0))
+      stream.once('error', reject)
+      stream.once('end', () => {
+        runtime.signal?.removeEventListener('abort', abort)
+        resolve()
+      })
     })
   } catch (err) {
     log.error('Failed to extract 7z:', err)
@@ -240,6 +286,10 @@ async function listTarFiles(filePath: string): Promise<ArchiveFileInfo[]> {
       file: filePath,
       gzip: lower.endsWith('.gz') || lower.endsWith('.tgz'),
       onentry: (entry: any) => {
+        if (entries.length >= ARCHIVE_LIMITS.maxEntries) throw new Error('压缩包文件数量超过限制')
+        if (entry.type === 'SymbolicLink' || entry.type === 'Link') {
+          throw new Error(`压缩包包含不允许的链接条目: ${entry.path}`)
+        }
         entries.push({
           name: entry.path,
           size: entry.size || 0,
@@ -266,7 +316,7 @@ async function listTarFiles(filePath: string): Promise<ArchiveFileInfo[]> {
   }
 }
 
-async function extractTar(filePath: string, outputDir: string, files?: string[]): Promise<void> {
+async function extractTar(filePath: string, outputDir: string, files?: string[], runtime: ArchiveOperationOptions = {}): Promise<void> {
   try {
     const tar = require('tar')
 
@@ -276,18 +326,24 @@ async function extractTar(filePath: string, outputDir: string, files?: string[])
     // 检查是否是压缩的tar
     const lower = filePath.toLowerCase()
     const isGzip = lower.endsWith('.gz') || lower.endsWith('.tgz')
-    const isBzip2 = lower.endsWith('.bz2')
-    const isXz = lower.endsWith('.xz')
-
+    throwIfAborted(runtime.signal)
+    let completed = 0
     const options: any = {
       file: filePath,
       cwd: outputDir,
       gzip: isGzip,
+      signal: runtime.signal,
+      onentry: () => runtime.onProgress?.(++completed, 0),
     }
 
     // 如果指定了文件，只解压指定的文件
-    if (files && files.length > 0) {
-      options.filter = (path: string) => files.some(f => path.startsWith(f))
+    options.filter = (entryPath: string, entry: { type?: string }) => {
+      throwIfAborted(runtime.signal)
+      resolveArchiveEntryPath(outputDir, entryPath)
+      if (entry.type === 'SymbolicLink' || entry.type === 'Link') {
+        throw new Error(`压缩包包含不允许的链接条目: ${entryPath}`)
+      }
+      return !files || files.length === 0 || files.includes(entryPath)
     }
 
     await tar.extract(options)
@@ -326,6 +382,7 @@ export async function listArchiveFiles(filePath: string, password?: string): Pro
   }
 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0)
+  assertArchiveLimits(files)
 
   return {
     fileCount: files.length,
@@ -341,24 +398,37 @@ export async function extractArchive(
   outputDir: string,
   password?: string,
   files?: string[],
+  runtime: ArchiveOperationOptions = {},
 ): Promise<void> {
+  throwIfAborted(runtime.signal)
   const format = getArchiveFormat(filePath)
+
+  const meta = await listArchiveFiles(filePath, password)
+  const requested = files?.length ? files : undefined
+  if (requested && requested.some((entryPath) => !meta.files.some((file) => file.path === entryPath))) {
+    throw new Error('选择的压缩包条目无效')
+  }
+  const selected = requested
+    ? meta.files.filter((file) => requested.some((entryPath) => file.path === entryPath || file.path.startsWith(`${entryPath.replace(/\/$/, '')}/`)))
+    : meta.files
+  const selectedPaths = requested ? selected.map((file) => file.path) : undefined
+  assertArchiveLimits(selected)
 
   // 确保输出目录存在
   mkdirSync(outputDir, { recursive: true })
 
   switch (format) {
     case 'zip':
-      await extractZip(filePath, outputDir, password, files)
+      await extractZip(filePath, outputDir, password, selectedPaths, runtime)
       break
     case 'rar':
-      await extractRar(filePath, outputDir, password, files)
+      await extractRar(filePath, outputDir, password, selectedPaths, runtime)
       break
     case '7z':
-      await extract7z(filePath, outputDir, password, files)
+      await extract7z(filePath, outputDir, password, selectedPaths, runtime)
       break
     case 'tar':
-      await extractTar(filePath, outputDir, files)
+      await extractTar(filePath, outputDir, selectedPaths, runtime)
       break
     default:
       throw new Error('不支持的压缩包格式')
@@ -422,11 +492,11 @@ export async function compressToZip(
   sourceDir: string,
   outputPath: string,
   files?: Array<{ relativePath: string; fullPath: string }>,
+  runtime: ArchiveOperationOptions = {},
 ): Promise<void> {
   try {
+    throwIfAborted(runtime.signal)
     const archiver = require('archiver')
-    const fs = require('fs')
-
     // 创建输出流
     const output = createWriteStream(outputPath)
     const archive = archiver('zip', {
@@ -446,6 +516,13 @@ export async function compressToZip(
       throw err
     })
 
+    archive.on('progress', (progress: { entries?: { processed?: number; total?: number } }) => {
+      runtime.onProgress?.(progress.entries?.processed || 0, progress.entries?.total || files?.length || 0)
+    })
+
+    const abort = () => archive.abort()
+    runtime.signal?.addEventListener('abort', abort, { once: true })
+
     // 管道到输出流
     archive.pipe(output)
 
@@ -464,9 +541,13 @@ export async function compressToZip(
 
     // 等待输出流关闭
     await new Promise<void>((resolve, reject) => {
-      output.on('close', resolve)
+      output.on('close', () => {
+        runtime.signal?.removeEventListener('abort', abort)
+        resolve()
+      })
       output.on('error', reject)
     })
+    throwIfAborted(runtime.signal)
   } catch (err) {
     log.error('Failed to create ZIP:', err)
     throw new Error('创建ZIP文件失败')
@@ -480,13 +561,15 @@ export async function createArchive(
   outputPath: string,
   format: string = 'zip',
   files?: Array<{ relativePath: string; fullPath: string }>,
+  runtime: ArchiveOperationOptions = {},
 ): Promise<void> {
+  throwIfAborted(runtime.signal)
   switch (format) {
     case 'zip':
-      await compressToZip(sourceDir, outputPath, files)
+      await compressToZip(sourceDir, outputPath, files, runtime)
       break
     case 'tar':
-      await compressToTar(sourceDir, outputPath, files)
+      await compressToTar(sourceDir, outputPath, files, runtime)
       break
     default:
       throw new Error(`不支持的压缩格式: ${format}`)
@@ -499,9 +582,13 @@ async function compressToTar(
   sourceDir: string,
   outputPath: string,
   files?: Array<{ relativePath: string; fullPath: string }>,
+  runtime: ArchiveOperationOptions = {},
 ): Promise<void> {
   try {
     const tar = require('tar')
+    throwIfAborted(runtime.signal)
+    let completed = 0
+    const onWriteEntry = () => runtime.onProgress?.(++completed, files?.length || 0)
 
     if (files && files.length > 0) {
       // 添加指定文件
@@ -510,6 +597,8 @@ async function compressToTar(
           file: outputPath,
           gzip: outputPath.endsWith('.gz') || outputPath.endsWith('.tgz'),
           cwd: sourceDir,
+          signal: runtime.signal,
+          onWriteEntry,
         },
         files.map(f => f.relativePath),
       )
@@ -520,10 +609,13 @@ async function compressToTar(
           file: outputPath,
           gzip: outputPath.endsWith('.gz') || outputPath.endsWith('.tgz'),
           cwd: sourceDir,
+          signal: runtime.signal,
+          onWriteEntry,
         },
         ['.'],
       )
     }
+    throwIfAborted(runtime.signal)
   } catch (err) {
     log.error('Failed to create tar:', err)
     throw new Error('创建tar文件失败')

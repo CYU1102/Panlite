@@ -26,13 +26,53 @@
 
  </div>
 
+ <div class="workflow-steps" aria-label="批量转存流程">
+
+ <div class="workflow-step" :class="{ complete: !!selectedAccountId, active: !selectedAccountId }">
+
+ <span class="step-index">1</span>
+
+ <span class="step-copy"><strong>选择账号</strong><small>{{ selectedAccountId ? '账号已就绪' : '选择保存账号' }}</small></span>
+
+ </div>
+
+ <span class="step-line" :class="{ complete: !!selectedAccountId }" />
+
+ <div class="workflow-step" :class="{ complete: validLinks.length > 0, active: !!selectedAccountId && validLinks.length === 0 }">
+
+ <span class="step-index">2</span>
+
+ <span class="step-copy"><strong>粘贴链接</strong><small>{{ validLinks.length ? `${validLinks.length} 个可转存` : '自动识别与去重' }}</small></span>
+
+ </div>
+
+ <span class="step-line" :class="{ complete: validLinks.length > 0 }" />
+
+ <div class="workflow-step" :class="{ active: validLinks.length > 0 }">
+
+ <span class="step-index">3</span>
+
+ <span class="step-copy"><strong>确认转存</strong><small>选择目录并提交</small></span>
+
+ </div>
+
+ </div>
+
  <div class="transfer-body">
 
  <!-- Left: links input -->
 
  <div class="panel links-panel">
 
- <div class="panel-title">分享链接</div>
+ <div class="panel-heading">
+
+ <div class="panel-step">01</div>
+
+ <div><div class="panel-title">账号与分享链接</div><p class="panel-hint">每行一个链接，支持自动识别平台和提取码</p></div>
+
+ <span v-if="validLinks.length" class="selection-count">{{ validLinks.length }} 个有效</span>
+
+ </div>
 
  <!-- Account selector -->
 
@@ -184,13 +224,21 @@
 
  <div class="panel dir-panel">
 
- <div class="panel-title">目标目录</div>
+ <div class="panel-heading">
+
+ <div class="panel-step">02</div>
+
+ <div><div class="panel-title">选择目标目录</div><p class="panel-hint">当前目录将作为全部链接的保存位置</p></div>
+
+ </div>
 
  <div v-if="!selectedAccountId" class="dir-empty">
 
- <FolderOpen :size="32" :stroke-width="1" />
+ <span class="empty-icon"><FolderOpen :size="28" :stroke-width="1.4" /></span>
 
- <p>请先选择账号</p>
+ <strong>等待账号选择</strong>
+
+ <p>选择账号后即可浏览目标目录</p>
 
  </div>
 
@@ -282,7 +330,7 @@
 
           <div class="target-info">
 
-            <strong>{{ currentFolder.name }}</strong>
+            <span>保存到</span><strong>{{ currentFolder.name }}</strong><span class="target-ready">已选择</span>
 
           </div>
 
@@ -296,9 +344,11 @@
 
     <!-- Options bar -->
     <div class="options-bar">
-      <el-checkbox v-model="autoShare">转存后自动分享</el-checkbox>
-      <el-checkbox v-model="verifyFirst">转存前检测链接</el-checkbox>
+      <div class="options-heading"><span class="panel-step">03</span><div><strong>任务选项</strong><small>提交前检查本次转存行为</small></div></div>
+      <label class="option-card" :class="{ selected: autoShare }"><el-checkbox v-model="autoShare" /><span><strong>转存后自动分享</strong><small>完成后继续创建分享链接</small></span></label>
+      <label class="option-card" :class="{ selected: verifyFirst }"><el-checkbox v-model="verifyFirst" /><span><strong>转存前检测链接</strong><small>自动跳过检测到的失效链接</small></span></label>
       <el-button
+        class="verify-button"
         size="small"
         @click="onVerifyLinks"
         :loading="verifying"
@@ -322,6 +372,14 @@
           <strong>{{ currentFolder.name }}</strong>
           <template v-if="autoShare">，转存后自动分享</template>
           <template v-if="verifyFirst">，无效链接将跳过</template>
+
+        </template>
+
+        <template v-else>
+
+          <span class="submit-state-dot" />
+
+          {{ !selectedAccountId ? '请选择保存账号以开始' : '请粘贴至少一个当前平台的有效链接' }}
 
         </template>
 
@@ -357,7 +415,7 @@
 
 import { ref, computed, watch, onMounted } from 'vue'
 
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 
 import {
 
@@ -412,8 +470,8 @@ const needsCookieHint = computed(() => {
   // 百度 OAuth 登录不支持分享/转存，需要 Cookie
   if (platform.value === 'baidu' && acc.loginType === 'oauth') return true
 
-  // 迅雷需要 token 登录
-  if (platform.value === 'xunlei' && acc.loginType !== 'token') return true
+  // 迅雷需要官方授权 Token（OAuth 浏览器登录或手动 Refresh Token）
+  if (platform.value === 'xunlei' && !['token', 'oauth'].includes(acc.loginType)) return true
 
   return false
 
@@ -1614,5 +1672,139 @@ onMounted(async () => {
 
 }
 
+/* Shared light workflow surfaces */
+.batch-transfer { gap: var(--pl-space-4); }
+.page-header, .panel, .options-bar, .submit-bar { border-color: var(--pl-border); border-radius: var(--pl-radius-card); box-shadow: var(--pl-shadow-card); }
+.page-header { padding: var(--pl-space-5) var(--pl-space-6); }
+.header-icon { background: var(--pl-primary-soft); color: var(--pl-primary); border-radius: var(--pl-radius-control); }
+.header-info h2, .panel-title, .folder-name, .preview-item { color: var(--pl-text); }
+.header-info p, .submit-info, .target-info { color: var(--pl-text-secondary); }
+.transfer-body { gap: var(--pl-space-4); }
+.panel { padding: var(--pl-space-5); gap: var(--pl-space-3); }
+.textarea-wrap :deep(.el-textarea__inner) { border-color: var(--pl-border); background: var(--pl-surface-subtle); color: var(--pl-text); }
+.preview-list { background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); border-radius: var(--pl-radius-control); }
+.preview-item { border: 1px solid var(--pl-border); }
+.preview-item.invalid { background: var(--pl-danger-soft); color: var(--pl-danger); }
+.preview-item.dup { background: var(--pl-warning-soft); color: #9a6700; }
+.preview-platform { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.stat-valid { color: var(--pl-success); }
+.stat-dup { color: var(--pl-warning); }
+.stat-invalid { color: var(--pl-danger); }
+.folder-nav { background: var(--pl-surface-subtle); border-color: var(--pl-border); border-radius: var(--pl-radius-control); }
+.crumb { color: var(--pl-text-secondary); }
+.crumb:hover { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.crumb.active { color: var(--pl-text); }
+.nav-btn { background: var(--pl-primary-soft); color: var(--pl-primary); border-radius: var(--pl-radius-sm); }
+.nav-btn:hover:not(:disabled) { background: #d8e7ff; color: var(--pl-primary-hover); }
+.folder-list { border-color: var(--pl-border); border-radius: var(--pl-radius-control); }
+.folder-item { border-bottom-color: var(--pl-surface-subtle); color: var(--pl-text); }
+.folder-item:hover { background: var(--pl-surface-subtle); }
+.options-bar { padding: var(--pl-space-3) var(--pl-space-5); }
+.submit-bar { padding: var(--pl-space-3) var(--pl-space-5); }
+@media (max-width: 900px) { .transfer-body { flex-direction: column; overflow-y: auto; } .panel { min-height: 360px; } }
+@media (max-width: 560px) {
+  .page-header, .panel { padding: var(--pl-space-4); }
+  .account-bar { flex-wrap: wrap; }
+  .options-bar { flex-wrap: wrap; gap: var(--pl-space-2); }
+  .submit-bar { align-items: stretch; flex-direction: column; gap: var(--pl-space-3); }
+  .submit-bar .el-button { width: 100%; }
+}
+
+/* Workflow hierarchy and interaction */
+.workflow-steps {
+  display: grid;
+  grid-template-columns: max-content minmax(32px, 1fr) max-content minmax(32px, 1fr) max-content;
+  align-items: center;
+  gap: var(--pl-space-3);
+  padding: var(--pl-space-3) var(--pl-space-5);
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-card);
+  box-shadow: var(--pl-shadow-card);
+}
+
+.workflow-step { display: flex; align-items: center; gap: var(--pl-space-2); min-width: 0; color: var(--pl-text-muted); transition: color 180ms ease, transform 180ms ease; }
+.workflow-step.active { color: var(--pl-primary); transform: translateY(-1px); }
+.workflow-step.complete { color: var(--pl-success); }
+.step-index { width: 28px; height: 28px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--pl-border-strong); border-radius: 50%; background: var(--pl-surface-subtle); font-size: 12px; font-weight: 700; transition: all 180ms ease; }
+.workflow-step.active .step-index { color: var(--pl-primary); background: var(--pl-primary-soft); border-color: var(--pl-primary); box-shadow: 0 0 0 4px var(--pl-primary-soft); }
+.workflow-step.complete .step-index { color: var(--pl-success); background: var(--pl-success-soft); border-color: var(--pl-success); }
+.step-copy { display: flex; flex-direction: column; line-height: 1.25; }
+.step-copy strong { color: var(--pl-text); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.step-copy small { margin-top: 2px; font-size: 10px; color: currentColor; white-space: nowrap; }
+.step-line { height: 1px; min-width: 24px; background: var(--pl-border); transition: background 180ms ease; }
+.step-line.complete { background: var(--pl-success); }
+
+.panel { overflow: hidden; transition: border-color 180ms ease, box-shadow 180ms ease; }
+.panel:hover { border-color: var(--pl-border-strong); box-shadow: var(--pl-shadow-float); }
+.panel-heading { display: flex; align-items: center; gap: var(--pl-space-3); min-height: 36px; }
+.panel-heading > div:nth-child(2) { min-width: 0; }
+.panel-step { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--pl-radius-sm); color: var(--pl-primary); background: var(--pl-primary-soft); font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+.panel-title { font-size: 14px; font-weight: 700; }
+.panel-hint { margin-top: 2px; color: var(--pl-text-muted); font-size: 11px; line-height: 1.35; }
+.selection-count { margin-left: auto; padding: 4px 9px; border-radius: 999px; background: var(--pl-success-soft); color: var(--pl-success); font-size: 11px; font-weight: 650; white-space: nowrap; }
+
+.account-bar { padding: var(--pl-space-2); border-radius: var(--pl-radius-control); background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); }
+.textarea-wrap :deep(.el-textarea__inner) { padding: 14px; line-height: 1.7; transition: background 150ms ease, box-shadow 150ms ease; }
+.textarea-wrap :deep(.el-textarea__inner:focus) { background: var(--pl-surface); }
+.link-stats { flex-wrap: wrap; gap: var(--pl-space-2); }
+.link-stats > span { padding: 4px 8px; border-radius: 999px; background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); }
+.preview-item { min-height: 34px; transition: transform 150ms ease, box-shadow 150ms ease; }
+.preview-item:hover { transform: translateX(2px); box-shadow: var(--pl-shadow-card); }
+
+.dir-empty { text-align: center; }
+.dir-empty strong { color: var(--pl-text-secondary); font-size: 13px; }
+.empty-icon { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 16px; color: var(--pl-primary); background: var(--pl-primary-soft); }
+.folder-item { min-height: 46px; transition: background 150ms ease, padding 150ms ease, color 150ms ease; }
+.folder-item:hover { padding-left: 18px; color: var(--pl-primary-hover); background: var(--pl-primary-soft); }
+.folder-item:hover .folder-arrow { color: var(--pl-primary); transform: translateX(2px); }
+.folder-arrow { transition: color 150ms ease, transform 150ms ease; }
+.target-info { display: flex; align-items: center; gap: var(--pl-space-2); padding: var(--pl-space-2) var(--pl-space-3); border-radius: var(--pl-radius-control); background: var(--pl-success-soft); }
+.target-info strong { color: var(--pl-success); }
+.target-ready { margin-left: auto; padding: 2px 7px; border-radius: 999px; color: var(--pl-success); background: var(--pl-surface); font-size: 10px; font-weight: 650; }
+
+.options-bar { gap: var(--pl-space-3); }
+.options-heading { display: flex; align-items: center; gap: var(--pl-space-3); margin-right: var(--pl-space-1); min-width: 170px; }
+.options-heading > div { display: flex; flex-direction: column; }
+.options-heading strong { color: var(--pl-text); font-size: 13px; }
+.options-heading small { color: var(--pl-text-muted); font-size: 10px; }
+.option-card { display: flex; align-items: center; gap: var(--pl-space-2); flex: 1; min-width: 180px; padding: 8px 10px; border: 1px solid var(--pl-border); border-radius: var(--pl-radius-control); background: var(--pl-surface-subtle); cursor: pointer; transition: border-color 150ms ease, background 150ms ease, transform 150ms ease; }
+.option-card:hover { border-color: var(--pl-primary); transform: translateY(-1px); }
+.option-card.selected { border-color: var(--pl-primary); background: var(--pl-primary-soft); }
+.option-card > span { display: flex; flex-direction: column; min-width: 0; }
+.option-card strong { color: var(--pl-text); font-size: 11px; font-weight: 650; }
+.option-card small { color: var(--pl-text-muted); font-size: 10px; white-space: nowrap; }
+.verify-button { margin-left: auto; flex: 0 0 auto; }
+
+.submit-bar { min-height: 64px; border-color: var(--pl-border-strong); box-shadow: var(--pl-shadow-float); }
+.submit-info { display: flex; align-items: center; gap: var(--pl-space-2); min-width: 0; }
+.submit-info strong { color: var(--pl-primary); }
+.submit-state-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--pl-warning); box-shadow: 0 0 0 4px var(--pl-warning-soft); }
+.submit-bar :deep(.el-button) { min-width: 132px; box-shadow: 0 6px 16px rgba(52, 120, 246, .18); transition: transform 150ms ease, box-shadow 150ms ease; }
+.submit-bar :deep(.el-button:not(.is-disabled):hover) { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(52, 120, 246, .24); }
+.submit-bar :deep(.el-button.is-disabled) { box-shadow: none; }
+
+@media (max-width: 1120px) {
+  .options-bar { flex-wrap: wrap; }
+  .options-heading { width: 100%; }
+  .verify-button { margin-left: 0; }
+}
+
+@media (max-width: 760px) {
+  .workflow-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--pl-space-2); }
+  .step-line { display: none; }
+  .step-copy small { display: none; }
+  .workflow-step { justify-content: center; }
+}
+
+@media (max-width: 560px) {
+  .workflow-steps { padding: var(--pl-space-3); }
+  .step-copy strong { font-size: 11px; }
+  .panel-heading { align-items: flex-start; }
+  .panel-hint { display: none; }
+  .selection-count { align-self: center; }
+  .option-card { min-width: 100%; }
+  .verify-button { width: 100%; }
+}
 </style>
 

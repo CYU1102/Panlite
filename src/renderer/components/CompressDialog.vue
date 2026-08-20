@@ -52,13 +52,14 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { electronApi } from '../api/ipc'
 import type { DriveAccount, FileItem } from '@shared/types'
+import { getPlatformCapabilities } from '@shared/capabilities'
 
 const props = defineProps<{
   modelValue: boolean
-  account: DriveAccount | null
+  account: Omit<DriveAccount, 'credential'> | null
   files: FileItem[]
   currentDirId: string
 }>()
@@ -69,11 +70,20 @@ const emit = defineEmits<{
 }>()
 
 const archiveName = ref('')
-const archiveFormat = ref('zip')
+const archiveFormat = ref<'zip' | 'tar'>('zip')
 const compressing = ref(false)
 
 async function startCompress() {
   if (!props.account) return
+  const capabilities = getPlatformCapabilities(props.account.platform)
+  if (!capabilities.createArchive) {
+    ElMessage.warning('当前网盘暂不支持创建压缩包')
+    return
+  }
+  if (props.files.some(file => file.isDir) && !capabilities.createArchiveFromFolder) {
+    ElMessage.warning('暂不支持直接压缩网盘文件夹')
+    return
+  }
   if (!archiveName.value) {
     ElMessage.warning('请输入压缩包名称')
     return
@@ -92,7 +102,7 @@ async function startCompress() {
     )
 
     if (result.success) {
-      ElMessage.success('压缩完成')
+      ElMessage.success(result.taskId ? '压缩任务已创建，可在任务日志查看进度' : '压缩完成')
       emit('success')
       onClose()
     } else {

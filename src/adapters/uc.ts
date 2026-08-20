@@ -3,6 +3,9 @@ import type { DriveAdapter } from './base'
 import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult, UploadOptions, UploadResult, DownloadOptions, DownloadResult } from '../shared/types'
 import { sleep, randomInt } from '../shared/utils'
 import log from 'electron-log'
+import { resolvePathInside, sanitizeFileName } from '../main/file-transfer'
+import { getRequestSettings } from '../main/request-settings'
+import { normalizeMembership } from '../shared/membership'
 
 /**
  * UC浏览器网盘适配器
@@ -223,7 +226,9 @@ export class UcAdapter implements DriveAdapter {
   async listFiles(account: DriveAccount, parentId: string): Promise<FileListResult> {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
-    const pageSize = 200
+    // UC exposes the same pagination contract as Quark and intentionally uses
+    // the shared Quark/UC setting from the settings page.
+    const { quarkPageSize: pageSize, requestDelayMs } = getRequestSettings()
     const maxPages = 100
     const allFiles: FileItem[] = []
 
@@ -235,7 +240,7 @@ export class UcAdapter implements DriveAdapter {
       if (!Array.isArray(items)) break
       allFiles.push(...items.map((f) => mapUcFile(f, account.id)))
       if (items.length < pageSize) break
-      await sleep(200)
+      if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
     return { files: allFiles, parentId, hasMore: false }
   }
@@ -243,7 +248,7 @@ export class UcAdapter implements DriveAdapter {
   async searchFiles(account: DriveAccount, keyword: string): Promise<FileItem[]> {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
-    const pageSize = 50
+    const { quarkPageSize: pageSize, requestDelayMs } = getRequestSettings()
     const maxPages = 100
     const allFiles: FileItem[] = []
 
@@ -257,7 +262,7 @@ export class UcAdapter implements DriveAdapter {
       if (!Array.isArray(items)) break
       allFiles.push(...items.map((f) => mapUcFile(f, account.id)))
       if (items.length < pageSize) break
-      await sleep(200)
+      if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
     return allFiles
   }
@@ -558,17 +563,19 @@ export class UcAdapter implements DriveAdapter {
   async download(account: DriveAccount, fileId: string, localDirPath: string, options?: DownloadOptions): Promise<DownloadResult> {
     const fs = require('fs')
     const path = require('path')
+    options?.signal?.throwIfAborted()
 
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
 
     const fileName = options?.fileName || 'download'
-    const localPath = path.join(localDirPath, fileName)
+    const localPath = resolvePathInside(localDirPath, sanitizeFileName(fileName))
 
     const downloadUrl = await this.getDownloadUrl(account, fileId)
 
     const ses = session.fromPartition(UC_SESSION)
     const response = await ses.fetch(downloadUrl, {
+      signal: options?.signal,
       headers: {
         'User-Agent': UC_UA,
         'Cookie': cookies,
@@ -626,6 +633,7 @@ export class UcAdapter implements DriveAdapter {
     const fs = require('fs')
     const path = require('path')
     const crypto = require('crypto')
+    options?.signal?.throwIfAborted()
 
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
@@ -699,6 +707,7 @@ export class UcAdapter implements DriveAdapter {
 
     try {
     for (let i = 0; i < totalParts; i++) {
+      options?.signal?.throwIfAborted()
       const start = i * partSize
       const end = Math.min(start + partSize, fileSize)
       const chunkSize = end - start
@@ -726,6 +735,7 @@ export class UcAdapter implements DriveAdapter {
 
       const ses = session.fromPartition(UC_SESSION)
       const ossRes = await ses.fetch(ossUrl, {
+        signal: options?.signal,
         method: 'PUT',
         headers: {
           'Authorization': authKey,
@@ -748,7 +758,7 @@ export class UcAdapter implements DriveAdapter {
 
       options?.onProgress?.({
         loaded: uploadedBytes, total: fileSize,
-        percent: Math.round((uploadedBytes / fileSize) * 100), speed: 0,
+        percent: fileSize > 0 ? Math.round((uploadedBytes / fileSize) * 100) : 100, speed: 0,
       })
     }
     } finally {
@@ -783,6 +793,7 @@ export class UcAdapter implements DriveAdapter {
     const commitUrl = `${ossBaseUrl}?uploadId=${uploadId}`
     const ses2 = session.fromPartition(UC_SESSION)
     const commitRes = await ses2.fetch(commitUrl, {
+      signal: options?.signal,
       method: 'POST',
       headers: {
         'Authorization': commitAuthRes.data?.auth_key,
@@ -839,6 +850,13 @@ export class UcAdapter implements DriveAdapter {
     }
 
     throw new Error('UC网盘暂不支持容量查询')
+  }
+
+  async getMembership(account: DriveAccount) {
+    const cookies = account.credential.cookies || ''
+    if (!cookies) throw new Error('未登录')
+    const data = await ucRequest<any>(`${UC_API}/member`, cookies)
+    return normalizeMembership(data, 'UC')
   }
 }
 

@@ -147,6 +147,130 @@ const migrations: Migration[] = [
       log.info('Migration 002: Added tg_channels, crawler_sources, and kk_sources tables')
     },
   },
+  {
+    id: '003_replace_search_sources_with_curated_sites',
+    description: 'Replace legacy search sources with the curated built-in resource catalog',
+    up: () => {
+      const columns = db.prepare('PRAGMA table_info(search_sources)').all() as { name: string }[]
+      const names = new Set(columns.map((column) => column.name))
+      if (!names.has('category')) db.exec("ALTER TABLE search_sources ADD COLUMN category TEXT NOT NULL DEFAULT '网盘搜索'")
+      if (!names.has('risk_level')) db.exec("ALTER TABLE search_sources ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'medium'")
+      if (!names.has('capabilities')) db.exec("ALTER TABLE search_sources ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'")
+      db.exec('DELETE FROM search_sources')
+      seedCuratedSearchSources()
+      log.info('Migration 003: Replaced legacy search sources with curated sites')
+    },
+  },
+  {
+    id: '004_add_ai_workspace_tables',
+    description: 'Add independent AI workspace documents and tasks',
+    up: () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ai_documents (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          source_type TEXT NOT NULL DEFAULT 'local',
+          source_account_id TEXT,
+          source_file_id TEXT,
+          source_path TEXT,
+          extension TEXT NOT NULL DEFAULT '',
+          mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+          size INTEGER NOT NULL DEFAULT 0,
+          sha256 TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'queued',
+          content_preview TEXT,
+          error_message TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_documents_status ON ai_documents(status);
+        CREATE INDEX IF NOT EXISTS idx_ai_documents_hash ON ai_documents(sha256);
+
+        CREATE TABLE IF NOT EXISTS ai_tasks (
+          id TEXT PRIMARY KEY,
+          task_type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          document_id TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          progress INTEGER NOT NULL DEFAULT 0,
+          message TEXT,
+          error_message TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          finished_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_tasks_status ON ai_tasks(status);
+        CREATE INDEX IF NOT EXISTS idx_ai_tasks_created ON ai_tasks(created_at);
+      `)
+    },
+  },
+  {
+    id: '005_add_ai_document_chunks',
+    description: 'Add local chunks for independent AI document retrieval',
+    up: () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ai_document_chunks (
+          id TEXT PRIMARY KEY,
+          document_id TEXT NOT NULL,
+          chunk_index INTEGER NOT NULL,
+          page_number INTEGER,
+          section TEXT,
+          content TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (document_id) REFERENCES ai_documents(id) ON DELETE CASCADE
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_chunks_document_index
+          ON ai_document_chunks(document_id, chunk_index);
+        CREATE INDEX IF NOT EXISTS idx_ai_chunks_document
+          ON ai_document_chunks(document_id);
+
+        INSERT OR IGNORE INTO ai_document_chunks
+          (id, document_id, chunk_index, page_number, section, content, created_at)
+        SELECT 'legacy-' || id, id, 0, NULL, '已导入内容', content_preview, created_at
+        FROM ai_documents
+        WHERE status = 'ready' AND content_preview IS NOT NULL AND length(trim(content_preview)) > 0;
+      `)
+    },
+  },
+  {
+    id: '006_add_ai_conversations',
+    description: 'Add persistent AI conversations and messages',
+    up: () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ai_conversations (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          document_ids TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_conversations_updated
+          ON ai_conversations(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS ai_conversation_messages (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          message_index INTEGER NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+          content TEXT NOT NULL,
+          citations TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (conversation_id) REFERENCES ai_conversations(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_conversation_messages_order
+          ON ai_conversation_messages(conversation_id, message_index);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_conversation_messages_unique_index
+          ON ai_conversation_messages(conversation_id, message_index);
+      `)
+    },
+  },
+  {
+    id: '007_add_ai_chunk_embeddings',
+    description: 'Add optional semantic vectors for hybrid AI document retrieval',
+    up: () => {
+      db.exec('ALTER TABLE ai_document_chunks ADD COLUMN embedding TEXT')
+    },
+  },
   // 添加更多迁移...
 ]
 
@@ -168,13 +292,16 @@ function runMigrations(): void {
     if (applied.has(migration.id)) continue
     try {
       log.info(`DB migration: applying ${migration.id} - ${migration.description}`)
-      migration.up()
-      db.prepare('INSERT INTO _migrations (id, description, applied_at) VALUES (?, ?, ?)').run(
-        migration.id, migration.description, Date.now(),
-      )
+      db.transaction(() => {
+        migration.up()
+        db.prepare('INSERT INTO _migrations (id, description, applied_at) VALUES (?, ?, ?)').run(
+          migration.id, migration.description, Date.now(),
+        )
+      })()
       log.info(`DB migration: applied ${migration.id}`)
     } catch (err) {
       log.error(`DB migration failed: ${migration.id}`, err)
+      throw new Error(`Database migration ${migration.id} failed: ${String(err)}`)
     }
   }
 }
@@ -195,10 +322,7 @@ function createTables(): void {
       last_check_at INTEGER
     );
 
-    -- TODO: files_cache table is reserved for future offline cache support.
-    -- Currently unused — files are always fetched live from the API.
-    -- When implemented: listFiles should write cache, and a "cached" badge
-    -- should be shown when reading from cache instead of live API.
+    -- Last successful directory snapshots used for offline fallback.
     CREATE TABLE IF NOT EXISTS files_cache (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
@@ -242,6 +366,16 @@ function createTables(): void {
 
     CREATE INDEX IF NOT EXISTS idx_files_cache_account ON files_cache(account_id);
     CREATE INDEX IF NOT EXISTS idx_files_cache_parent ON files_cache(parent_id);
+
+    -- A separate marker is required because an empty directory is still a valid
+    -- successful snapshot and therefore has no row in files_cache.
+    CREATE TABLE IF NOT EXISTS files_cache_snapshots (
+      account_id TEXT NOT NULL,
+      parent_id TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (account_id, parent_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_files_cache_snapshots_account ON files_cache_snapshots(account_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_account ON tasks(account_id);
     CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at);
@@ -326,6 +460,9 @@ function createTables(): void {
       max_count INTEGER DEFAULT 20,
       weight INTEGER DEFAULT 0,
       status INTEGER DEFAULT 1,
+      category TEXT NOT NULL DEFAULT '网盘搜索',
+      risk_level TEXT NOT NULL DEFAULT 'medium',
+      capabilities TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -613,6 +750,63 @@ function seedDefaultSearchSources(): void {
   log.info('Seeded default search sources')
 }
 
+/**
+ * 用户确认过的内置资源目录。
+ * 这些站点以浏览器入口为主，不伪装成稳定 JSON API；资源搜索页负责分组、风险提示和安全打开。
+ */
+function seedCuratedSearchSources(): void {
+  const ts = Date.now()
+  const defaults = [
+    {
+      id: 'builtin_xuebapan', name: '学霸盘', type: 'browser', platform: 'baidu',
+      url: 'https://www.xuebapan.com/', category: '网盘搜索', riskLevel: 'medium', weight: 100,
+      capabilities: ['学习资料', '课程', '考试', '电子书', '百度网盘'],
+    },
+    {
+      id: 'builtin_qkpanso', name: '夸克盘搜', type: 'browser', platform: 'quark',
+      url: 'https://qkpanso.com/', category: '网盘搜索', riskLevel: 'medium', weight: 95,
+      capabilities: ['夸克网盘', '影视', '动漫', '课程', '电子书'],
+    },
+    {
+      id: 'builtin_ruancang', name: '软仓', type: 'browser', platform: 'all',
+      url: 'https://www.ruancang.net/', category: '软件与技术资源', riskLevel: 'high', weight: 80,
+      capabilities: ['办公软件', 'Adobe', 'CAD', '三维建模', '设计工程'],
+    },
+    {
+      id: 'builtin_yxzhi', name: '鸭先知', type: 'browser', platform: 'all',
+      url: 'https://www.yxzhi.com/', category: '软件与技术资源', riskLevel: 'medium', weight: 78,
+      capabilities: ['软件教程', '脚本插件', '效率工具', '技术分享'],
+    },
+    {
+      id: 'builtin_fireoa', name: 'Fireoa Tools', type: 'browser', platform: 'all',
+      url: 'https://fireoa.com/zh-cn', category: '在线工具', riskLevel: 'low', weight: 75,
+      capabilities: ['开发工具', '隐私安全', '文档PDF', '图像音视频', '本地处理'],
+    },
+    {
+      id: 'builtin_weidus', name: '维度导航', type: 'browser', platform: 'all',
+      url: 'https://www.weidus.com/?ref=kuaf', category: '综合导航', riskLevel: 'medium', weight: 70,
+      capabilities: ['网盘入口', 'AI工具', '影音', '资源分享', '在线工具'],
+    },
+  ]
+
+  const stmt = db.prepare(`
+    INSERT INTO search_sources (
+      id, name, type, platform, url, method, params, headers, field_map, html_selectors,
+      max_count, weight, status, category, risk_level, capabilities, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'GET', NULL, NULL, NULL, NULL, 20, ?, 1, ?, ?, ?, ?, ?)
+  `)
+  const insertMany = db.transaction(() => {
+    for (const source of defaults) {
+      stmt.run(
+        source.id, source.name, source.type, source.platform, source.url, source.weight,
+        source.category, source.riskLevel, JSON.stringify(source.capabilities), ts, ts,
+      )
+    }
+  })
+  insertMany()
+  log.info(`Seeded ${defaults.length} curated built-in resource sources`)
+}
+
 // ---- Account CRUD ----
 
 export interface DbAccount {
@@ -728,16 +922,22 @@ export function getTaskById(id: string): DbTask | undefined {
 
 export function updateTaskStatus(id: string, status: string, progress?: number, errorMessage?: string): void {
   const now = Date.now()
+  const isTerminal = status === 'success' || status === 'partial_success' || status === 'failed' || status === 'cancelled'
   if (progress !== undefined && errorMessage !== undefined) {
     getDb().prepare('UPDATE tasks SET status = ?, progress = ?, error_message = ?, updated_at = ?, finished_at = ? WHERE id = ?')
-      .run(status, progress, errorMessage, now, status === 'success' || status === 'failed' ? now : null, id)
+      .run(status, progress, errorMessage, now, isTerminal ? now : null, id)
   } else if (progress !== undefined) {
-    getDb().prepare('UPDATE tasks SET status = ?, progress = ?, updated_at = ? WHERE id = ?')
-      .run(status, progress, now, id)
+    getDb().prepare('UPDATE tasks SET status = ?, progress = ?, updated_at = ?, finished_at = ? WHERE id = ?')
+      .run(status, progress, now, isTerminal ? now : null, id)
   } else {
-    getDb().prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?')
-      .run(status, now, id)
+    getDb().prepare('UPDATE tasks SET status = ?, updated_at = ?, finished_at = ? WHERE id = ?')
+      .run(status, now, isTerminal ? now : null, id)
   }
+}
+
+export function updateTaskPayload(id: string, payload: unknown): void {
+  getDb().prepare('UPDATE tasks SET payload = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(payload), Date.now(), id)
 }
 
 export function incrementTaskRetry(id: string): void {
@@ -760,12 +960,36 @@ export function markTaskFailed(id: string, errorMessage: string): void {
     .run('failed', errorMessage, now, now, id)
 }
 
+export function markTaskCancelled(id: string): void {
+  const now = Date.now()
+  getDb().prepare('UPDATE tasks SET status = ?, error_message = ?, updated_at = ?, finished_at = ? WHERE id = ?')
+    .run('cancelled', 'Cancelled by user', now, now, id)
+}
+
+export function recoverInterruptedTasks(): number {
+  const now = Date.now()
+  const result = getDb().prepare(`
+    UPDATE tasks
+    SET status = 'pending', error_message = 'Recovered after application restart', updated_at = ?, finished_at = NULL
+    WHERE status = 'running'
+  `).run(now)
+  return result.changes
+}
+
 export function getPendingTasks(): DbTask[] {
   return getDb().prepare("SELECT * FROM tasks WHERE status = 'pending' ORDER BY created_at ASC").all() as DbTask[]
 }
 
 export function getTasksByAccount(accountId: string): DbTask[] {
   return getDb().prepare('SELECT * FROM tasks WHERE account_id = ? ORDER BY created_at DESC').all(accountId) as DbTask[]
+}
+
+export function deleteTaskById(id: string): boolean {
+  const database = getDb()
+  return database.transaction(() => {
+    database.prepare('DELETE FROM logs WHERE task_id = ?').run(id)
+    return database.prepare('DELETE FROM tasks WHERE id = ?').run(id).changes > 0
+  })()
 }
 
 // ---- Log CRUD ----
@@ -838,6 +1062,36 @@ export function insertFilesCache(files: DbCacheFile[]): void {
   txn(files)
 }
 
+/** Replace one complete directory snapshot atomically, including empty folders. */
+export function replaceFilesCacheSnapshot(
+  accountId: string,
+  parentId: string,
+  files: DbCacheFile[],
+  updatedAt: number = Date.now(),
+): void {
+  const database = getDb()
+  const deleteItems = database.prepare('DELETE FROM files_cache WHERE account_id = ? AND parent_id = ?')
+  const insertItem = database.prepare(`
+    INSERT OR REPLACE INTO files_cache (id, account_id, platform, file_id, parent_id, filename, is_dir, size, created_at, updated_at, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const upsertSnapshot = database.prepare(`
+    INSERT INTO files_cache_snapshots (account_id, parent_id, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(account_id, parent_id) DO UPDATE SET updated_at = excluded.updated_at
+  `)
+  database.transaction(() => {
+    deleteItems.run(accountId, parentId)
+    for (const file of files) {
+      insertItem.run(
+        file.id, file.account_id, file.platform, file.file_id, file.parent_id,
+        file.filename, file.is_dir, file.size, file.created_at, file.updated_at, file.raw_json,
+      )
+    }
+    upsertSnapshot.run(accountId, parentId, updatedAt)
+  })()
+}
+
 export function getFilesCacheByParent(accountId: string, parentId: string): DbCacheFile[] {
   return getDb().prepare(
     `SELECT * FROM files_cache WHERE account_id = ? AND parent_id = ? ORDER BY is_dir DESC, filename ASC`
@@ -845,20 +1099,53 @@ export function getFilesCacheByParent(accountId: string, parentId: string): DbCa
 }
 
 export function getFilesCacheLatestTimestamp(accountId: string, parentId: string): number | null {
+  const snapshot = getDb().prepare(
+    'SELECT updated_at FROM files_cache_snapshots WHERE account_id = ? AND parent_id = ?'
+  ).get(accountId, parentId) as { updated_at: number } | undefined
+  if (snapshot) return snapshot.updated_at
   const row = getDb().prepare(
     `SELECT MAX(updated_at) as latest FROM files_cache WHERE account_id = ? AND parent_id = ?`
   ).get(accountId, parentId) as { latest: number | null } | undefined
   return row?.latest ?? null
 }
 
+export function invalidateFilesCacheParents(accountId: string, parentIds: string[]): number {
+  const ids = [...new Set(parentIds.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+  if (ids.length === 0) return 0
+  const database = getDb()
+  const deleteItems = database.prepare('DELETE FROM files_cache WHERE account_id = ? AND parent_id = ?')
+  const deleteSnapshot = database.prepare('DELETE FROM files_cache_snapshots WHERE account_id = ? AND parent_id = ?')
+  return database.transaction(() => {
+    let changes = 0
+    for (const parentId of ids) {
+      changes += deleteItems.run(accountId, parentId).changes
+      changes += deleteSnapshot.run(accountId, parentId).changes
+    }
+    return changes
+  })()
+}
+
+export function getCachedParentIdsForFiles(accountId: string, fileIds: string[]): string[] {
+  const ids = [...new Set(fileIds.filter(Boolean))]
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = getDb().prepare(
+    `SELECT DISTINCT parent_id FROM files_cache WHERE account_id = ? AND file_id IN (${placeholders}) AND parent_id IS NOT NULL`
+  ).all(accountId, ...ids) as { parent_id: string }[]
+  return rows.map((row) => row.parent_id)
+}
+
 export function clearFilesCache(accountId: string): number {
-  const result = getDb().prepare(`DELETE FROM files_cache WHERE account_id = ?`).run(accountId)
-  return result.changes
+  const database = getDb()
+  return database.transaction(() => {
+    const items = database.prepare('DELETE FROM files_cache WHERE account_id = ?').run(accountId).changes
+    database.prepare('DELETE FROM files_cache_snapshots WHERE account_id = ?').run(accountId)
+    return items
+  })()
 }
 
 export function deleteFilesCacheByAccount(accountId: string): number {
-  const result = getDb().prepare('DELETE FROM files_cache WHERE account_id = ?').run(accountId)
-  return result.changes
+  return clearFilesCache(accountId)
 }
 
 export function deleteTasksByAccount(accountId: string): number {
@@ -1047,6 +1334,10 @@ export function setSetting(key: string, value: string, encrypted: boolean = fals
   `).run(key, value, encrypted ? 1 : 0, ts)
 }
 
+export function deleteSetting(key: string): boolean {
+  return getDb().prepare('DELETE FROM settings WHERE key = ?').run(key).changes > 0
+}
+
 export function getAllSettings(): { key: string; value: string; encrypted: number }[] {
   return getDb().prepare('SELECT key, value, encrypted FROM settings').all() as { key: string; value: string; encrypted: number }[]
 }
@@ -1096,6 +1387,9 @@ export interface DbSearchSource {
   max_count: number
   weight: number
   status: number
+  category?: string
+  risk_level?: string
+  capabilities?: string
   created_at: number
   updated_at: number
 }
@@ -1114,24 +1408,26 @@ export function getActiveSearchSources(platform?: string): DbSearchSource[] {
 
 export function insertSearchSource(source: DbSearchSource): void {
   getDb().prepare(`
-    INSERT INTO search_sources (id, name, type, platform, url, method, params, headers, field_map, html_selectors, max_count, weight, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO search_sources (id, name, type, platform, url, method, params, headers, field_map, html_selectors, max_count, weight, status, category, risk_level, capabilities, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     source.id, source.name, source.type, source.platform, source.url,
     source.method, source.params, source.headers, source.field_map,
     source.html_selectors, source.max_count, source.weight, source.status,
+    source.category || '网盘搜索', source.risk_level || 'medium', source.capabilities || '[]',
     source.created_at, source.updated_at,
   )
 }
 
 export function updateSearchSource(source: DbSearchSource): void {
   getDb().prepare(`
-    UPDATE search_sources SET name=?, type=?, platform=?, url=?, method=?, params=?, headers=?, field_map=?, html_selectors=?, max_count=?, weight=?, status=?, updated_at=?
+    UPDATE search_sources SET name=?, type=?, platform=?, url=?, method=?, params=?, headers=?, field_map=?, html_selectors=?, max_count=?, weight=?, status=?, category=?, risk_level=?, capabilities=?, updated_at=?
     WHERE id=?
   `).run(
     source.name, source.type, source.platform, source.url,
     source.method, source.params, source.headers, source.field_map,
     source.html_selectors, source.max_count, source.weight, source.status,
+    source.category || '网盘搜索', source.risk_level || 'medium', source.capabilities || '[]',
     source.updated_at, source.id,
   )
 }

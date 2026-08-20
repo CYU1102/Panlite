@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { copyFileSync } from 'fs'
 import type { Plugin } from 'vite'
 
 /** Remove crossorigin attributes from HTML tags — breaks file:// in Electron */
@@ -10,6 +11,18 @@ function removeCrossorigin(): Plugin {
     enforce: 'post',
     transformIndexHtml(html) {
       return html.replace(/ crossorigin/g, '')
+    },
+  }
+}
+
+function copyWebviewPreload(): Plugin {
+  return {
+    name: 'copy-webview-preload',
+    closeBundle() {
+      copyFileSync(
+        resolve(__dirname, 'src/renderer/preload-extract.js'),
+        resolve(__dirname, 'dist/renderer/preload-extract.js'),
+      )
     },
   }
 }
@@ -26,6 +39,7 @@ export default defineConfig({
       },
     }),
     removeCrossorigin(),
+    copyWebviewPreload(),
   ],
   resolve: {
     alias: {
@@ -40,7 +54,13 @@ export default defineConfig({
     modulePreload: false,
     rollupOptions: {
       output: {
-        inlineDynamicImports: true,
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('element-plus')) return 'element-plus'
+          if (id.includes('lucide-vue-next') || id.includes('@element-plus/icons-vue')) return 'icons'
+          if (id.includes('/vue/') || id.includes('vue-router') || id.includes('pinia')) return 'vue-core'
+          return 'vendor'
+        },
       },
     },
   },

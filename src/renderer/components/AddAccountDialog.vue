@@ -38,6 +38,11 @@
       </button>
     </div>
 
+    <div v-if="authSupportHint" class="auth-support-hint">
+      <ShieldCheck :size="14" />
+      <span>{{ authSupportHint }}</span>
+    </div>
+
     <!-- Quark: Auto Cookie Login -->
     <div v-if="selectedPlatform === 'quark' && activeMethod === 'auto'" class="method-body">
       <div class="split-layout">
@@ -191,7 +196,12 @@
                   <ExternalLink :size="14" style="margin-right: 4px" />
                   打开授权页面
                 </el-button>
+                <el-button v-if="baiduOAuthUrl" @click="copyBaiduAuthUrl">复制授权地址</el-button>
               </el-form-item>
+              <div v-if="baiduOAuthError" class="oauth-error">
+                <span>{{ baiduOAuthError }}</span>
+                <el-button v-if="baiduOAuthNeedsConfig" link type="primary" @click="openBaiduSettings">前往设置</el-button>
+              </div>
               <el-form-item label="授权码">
                 <el-input v-model="baiduOAuthCode" placeholder="粘贴百度授权后的授权码" />
               </el-form-item>
@@ -341,7 +351,7 @@
               <Monitor :size="16" style="margin-right: 6px" />
               开始登录
             </el-button>
-            <p class="action-hint">将打开迅雷网盘登录页面</p>
+            <p class="action-hint">将打开迅雷官方授权登录页面，登录后自动获取访问 Token</p>
           </div>
           <div v-else-if="xunleiAutoStep === 'logging'" class="action-center">
             <div class="pulse-ring"><Monitor :size="28" /></div>
@@ -396,7 +406,8 @@
 
 <script setup lang="ts">
 import { ref, computed, markRaw } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import {
   Globe, PenSquare, KeyRound, Monitor, Check, CheckCircle2,
   XCircle, ShieldCheck, ExternalLink, Key, Loader2,
@@ -406,6 +417,7 @@ import { electronApi, type LoginResult, type BaiduLoginResult } from '../api/ipc
 
 defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; success: [] }>()
+const router = useRouter()
 
 const saving = ref(false)
 const selectedPlatform = ref<Platform>('quark')
@@ -432,7 +444,7 @@ const ucMethods = [
 ]
 
 const xunleiMethods = [
-  { key: 'auto', label: '自动获取 Token', icon: markRaw(Globe) },
+  { key: 'auto', label: '官方 OAuth 授权', icon: markRaw(Globe) },
   { key: 'token', label: '粘贴 Refresh Token', icon: markRaw(KeyRound) },
 ]
 
@@ -444,6 +456,19 @@ const currentMethods = computed(() => {
     case 'xunlei': return xunleiMethods
     default: return quarkMethods
   }
+})
+
+const authSupportHint = computed(() => {
+  if (selectedPlatform.value === 'quark') {
+    return '夸克官方 OAuth 目前只开放给独立 Skill API；PanLite 文件管理使用网页登录会话，自动登录方式才能保证目录、上传和迁移完整可用。'
+  }
+  if (selectedPlatform.value === 'uc') {
+    return 'UC 公开 OAuth 接口属于小游戏平台，不授予 UC 网盘文件权限；当前使用官方网页登录 Cookie。'
+  }
+  if (selectedPlatform.value === 'xunlei') {
+    return '自动登录使用迅雷官方网页授权并保存访问 Token；手动 Refresh Token 仅作为备用方式。'
+  }
+  return ''
 })
 
 function onPlatformChange() {
@@ -558,12 +583,39 @@ const baiduOAuthNickname = ref('')
 const baiduOAuthCode = ref('')
 const baiduOAuthOpening = ref(false)
 const baiduOAuthError = ref('')
+const baiduOAuthUrl = ref('')
 const baiduOAuthResult = ref<BaiduLoginResult>({ success: false })
+const baiduOAuthNeedsConfig = computed(() => /Client ID|Client Secret|API 配置|尚未配置/.test(baiduOAuthError.value))
 
 async function openBaiduAuth() {
   baiduOAuthOpening.value = true
-  try { await electronApi.getBaiduAuthUrl() }
-  finally { baiduOAuthOpening.value = false }
+  baiduOAuthError.value = ''
+  try {
+    const result = await electronApi.getBaiduAuthUrl()
+    if (!result.success) {
+      baiduOAuthError.value = result.error || '无法打开百度授权页面'
+      ElMessage.error(baiduOAuthError.value)
+      return
+    }
+    baiduOAuthUrl.value = String(result.url || '')
+    ElMessage.success('已在系统浏览器中打开百度授权页面')
+  } catch (err) {
+    baiduOAuthError.value = err instanceof Error ? err.message : String(err)
+    ElMessage.error(baiduOAuthError.value)
+  } finally {
+    baiduOAuthOpening.value = false
+  }
+}
+
+async function copyBaiduAuthUrl() {
+  if (!baiduOAuthUrl.value) return
+  await navigator.clipboard.writeText(baiduOAuthUrl.value)
+  ElMessage.success('授权地址已复制')
+}
+
+async function openBaiduSettings() {
+  emit('update:modelValue', false)
+  await router.push('/settings')
 }
 
 async function exchangeBaiduCode() {
@@ -594,6 +646,7 @@ function resetBaiduOAuth() {
   baiduOAuthStep.value = 'code'
   baiduOAuthCode.value = ''
   baiduOAuthError.value = ''
+  baiduOAuthUrl.value = ''
   baiduOAuthResult.value = { success: false }
 }
 
@@ -641,9 +694,9 @@ function resetUcAuto() {
 import type { XunleiLoginResult } from '../api/ipc'
 
 const xunleiSteps = [
-  { title: '打开迅雷网盘', desc: '打开官方登录页面' },
+  { title: '打开迅雷授权页', desc: '使用官方网页登录授权' },
   { title: '登录账号', desc: '扫码或输入账号密码登录' },
-  { title: '自动获取', desc: '登录成功后自动获取 Token' },
+  { title: '获取 Token', desc: '授权成功后自动获取访问 Token' },
   { title: '保存账号', desc: '验证通过后自动保存' },
 ]
 
@@ -750,7 +803,7 @@ async function onConfirm() {
         if (xunleiAutoStep.value !== 'success') { ElMessage.warning('请先完成登录'); return }
         params = {
           platform: 'xunlei', nickname: xunleiAutoResult.value.nickname || '迅雷账号',
-          loginType: 'token',
+          loginType: 'oauth',
           credential: {
             refreshToken: xunleiAutoResult.value.refreshToken,
             accessToken: xunleiAutoResult.value.accessToken,
@@ -825,6 +878,21 @@ function onClose() { emit('update:modelValue', false) }
   border-bottom: 1px solid #f3f4f6;
   margin-bottom: 20px;
 }
+
+.auth-support-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: -8px 0 16px;
+  padding: 9px 11px;
+  border: 1px solid #dbe7fb;
+  border-radius: 8px;
+  color: #536b8d;
+  background: #f5f8ff;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.auth-support-hint svg { flex: 0 0 auto; margin-top: 2px; color: #4c82df; }
 
 .method-btn {
   display: flex;
@@ -928,6 +996,22 @@ function onClose() { emit('update:modelValue', false) }
 .action-center.failed { color: #ef4444; }
 .nickname { font-size: 16px; font-weight: 600; color: #1f2937; }
 .action-hint { font-size: 13px; color: #9ca3af; }
+
+.oauth-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -4px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #f7d7a7;
+  border-radius: 8px;
+  color: #9a6512;
+  background: #fff9ed;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.oauth-error span { min-width: 0; }
 
 .pulse-ring {
   width: 56px;

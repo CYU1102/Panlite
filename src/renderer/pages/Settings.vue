@@ -27,6 +27,19 @@
           </div>
         </div>
         <div class="setting-body">
+          <el-alert
+            title="OAuth 需要百度网盘开放平台应用凭证；请先创建并启用包含 netdisk 权限的应用。"
+            type="info"
+            :closable="false"
+            show-icon
+            class="oauth-config-alert"
+          >
+            <template #default>
+              <el-button link type="primary" @click="electronApi.openExternal('https://yun.baidu.com/open/platform')">
+                打开百度网盘开放平台
+              </el-button>
+            </template>
+          </el-alert>
           <div class="setting-row">
             <div class="setting-label">
               <span class="label-text">Client ID</span>
@@ -44,9 +57,9 @@
           <div class="setting-row">
             <div class="setting-label">
               <span class="label-text">Redirect URI</span>
-              <span class="label-hint">OAuth 回调地址</span>
+              <span class="label-hint">桌面授权建议使用 oob，授权完成后页面会显示授权码</span>
             </div>
-            <el-input v-model="form.baiduRedirectUri" placeholder="https://openapi.baidu.com/qrcode/1" style="width: 320px" />
+            <el-input v-model="form.baiduRedirectUri" placeholder="oob" style="width: 320px" />
           </div>
         </div>
       </div>
@@ -65,8 +78,8 @@
         <div class="setting-body">
           <div class="setting-row">
             <div class="setting-label">
-              <span class="label-text">夸克每页数量</span>
-              <span class="label-hint">每次 API 请求返回的文件数</span>
+              <span class="label-text">夸克 / UC 每页数量</span>
+              <span class="label-hint">文件列表和搜索 API 每次返回的文件数</span>
             </div>
             <el-input-number v-model="form.quarkPageSize" :min="20" :max="500" :step="20" size="small" />
           </div>
@@ -161,6 +174,7 @@
             <el-table-column prop="platform" label="平台" width="80">
               <template #default="{ row }">{{ getPlatformLabel(row.platform) }}</template>
             </el-table-column>
+            <el-table-column prop="category" label="分类" width="120" />
             <el-table-column prop="url" label="URL" show-overflow-tooltip />
             <el-table-column prop="status" label="状态" width="60">
               <template #default="{ row }">
@@ -537,11 +551,15 @@ https://pan.funletu.com"
           </div>
           <div>
             <h3>关于</h3>
-            <p>应用信息</p>
+            <p>PanLite 网盘管理与跨云端传输工具</p>
           </div>
         </div>
         <div class="setting-body">
           <div class="about-info">
+            <div class="about-intro">
+              <strong>PanLite</strong>
+              <span>统一管理多个网盘账号，在本地完成文件浏览、上传下载、任务调度和跨网盘迁移。</span>
+            </div>
             <div class="about-row">
               <span class="about-label">版本</span>
               <span class="about-value">0.1.0</span>
@@ -551,11 +569,29 @@ https://pan.funletu.com"
               <span class="about-value">Electron + Vue 3 + TypeScript</span>
             </div>
             <div class="about-row">
+              <span class="about-label">运行平台</span>
+              <span class="about-value">Windows x64 桌面端</span>
+            </div>
+            <div class="about-row">
               <span class="about-label">支持平台</span>
               <div class="about-platforms">
                 <span class="platform-chip quark">夸克网盘</span>
                 <span class="platform-chip baidu">百度网盘</span>
+                <span class="platform-chip uc">UC 网盘</span>
+                <span class="platform-chip xunlei">迅雷网盘</span>
               </div>
+            </div>
+            <div class="about-row">
+              <span class="about-label">核心能力</span>
+              <span class="about-value about-value-wrap">文件管理 · 官方上传下载 · 跨网盘迁移 · 任务队列 · 资源搜索</span>
+            </div>
+            <div class="about-row">
+              <span class="about-label">数据与安全</span>
+              <span class="about-value about-value-wrap">账号凭据加密保存在本机 SQLite，业务请求仅发送至对应网盘官方接口</span>
+            </div>
+            <div class="about-row">
+              <span class="about-label">许可证</span>
+              <span class="about-value">MIT License</span>
             </div>
           </div>
         </div>
@@ -574,7 +610,7 @@ https://pan.funletu.com"
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import {
   Settings as SettingsIcon, Gauge, Info, Save, Key, Shield, Search, Plus, Edit as EditIcon, Delete, Hash, Globe, Zap, ArrowDown, Upload,
 } from 'lucide-vue-next'
@@ -587,7 +623,7 @@ const saving = ref(false)
 const form = reactive({
   baiduClientId: '',
   baiduClientSecret: '',
-  baiduRedirectUri: 'https://openapi.baidu.com/qrcode/1',
+  baiduRedirectUri: 'oob',
   quarkPageSize: 200,
   baiduPageSize: 100,
   requestDelayMs: 300,
@@ -606,6 +642,19 @@ const SETTINGS_KEYS = [
   'bannedKeywords',
 ] as const
 
+const REQUEST_SETTING_LIMITS = {
+  quarkPageSize: [20, 500],
+  baiduPageSize: [20, 1000],
+  requestDelayMs: [0, 5000],
+} as const
+
+function clampRequestSetting<K extends keyof typeof REQUEST_SETTING_LIMITS>(key: K, value: unknown): number {
+  const [min, max] = REQUEST_SETTING_LIMITS[key]
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return key === 'quarkPageSize' ? 200 : key === 'baiduPageSize' ? 100 : 300
+  return Math.min(max, Math.max(min, Math.round(parsed)))
+}
+
 async function loadSettings() {
   try {
     const result = await electronApi.getAllSettings()
@@ -614,9 +663,9 @@ async function loadSettings() {
       if (s.baiduClientId !== undefined) form.baiduClientId = s.baiduClientId
       if (s.baiduClientSecret !== undefined) form.baiduClientSecret = s.baiduClientSecret
       if (s.baiduRedirectUri !== undefined) form.baiduRedirectUri = s.baiduRedirectUri
-      if (s.quarkPageSize !== undefined) form.quarkPageSize = Number(s.quarkPageSize) || 200
-      if (s.baiduPageSize !== undefined) form.baiduPageSize = Number(s.baiduPageSize) || 100
-      if (s.requestDelayMs !== undefined) form.requestDelayMs = Number(s.requestDelayMs) || 300
+      if (s.quarkPageSize !== undefined) form.quarkPageSize = clampRequestSetting('quarkPageSize', s.quarkPageSize)
+      if (s.baiduPageSize !== undefined) form.baiduPageSize = clampRequestSetting('baiduPageSize', s.baiduPageSize)
+      if (s.requestDelayMs !== undefined) form.requestDelayMs = clampRequestSetting('requestDelayMs', s.requestDelayMs)
       if (s.adFilterEnabled !== undefined) form.adFilterEnabled = s.adFilterEnabled !== 'false'
       if (s.bannedKeywords !== undefined) form.bannedKeywords = s.bannedKeywords
     }
@@ -628,6 +677,9 @@ async function loadSettings() {
 async function onSave() {
   saving.value = true
   try {
+    form.quarkPageSize = clampRequestSetting('quarkPageSize', form.quarkPageSize)
+    form.baiduPageSize = clampRequestSetting('baiduPageSize', form.baiduPageSize)
+    form.requestDelayMs = clampRequestSetting('requestDelayMs', form.requestDelayMs)
     for (const key of SETTINGS_KEYS) {
       const value = String(form[key])
       await electronApi.setSetting(key, value)
@@ -662,6 +714,9 @@ interface SearchSourceItem {
   max_count: number
   weight: number
   status: number
+  category?: string
+  risk_level?: string
+  capabilities?: string
   // UI fields
   paramsStr?: string
   headersStr?: string
@@ -1239,235 +1294,110 @@ onMounted(loadKkSources)
 </script>
 
 <style scoped>
-.settings-page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
+.settings-page { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
 
-/* ── Page header ── */
 .page-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 16px 20px;
-  background: #ffffff;
-  border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  padding: 18px 22px;
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-card);
+  box-shadow: var(--pl-shadow-card);
   flex-shrink: 0;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
-.header-info {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+.header-info { display: flex; align-items: center; gap: 12px; }
+.header-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--pl-primary-soft); color: var(--pl-primary); display: flex; align-items: center; justify-content: center; }
+.header-info h2 { font-size: 17px; line-height: 1.3; font-weight: 700; color: var(--pl-text); margin: 0 0 3px; }
+.header-info p { font-size: 12px; color: var(--pl-text-secondary); margin: 0; }
 
-.header-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: #eff6ff;
-  color: #3b82f6;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.header-info h2 {
-  font-size: 16px;
-  font-weight: 700;
-  color: #1f2937;
-  margin-bottom: 2px;
-}
-
-.header-info p {
-  font-size: 12px;
-  color: #9ca3af;
-}
-
-/* ── Settings sections ── */
 .settings-sections {
   flex: 1;
   min-height: 0;
-  overflow-y: scroll;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding-right: 4px;
+  gap: 14px;
+  padding: 0 4px 18px 0;
 }
 
-.settings-sections::-webkit-scrollbar {
-  width: 8px;
-}
-.settings-sections::-webkit-scrollbar-track {
-  background: #f1f5f9;
-  border-radius: 4px;
-}
-.settings-sections::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 4px;
-}
-.settings-sections::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
+.settings-sections::-webkit-scrollbar { width: 7px; }
+.settings-sections::-webkit-scrollbar-track { background: transparent; }
+.settings-sections::-webkit-scrollbar-thumb { background: var(--pl-border-strong); border-radius: 8px; }
+.settings-sections::-webkit-scrollbar-thumb:hover { background: #b8c5d8; }
 
 .setting-card {
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-card);
+  box-shadow: var(--pl-shadow-card);
   overflow: hidden;
   flex-shrink: 0;
 }
 
-.setting-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 20px;
-  border-bottom: 1px solid #f3f4f6;
+.setting-header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--pl-border); background: var(--pl-surface-subtle); }
+.setting-icon { width: 34px; height: 34px; border-radius: 10px; background: var(--pl-primary-soft); color: var(--pl-primary); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.setting-header h3 { font-size: 14px; line-height: 1.35; font-weight: 650; color: var(--pl-text); margin: 0 0 3px; }
+.setting-header p { font-size: 12px; line-height: 1.45; color: var(--pl-text-secondary); margin: 0; }
+.setting-body { padding: 14px 20px 16px; }
+
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 13px 0; }
+.setting-row + .setting-row { border-top: 1px solid var(--pl-border); }
+.setting-label { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.label-text { font-size: 13px; font-weight: 550; color: var(--pl-text); }
+.label-hint { font-size: 12px; line-height: 1.45; color: var(--pl-text-muted); }
+
+.about-info { display: flex; flex-direction: column; gap: 12px; }
+.about-intro { display: flex; flex-direction: column; gap: 4px; margin-bottom: 2px; padding: 12px 14px; border: 1px solid #dbe7fb; border-radius: 10px; color: var(--pl-text-secondary); background: #f6f9ff; font-size: 12px; line-height: 1.55; }
+.about-intro strong { color: var(--pl-primary); font-size: 14px; }
+.about-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.about-label { font-size: 13px; color: var(--pl-text-secondary); }
+.about-value { font-size: 13px; color: var(--pl-text); font-weight: 550; text-align: right; }
+.about-value-wrap { max-width: 68%; line-height: 1.5; }
+.about-platforms { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.platform-chip { display: inline-block; padding: 4px 9px; border-radius: 999px; font-size: 12px; font-weight: 550; }
+.platform-chip.quark { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.platform-chip.baidu { background: var(--pl-success-soft); color: var(--pl-success); }
+.platform-chip.uc { background: #fff4df; color: #a56a16; }
+.platform-chip.xunlei { background: #f1eaff; color: #7652b8; }
+
+.save-bar { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: var(--pl-radius-card); box-shadow: var(--pl-shadow-card); flex-shrink: 0; margin-top: 12px; }
+
+.search-sources-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.form-hint { font-size: 12px; line-height: 1.45; color: var(--pl-text-muted); margin-top: 4px; }
+.batch-import-hint { margin-bottom: 12px; }
+.batch-import-hint p { font-size: 13px; color: var(--pl-text-secondary); margin: 0 0 4px; }
+.batch-import-options { margin-top: 12px; }
+
+:deep(.el-table) { --el-table-border-color: var(--pl-border); --el-table-header-bg-color: var(--pl-surface-subtle); --el-table-row-hover-bg-color: var(--pl-primary-soft); color: var(--pl-text-secondary); border-radius: var(--pl-radius-sm); overflow: hidden; }
+:deep(.el-table th.el-table__cell) { color: var(--pl-text-secondary); font-weight: 600; }
+:deep(.el-table .el-table__cell) { padding: 9px 0; }
+:deep(.el-table__inner-wrapper::before) { display: none; }
+:deep(.el-dialog__header) { margin-right: 0; padding: 20px 22px 14px; border-bottom: 1px solid var(--pl-border); }
+:deep(.el-dialog__body) { padding: 18px 22px; }
+:deep(.el-dialog__footer) { padding: 14px 22px 18px; border-top: 1px solid var(--pl-border); }
+:deep(.el-form-item__label) { color: var(--pl-text-secondary); font-size: 12px; }
+:deep(.el-input-number) { max-width: 180px; }
+.setting-row > :deep(.el-input) { width: min(320px, 48%) !important; }
+
+@media (max-width: 800px) {
+  .page-header { padding: 15px 16px; }
+  .setting-header { padding: 14px 16px; }
+  .setting-body { padding: 12px 16px 14px; }
+  .setting-row { align-items: flex-start; flex-direction: column; gap: 9px; }
+  .setting-row > :deep(.el-input), .setting-row > :deep(.el-input-number), .setting-row > :deep(.el-switch) { width: 100% !important; max-width: none; }
+  .setting-row > :deep(.el-switch) { width: auto !important; }
+  .about-row { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .about-value { text-align: left; }
+  .about-value-wrap { max-width: none; }
+  .about-platforms { justify-content: flex-start; }
 }
 
-.setting-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: #f3f4f6;
-  color: #6b7280;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.setting-header h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1f2937;
-  margin-bottom: 2px;
-}
-
-.setting-header p {
-  font-size: 12px;
-  color: #9ca3af;
-}
-
-.setting-body {
-  padding: 16px 20px;
-}
-
-.setting-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 0;
-}
-
-.setting-row + .setting-row {
-  border-top: 1px solid #f3f4f6;
-}
-
-.setting-label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.label-text {
-  font-size: 13px;
-  font-weight: 500;
-  color: #374151;
-}
-
-.label-hint {
-  font-size: 12px;
-  color: #9ca3af;
-}
-
-/* ── About section ── */
-.about-info {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.about-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.about-label {
-  font-size: 13px;
-  color: #6b7280;
-}
-
-.about-value {
-  font-size: 13px;
-  color: #1f2937;
-  font-weight: 500;
-}
-
-.about-platforms {
-  display: flex;
-  gap: 6px;
-}
-
-.platform-chip {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.platform-chip.quark {
-  background: #eff6ff;
-  color: #3b82f6;
-}
-
-.platform-chip.baidu {
-  background: #f0fdf4;
-  color: #22c55e;
-}
-
-/* ── Save bar ── */
-.save-bar {
-  display: flex;
-  justify-content: flex-end;
-  padding: 12px 16px;
-  background: #f9fafb;
-  border-radius: 8px;
-  border: 1px solid #f3f4f6;
-  flex-shrink: 0;
-  margin-top: 12px;
-}
-
-/* ── Search sources ── */
-.search-sources-toolbar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.form-hint {
-  font-size: 12px;
-  color: #9ca3af;
-  margin-top: 4px;
-}
-
-.batch-import-hint {
-  margin-bottom: 12px;
-}
-
-.batch-import-hint p {
-  font-size: 13px;
-  color: #374151;
-  margin-bottom: 4px;
-}
-
-.batch-import-options {
-  margin-top: 12px;
+@media (max-width: 520px) {
+  .header-icon { width: 36px; height: 36px; }
+  .header-info h2 { font-size: 16px; }
+  .search-sources-toolbar :deep(.el-button) { flex: 1 1 auto; }
 }
 </style>

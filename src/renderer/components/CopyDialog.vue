@@ -3,22 +3,23 @@
     :model-value="modelValue"
     width="600px"
     title="复制文件"
+    class="copy-dialog"
     :close-on-click-modal="false"
     @close="onClose"
   >
     <!-- 源文件信息 -->
     <div class="source-info">
-      <div class="source-label">复制：</div>
+      <div class="source-label"><strong>复制内容</strong><span>{{ files.length }} 个项目</span></div>
       <div class="source-files">
         <span v-for="file in files" :key="file.id" class="source-file">
-          📄 {{ file.name }}
+          <FileText :size="14" /> {{ file.name }}
         </span>
       </div>
     </div>
 
     <!-- 目标目录选择 -->
     <div class="target-section">
-      <div class="target-label">复制到：</div>
+      <div class="target-label"><strong>目标位置</strong><span>请选择一个文件夹</span></div>
       <div class="target-tree">
         <el-tree
           :data="treeData"
@@ -50,9 +51,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { electronApi } from '../api/ipc'
+import { FileText } from 'lucide-vue-next'
 import type { DriveAccount, FileItem } from '@shared/types'
+import { getPlatformCapabilities } from '@shared/capabilities'
 
 interface TreeNode {
   id: string
@@ -63,7 +66,7 @@ interface TreeNode {
 
 const props = defineProps<{
   modelValue: boolean
-  account: DriveAccount | null
+  account: Omit<DriveAccount, 'credential'> | null
   files: FileItem[]
   currentDirId: string
 }>()
@@ -118,6 +121,10 @@ function onNodeClick(data: TreeNode) {
 
 async function startCopy() {
   if (!props.account) return
+  if (!getPlatformCapabilities(props.account.platform).copy) {
+    ElMessage.warning('当前网盘暂不支持服务端复制')
+    return
+  }
   if (!selectedDirId.value) {
     ElMessage.warning('请选择目标目录')
     return
@@ -196,4 +203,29 @@ function onClose() {
   border-radius: 4px;
   padding: 8px;
 }
+.source-info {
+  align-items: flex-start;
+  padding: 13px;
+  background: var(--pl-primary-soft);
+  border: 1px solid #d5e3ff;
+  border-radius: 12px;
+}
+.source-label, .target-label { display: flex; min-width: 74px; flex-direction: column; gap: 2px; }
+.source-label strong, .target-label strong { color: var(--pl-text); font-size: 12px; font-weight: 650; }
+.source-label span, .target-label span { color: var(--pl-text-muted); font-size: 11px; }
+.source-files { gap: 6px; }
+.source-file { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; color: var(--pl-primary-hover); background: var(--pl-surface); border: 1px solid #d5e3ff; border-radius: 7px; font-size: 12px; }
+.target-section { margin-bottom: 8px; }
+.target-tree {
+  min-height: 180px;
+  max-height: 300px;
+  margin-top: 9px;
+  padding: 8px;
+  background: var(--pl-surface-subtle);
+  border: 1px solid var(--pl-border);
+  border-radius: 12px;
+}
+.target-tree :deep(.el-tree-node__content) { height: 34px; border-radius: 8px; }
+.target-tree :deep(.el-tree-node__content:hover) { background: var(--pl-primary-soft); }
+.target-tree :deep(.is-current > .el-tree-node__content) { color: var(--pl-primary-hover); background: var(--pl-primary-soft); font-weight: 600; }
 </style>

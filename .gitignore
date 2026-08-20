@@ -1,6 +1,8 @@
 node_modules/
 dist/
 release/
+release-next*/
+coverage/
 *.db
 *.log
 .env

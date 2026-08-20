@@ -99,7 +99,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { Search, Copy, ExternalLink, Download, Loader2 } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
 

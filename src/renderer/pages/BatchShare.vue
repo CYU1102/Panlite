@@ -26,13 +26,53 @@
 
  </div>
 
+ <div class="workflow-steps" aria-label="批量分享流程">
+
+ <div class="workflow-step" :class="{ complete: !!selectedAccountId, active: !!selectedAccountId && selectedFiles.length === 0 }">
+
+ <span class="step-index">1</span>
+
+ <span class="step-copy"><strong>选择账号</strong><small>{{ selectedAccountId ? '账号已就绪' : '选择分享来源' }}</small></span>
+
+ </div>
+
+ <span class="step-line" :class="{ complete: !!selectedAccountId }" />
+
+ <div class="workflow-step" :class="{ complete: selectedFiles.length > 0, active: !!selectedAccountId && selectedFiles.length === 0 }">
+
+ <span class="step-index">2</span>
+
+ <span class="step-copy"><strong>挑选内容</strong><small>{{ selectedFiles.length ? `已选 ${selectedFiles.length} 项` : '选择文件或文件夹' }}</small></span>
+
+ </div>
+
+ <span class="step-line" :class="{ complete: selectedFiles.length > 0 }" />
+
+ <div class="workflow-step" :class="{ active: selectedFiles.length > 0 }">
+
+ <span class="step-index">3</span>
+
+ <span class="step-copy"><strong>确认分享</strong><small>设置有效期并创建</small></span>
+
+ </div>
+
+ </div>
+
  <div class="share-body">
 
  <!-- Left: file picker -->
 
  <div class="panel file-panel">
 
- <div class="panel-title">选择文件</div>
+ <div class="panel-heading">
+
+ <div class="panel-step">01</div>
+
+ <div><div class="panel-title">选择来源与文件</div><p class="panel-hint">切换账号后，在目录中勾选需要分享的内容</p></div>
+
+ <span v-if="selectedFiles.length" class="selection-count">{{ selectedFiles.length }} 项已选</span>
+
+ </div>
 
  <!-- Account selector -->
 
@@ -99,9 +139,11 @@
 
  <div v-if="!selectedAccountId" class="file-empty">
 
- <FolderOpen :size="32" :stroke-width="1" />
+ <span class="empty-icon"><FolderOpen :size="28" :stroke-width="1.4" /></span>
 
- <p>分享设置</p>
+ <strong>先选择一个网盘账号</strong>
+
+ <p>选择后即可浏览并勾选需要分享的文件</p>
 
  </div>
 
@@ -236,7 +278,13 @@
 
       <div class="panel options-panel">
 
-        <div class="panel-title">分享设置</div>
+ <div class="panel-heading">
+
+ <div class="panel-step">02</div>
+
+ <div><div class="panel-title">分享设置</div><p class="panel-hint">配置链接形式、有效期与提取码</p></div>
+
+ </div>
 
 
 
@@ -274,7 +322,7 @@
 
           <div class="selected-title">
 
-             已选 <strong>{{ selectedFiles.length }}</strong> 个文件          <button v-if="selectedFiles.length > 0" class="clear-btn" @click="clearSelection">清空</button>
+             <span>待分享内容</span><span class="selected-count"><strong>{{ selectedFiles.length }}</strong> 项</span><button v-if="selectedFiles.length > 0" class="clear-btn" @click="clearSelection">清空</button>
 
           </div>
 
@@ -316,7 +364,11 @@
 
           <div v-else class="selected-empty">
 
-            <p>请从左侧选择文件</p>
+            <span class="empty-icon compact"><File :size="20" :stroke-width="1.4" /></span>
+
+            <strong>还没有选择内容</strong>
+
+            <p>点击左侧文件行即可添加到这里</p>
 
           </div>
 
@@ -345,6 +397,14 @@
             将为 <strong>{{ selectedFiles.length }}</strong> 个文件创建 <strong>{{ selectedFiles.length }} 个</strong>分享链接          </template>
 
           有效期 <strong>{{ expireDays }} 天</strong>
+
+        </template>
+
+        <template v-else>
+
+          <span class="submit-state-dot" />
+
+          {{ !selectedAccountId ? '请选择网盘账号以开始' : '请至少选择一个文件或文件夹' }}
 
         </template>
 
@@ -380,7 +440,7 @@
 
 import { ref, computed, watch, onMounted } from 'vue'
 
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 
 import {
 
@@ -1454,5 +1514,145 @@ onMounted(async () => {
 
 }
 
+/* Shared light workflow surfaces */
+.batch-share { gap: var(--pl-space-4); }
+.page-header, .panel, .submit-bar { border-color: var(--pl-border); border-radius: var(--pl-radius-card); box-shadow: var(--pl-shadow-card); }
+.page-header { padding: var(--pl-space-5) var(--pl-space-6); }
+.header-icon { background: var(--pl-primary-soft); color: var(--pl-primary); border-radius: var(--pl-radius-control); }
+.header-info h2, .panel-title, .file-item, .selected-name { color: var(--pl-text); }
+.header-info p, .selected-title, .submit-info { color: var(--pl-text-secondary); }
+.share-body { gap: var(--pl-space-4); }
+.panel { padding: var(--pl-space-5); gap: var(--pl-space-3); }
+.folder-nav { background: var(--pl-surface-subtle); border-color: var(--pl-border); border-radius: var(--pl-radius-control); }
+.crumb { color: var(--pl-text-secondary); }
+.crumb:hover { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.crumb.active { color: var(--pl-text); }
+.nav-btn { background: var(--pl-primary-soft); color: var(--pl-primary); border-radius: var(--pl-radius-sm); }
+.nav-btn:hover:not(:disabled) { background: #d8e7ff; color: var(--pl-primary-hover); }
+.file-list, .selected-list { border-color: var(--pl-border); border-radius: var(--pl-radius-control); }
+.file-item { border-bottom-color: var(--pl-surface-subtle); }
+.file-item:hover, .selected-item:hover { background: var(--pl-surface-subtle); }
+.file-item.selected { background: var(--pl-primary-soft); }
+.file-icon.dir, .selected-icon.dir { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.file-icon.file, .selected-icon.file { background: var(--pl-surface-subtle); color: var(--pl-text-secondary); }
+.file-enter:hover { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.options-panel { max-width: 380px; }
+.selected-list { background: var(--pl-surface-subtle); }
+.selected-empty { border-color: var(--pl-border-strong); }
+.clear-btn, .selected-remove:hover { color: var(--pl-danger); }
+.clear-btn:hover, .selected-remove:hover { background: var(--pl-danger-soft); }
+.submit-bar { padding: var(--pl-space-3) var(--pl-space-5); }
+@media (max-width: 900px) { .share-body { flex-direction: column; overflow-y: auto; } .options-panel { max-width: none; min-height: 280px; } .file-panel { min-height: 380px; } }
+@media (max-width: 560px) {
+  .page-header, .panel { padding: var(--pl-space-4); }
+  .account-bar { flex-wrap: wrap; }
+  .account-bar .el-select:last-child { min-width: 180px; }
+  .submit-bar { align-items: stretch; flex-direction: column; gap: var(--pl-space-3); }
+  .submit-bar .el-button { width: 100%; }
+}
+
+/* Workflow hierarchy and interaction */
+.workflow-steps {
+  display: grid;
+  grid-template-columns: max-content minmax(32px, 1fr) max-content minmax(32px, 1fr) max-content;
+  align-items: center;
+  gap: var(--pl-space-3);
+  padding: var(--pl-space-3) var(--pl-space-5);
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-card);
+  box-shadow: var(--pl-shadow-card);
+}
+
+.workflow-step {
+  display: flex;
+  align-items: center;
+  gap: var(--pl-space-2);
+  min-width: 0;
+  color: var(--pl-text-muted);
+  transition: color 180ms ease, transform 180ms ease;
+}
+
+.workflow-step.active { color: var(--pl-primary); transform: translateY(-1px); }
+.workflow-step.complete { color: var(--pl-success); }
+
+.step-index {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--pl-border-strong);
+  border-radius: 50%;
+  background: var(--pl-surface-subtle);
+  font-size: 12px;
+  font-weight: 700;
+  transition: all 180ms ease;
+}
+
+.workflow-step.active .step-index { color: var(--pl-primary); background: var(--pl-primary-soft); border-color: var(--pl-primary); box-shadow: 0 0 0 4px var(--pl-primary-soft); }
+.workflow-step.complete .step-index { color: var(--pl-success); background: var(--pl-success-soft); border-color: var(--pl-success); }
+
+.step-copy { display: flex; flex-direction: column; line-height: 1.25; }
+.step-copy strong { color: var(--pl-text); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.step-copy small { margin-top: 2px; font-size: 10px; color: currentColor; white-space: nowrap; }
+
+.step-line { height: 1px; min-width: 24px; background: var(--pl-border); transition: background 180ms ease; }
+.step-line.complete { background: var(--pl-success); }
+
+.panel { overflow: hidden; transition: border-color 180ms ease, box-shadow 180ms ease; }
+.panel:hover { border-color: var(--pl-border-strong); box-shadow: var(--pl-shadow-float); }
+
+.panel-heading { display: flex; align-items: center; gap: var(--pl-space-3); min-height: 36px; }
+.panel-heading > div:nth-child(2) { min-width: 0; }
+.panel-step { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--pl-radius-sm); color: var(--pl-primary); background: var(--pl-primary-soft); font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+.panel-title { font-size: 14px; font-weight: 700; }
+.panel-hint { margin-top: 2px; color: var(--pl-text-muted); font-size: 11px; line-height: 1.35; }
+.selection-count { margin-left: auto; padding: 4px 9px; border-radius: 999px; background: var(--pl-success-soft); color: var(--pl-success); font-size: 11px; font-weight: 650; white-space: nowrap; }
+
+.account-bar { padding: var(--pl-space-2); border-radius: var(--pl-radius-control); background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); }
+.file-list { background: var(--pl-surface); }
+.file-item { position: relative; min-height: 46px; transition: background 150ms ease, padding 150ms ease, box-shadow 150ms ease; }
+.file-item:hover { padding-left: 15px; background: var(--pl-primary-soft); }
+.file-item.selected { background: var(--pl-primary-soft); box-shadow: inset 3px 0 0 var(--pl-primary); }
+.file-item.selected .file-name { color: var(--pl-primary-hover); font-weight: 600; }
+.file-enter, .selected-remove { opacity: .55; transition: opacity 150ms ease, background 150ms ease, color 150ms ease, transform 150ms ease; }
+.file-item:hover .file-enter, .selected-item:hover .selected-remove { opacity: 1; }
+.file-enter:hover, .selected-remove:hover { transform: scale(1.08); }
+
+.file-empty, .selected-empty { flex-direction: column; gap: var(--pl-space-2); text-align: center; color: var(--pl-text-muted); }
+.file-empty strong, .selected-empty strong { color: var(--pl-text-secondary); font-size: 13px; }
+.empty-icon { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 16px; color: var(--pl-primary); background: var(--pl-primary-soft); }
+.empty-icon.compact { width: 40px; height: 40px; border-radius: var(--pl-radius-control); }
+
+.options-panel :deep(.el-form) { padding: var(--pl-space-3); border: 1px solid var(--pl-border); border-radius: var(--pl-radius-control); background: var(--pl-surface-subtle); }
+.options-panel :deep(.el-form-item:last-child) { margin-bottom: 0; }
+.selected-title { min-height: 28px; }
+.selected-count { padding: 2px 8px; border-radius: 999px; background: var(--pl-primary-soft); color: var(--pl-primary); font-size: 11px; }
+.selected-item { min-height: 36px; transition: background 150ms ease, transform 150ms ease; }
+.selected-item:hover { background: var(--pl-surface); transform: translateX(2px); }
+
+.submit-bar { min-height: 64px; border-color: var(--pl-border-strong); box-shadow: var(--pl-shadow-float); }
+.submit-info { display: flex; align-items: center; gap: var(--pl-space-2); min-width: 0; }
+.submit-info strong { color: var(--pl-primary); }
+.submit-state-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--pl-warning); box-shadow: 0 0 0 4px var(--pl-warning-soft); }
+.submit-bar :deep(.el-button) { min-width: 132px; box-shadow: 0 6px 16px rgba(52, 120, 246, .18); transition: transform 150ms ease, box-shadow 150ms ease; }
+.submit-bar :deep(.el-button:not(.is-disabled):hover) { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(52, 120, 246, .24); }
+.submit-bar :deep(.el-button.is-disabled) { box-shadow: none; }
+
+@media (max-width: 760px) {
+  .workflow-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--pl-space-2); }
+  .step-line { display: none; }
+  .step-copy small { display: none; }
+  .workflow-step { justify-content: center; }
+}
+
+@media (max-width: 560px) {
+  .workflow-steps { padding: var(--pl-space-3); }
+  .step-copy strong { font-size: 11px; }
+  .panel-heading { align-items: flex-start; }
+  .panel-hint { display: none; }
+  .selection-count { align-self: center; }
+}
 </style>
 

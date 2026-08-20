@@ -38,6 +38,11 @@ const router = createRouter({
       component: () => import('../pages/BatchTransfer.vue'),
     },
     {
+      path: '/cloud-transfer',
+      name: 'CloudTransfer',
+      component: () => import('../pages/CloudTransfer.vue'),
+    },
+    {
       path: '/batch-share',
       name: 'BatchShare',
       component: () => import('../pages/BatchShare.vue'),
@@ -46,6 +51,26 @@ const router = createRouter({
       path: '/resource-search',
       name: 'ResourceSearch',
       component: () => import('../pages/ResourceSearch.vue'),
+    },
+    {
+      path: '/global-search',
+      name: 'GlobalSearch',
+      component: () => import('../pages/GlobalSearch.vue'),
+    },
+    {
+      path: '/ai-workspace',
+      name: 'AiWorkspace',
+      component: () => import('../pages/AiWorkspace.vue'),
+    },
+    {
+      path: '/backup-restore',
+      name: 'BackupRestore',
+      component: () => import('../pages/BackupRestore.vue'),
+    },
+    {
+      path: '/security',
+      name: 'Security',
+      component: () => import('../pages/Security.vue'),
     },
     {
       path: '/dashboard',

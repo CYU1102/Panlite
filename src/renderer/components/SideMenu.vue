@@ -31,6 +31,8 @@ import {
   ArrowDownToLine,
   Search,
   BarChart3,
+  ArrowRightLeft,
+  Sparkles,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -49,11 +51,19 @@ const menuGroups = [
     label: '工具',
     items: [
       { path: '/resource-search', label: '资源搜索', icon: markRaw(Search) },
+      { path: '/global-search', label: '全局搜索', icon: markRaw(Search) },
       { path: '/batch-share', label: '批量分享', icon: markRaw(Share2) },
       { path: '/batch-transfer', label: '批量转存', icon: markRaw(ArrowDownToLine) },
+      { path: '/cloud-transfer', label: '云端迁移', icon: markRaw(ArrowRightLeft) },
       { path: '/share-links', label: '分享链接', icon: markRaw(Share2) },
       { path: '/transfer-records', label: '转存记录', icon: markRaw(ArrowDownToLine) },
       { path: '/tasks', label: '任务日志', icon: markRaw(ClipboardList) },
+    ],
+  },
+  {
+    label: 'AI',
+    items: [
+      { path: '/ai-workspace', label: 'AI 工作台', icon: markRaw(Sparkles) },
     ],
   },
   {
@@ -61,6 +71,8 @@ const menuGroups = [
     items: [
       { path: '/dashboard', label: '存储空间', icon: markRaw(BarChart3) },
       { path: '/accounts', label: '账号管理', icon: markRaw(Users) },
+      { path: '/backup-restore', label: '备份恢复', icon: markRaw(Download) },
+      { path: '/security', label: '安全中心', icon: markRaw(Settings) },
       { path: '/settings', label: '设置', icon: markRaw(Settings) },
     ],
   },
@@ -75,18 +87,18 @@ function onSelect(path: string) {
 .side-nav {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 0;
+  padding: 14px 0 18px;
 }
 
 .nav-group {
-  margin-bottom: 4px;
+  margin-bottom: 10px;
 }
 
 .nav-group-label {
-  padding: 12px 20px 6px;
-  font-size: 11px;
+  padding: 10px 22px 7px;
+  font-size: 10px;
   font-weight: 600;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -95,36 +107,37 @@ function onSelect(path: string) {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 12px;
-  margin: 2px 8px;
-  height: 38px;
-  border-radius: 8px;
+  padding: 0 13px;
+  margin: 3px 10px;
+  height: 40px;
+  border-radius: 10px;
   cursor: pointer;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   transition: all 0.15s ease;
   position: relative;
 }
 
 .nav-item:hover {
-  background: #f3f4f6;
-  color: #374151;
+  background: #f1f5fb;
+  color: var(--pl-text);
 }
 
 .nav-item.active {
-  background: #eff6ff;
-  color: #3b82f6;
-  font-weight: 500;
+  background: linear-gradient(90deg, var(--pl-primary-soft) 0%, #f2f6ff 100%);
+  color: var(--pl-primary-hover);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(52, 120, 246, 0.08);
 }
 
 .nav-item.active::before {
   content: '';
   position: absolute;
-  left: -8px;
-  top: 8px;
-  bottom: 8px;
+  left: -10px;
+  top: 9px;
+  bottom: 9px;
   width: 3px;
-  background: #3b82f6;
-  border-radius: 0 3px 3px 0;
+  background: var(--pl-primary);
+  border-radius: 0 4px 4px 0;
 }
 
 .nav-item-icon {
@@ -138,5 +151,14 @@ function onSelect(path: string) {
 .nav-item-text {
   font-size: 13px;
   white-space: nowrap;
+}
+
+@media (max-width: 820px) {
+  .side-nav { padding-top: 8px; }
+  .nav-group { margin-bottom: 5px; }
+  .nav-group-label { height: 8px; padding: 0; overflow: hidden; color: transparent; }
+  .nav-item { justify-content: center; width: 48px; margin: 3px auto; padding: 0; }
+  .nav-item-text { display: none; }
+  .nav-item.active::before { left: -14px; }
 }
 </style>

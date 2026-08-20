@@ -60,7 +60,7 @@ onUnmounted(() => clearInterval(timer))
 .status-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .status-chip {
@@ -68,10 +68,10 @@ onUnmounted(() => clearInterval(timer))
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  color: #9ca3af;
-  padding: 2px 8px;
-  background: #f9fafb;
-  border-radius: 4px;
+  color: #8a96a8;
+  padding: 3px 8px;
+  background: #f3f6fa;
+  border-radius: 6px;
 }
 
 .status-chip.active {

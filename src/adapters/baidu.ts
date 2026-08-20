@@ -1,8 +1,12 @@
 import { net, session, BrowserWindow } from 'electron'
 import type { DriveAdapter } from './base'
 import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult, UploadOptions, UploadResult, DownloadOptions, DownloadResult } from '../shared/types'
-import { generateId, sleep } from '../shared/utils'
+import { sleep } from '../shared/utils'
 import log from 'electron-log'
+import { resolvePathInside, sanitizeFileName } from '../main/file-transfer'
+import { getRequestSettings } from '../main/request-settings'
+import { getSetCookieHeaders, mergeSetCookieHeaders } from '../main/baidu-cookie'
+import { normalizeMembership } from '../shared/membership'
 
 const BAIDU_API = 'https://pan.baidu.com/rest/2.0/xpan'
 const BAIDU_BASE = 'https://pan.baidu.com'
@@ -12,14 +16,23 @@ const BAIDU_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 
 let _clientId = process.env.BAIDU_CLIENT_ID || ''
 let _clientSecret = process.env.BAIDU_CLIENT_SECRET || ''
-let _redirectUri = process.env.BAIDU_REDIRECT_URI || 'https://openapi.baidu.com/qrcode/1'
+let _redirectUri = process.env.BAIDU_REDIRECT_URI || 'oob'
 
 export function setBaiduCredentials(clientId: string, clientSecret: string, redirectUri?: string) {
-  _clientId = clientId; _clientSecret = clientSecret; if (redirectUri) _redirectUri = redirectUri
+  _clientId = clientId.trim()
+  _clientSecret = clientSecret.trim()
+  const normalizedRedirect = redirectUri?.trim()
+  // 早期版本错误地把二维码页面本身当成 redirect_uri。百度网盘的
+  // 桌面/电视授权流程使用 oob，并在授权完成后直接展示授权码。
+  _redirectUri = !normalizedRedirect || normalizedRedirect === 'https://openapi.baidu.com/qrcode/1'
+    ? 'oob'
+    : normalizedRedirect
 }
 
 function ensureBaiduCredentials(): void {
-  if (!_clientId || !_clientSecret) throw new Error('Baidu OAuth credentials not configured.')
+  if (!_clientId || !_clientSecret) {
+    throw new Error('尚未配置百度 OAuth Client ID 和 Client Secret，请先前往“设置 → 百度网盘 API 配置”填写并保存。')
+  }
 }
 
 // ── 百度错误码映射 ──
@@ -56,6 +69,8 @@ interface BaiduFileListData { list: BaiduFileItem[]; has_more: number; errno?: n
 interface BaiduSearchData { list: BaiduFileItem[]; has_more?: number; errno?: number }
 interface BaiduCreateData { fs_id: number; path: string; isdir: number; create_time: number }
 interface BaiduFileOperateData { errno: number; errmsg?: string; info: { path: string; newname?: string }[] }
+interface BaiduFileMeta { dlink?: string; filename?: string; size?: number; fs_id?: number; errno?: number; errmsg?: string }
+interface BaiduFileMetaResponse { list?: BaiduFileMeta[]; errno?: number; errmsg?: string; error_code?: number; error_msg?: string }
 
 // ── 链接标准化 ──
 
@@ -122,19 +137,6 @@ function parseSharePageHtml(html: string): ParsedSharePage | null {
 }
 
 // ── Cookie 管理 ──
-
-function updateCookieBdclnd(bdclnd: string, cookie: string): string {
-  const cookiesDict: Record<string, string> = {}
-  for (const part of cookie.split(';')) {
-    const trimmed = part.trim()
-    if (!trimmed) continue
-    const eqIdx = trimmed.indexOf('=')
-    if (eqIdx < 1) continue
-    cookiesDict[trimmed.substring(0, eqIdx)] = trimmed.substring(eqIdx + 1)
-  }
-  cookiesDict['BDCLND'] = bdclnd
-  return Object.entries(cookiesDict).map(([k, v]) => `${k}=${v}`).join(';')
-}
 
 function generateRandomPwd(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -431,7 +433,7 @@ async function baiduTransferViaBrowser(
  */
 async function baiduRequest<T>(
   url: string, accessToken: string,
-  options: { method?: string; body?: Record<string, unknown> | string; params?: Record<string, string>; cookies?: string; formBody?: boolean; extraHeaders?: Record<string, string> } = {},
+  options: { method?: string; body?: Record<string, unknown> | string; params?: Record<string, string>; cookies?: string; userAgent?: string; onCookiesUpdated?: (cookies: string) => void; formBody?: boolean; extraHeaders?: Record<string, string> } = {},
 ): Promise<T> {
   const method = options.method || 'GET'
   const cleanedParams: Record<string, string> = {}
@@ -450,7 +452,7 @@ async function baiduRequest<T>(
     const request = net.request({ method, url: fullUrl })
 
     // 完全参照 BaiduPanFilesTransfers headers：只设 User-Agent、Cookie
-    request.setHeader('User-Agent', BAIDU_UA)
+    request.setHeader('User-Agent', options.userAgent || BAIDU_UA)
     if (options.cookies) request.setHeader('Cookie', options.cookies)
 
     // 应用额外的 headers
@@ -488,9 +490,20 @@ async function baiduRequest<T>(
 
     let responseData = ''
     request.on('response', (response) => {
+      const rotatedCookies = mergeSetCookieHeaders(options.cookies || '', getSetCookieHeaders(response.headers as Record<string, string[] | string | undefined>))
       response.on('data', (chunk) => { responseData += chunk.toString() })
       response.on('end', () => {
-        try { resolve(JSON.parse(responseData) as T) }
+        if (rotatedCookies && rotatedCookies !== options.cookies) options.onCookiesUpdated?.(rotatedCookies)
+        try {
+          const parsed = JSON.parse(responseData) as T & { errno?: number; errmsg?: string; error_code?: number; error_msg?: string }
+          const errno = parsed.errno ?? parsed.error_code
+          if ((response.statusCode || 0) >= 400 || (errno !== undefined && errno !== 0)) {
+            let endpoint = url
+            try { endpoint = new URL(url).pathname } catch { /* keep original */ }
+            log.warn(`Baidu API response: ${method} ${endpoint} status=${response.statusCode || 0} errno=${errno ?? 'n/a'} errmsg=${parsed.errmsg || parsed.error_msg || 'n/a'} body=${responseData.substring(0, 200)}`)
+          }
+          resolve(parsed as T)
+        }
         catch { reject(new Error(`Failed to parse Baidu API response: ${responseData.substring(0, 200)}`)) }
       })
       response.on('error', (err) => reject(err))
@@ -498,6 +511,13 @@ async function baiduRequest<T>(
     request.on('error', (err) => reject(err))
     request.end()
   })
+}
+
+function getFetchSetCookieHeaders(headers: Headers): string[] {
+  const cookieHeaders = headers as Headers & { getSetCookie?: () => string[] }
+  if (typeof cookieHeaders.getSetCookie === 'function') return cookieHeaders.getSetCookie()
+  const single = headers.get('set-cookie')
+  return single ? [single] : []
 }
 
 /**
@@ -545,6 +565,7 @@ function mapBaiduFile(f: BaiduFileItem, accountId: string): FileItem {
 
 export class BaiduAdapter implements DriveAdapter {
   private _onCredentialRefreshed?: (accountId: string, credential: DriveAccount['credential']) => void
+  private _onSessionInvalidated?: (accountId: string) => void
   private _bdstoken: string = ''
   private _bdstokenExpiresAt: number = 0
   private _keepaliveTimers: Map<string, ReturnType<typeof setInterval>> = new Map()
@@ -553,27 +574,70 @@ export class BaiduAdapter implements DriveAdapter {
     this._onCredentialRefreshed = handler
   }
 
+  setSessionInvalidatedHandler(handler: (accountId: string) => void): void {
+    this._onSessionInvalidated = handler
+  }
+
+  private persistRotatedCookies(account: DriveAccount, cookies: string): void {
+    if (!this.isCookieLogin(account) || !cookies || cookies === account.credential.cookies) return
+    account.credential.cookies = cookies
+    this._onCredentialRefreshed?.(account.id, account.credential)
+    log.info(`Baidu: refreshed cookies for account ${account.id}`)
+  }
+
+  private accountUserAgent(account: DriveAccount): string {
+    return account.userAgent || account.credential.userAgent || BAIDU_UA
+  }
+
+  private cookieRequestOptions(account: DriveAccount): { cookies?: string; userAgent?: string; onCookiesUpdated?: (cookies: string) => void } {
+    if (!this.isCookieLogin(account)) return {}
+    return {
+      cookies: account.credential.cookies || '',
+      userAgent: this.accountUserAgent(account),
+      onCookiesUpdated: (cookies) => this.persistRotatedCookies(account, cookies),
+    }
+  }
+
   /**
    * 启动 Cookie 保活定时器
-   * 每 5 分钟发一次轻量请求，防止百度服务端 session 过期
+   * 启动时立即发起一次，之后每 4 分钟发一次轻量请求，防止百度服务端 session 过期
    */
   startKeepalive(account: DriveAccount): void {
     if (!this.isCookieLogin(account)) return
-    const cookies = account.credential.cookies
-    if (!cookies) return
+    if (!account.credential.cookies) return
 
     this.stopKeepalive(account.id)
     log.info(`Baidu: starting keepalive for account ${account.id}`)
 
-    const timer = setInterval(async () => {
+    const keepalive = async () => {
       try {
         const params = { method: 'uinfo' }
-        await baiduRequest<BaiduUserInfo>(`${BAIDU_API}/nas`, '', { params, cookies })
+        const beforeCookies = account.credential.cookies || ''
+        let result = await baiduRequest<BaiduUserInfo & { errno?: number; errmsg?: string }>(
+          `${BAIDU_API}/nas`, '', { params, ...this.cookieRequestOptions(account) },
+        )
+        const isAuthenticated = (data: BaiduUserInfo & { errno?: number }) =>
+          data.errno === 0 || Boolean(data.baidu_name || data.netdisk_name)
+        if (!isAuthenticated(result) && account.credential.cookies !== beforeCookies) {
+          result = await baiduRequest<BaiduUserInfo & { errno?: number; errmsg?: string }>(
+            `${BAIDU_API}/nas`, '', { params, ...this.cookieRequestOptions(account) },
+          )
+        }
+        if (!isAuthenticated(result)) {
+          throw new Error(`百度 Cookie 保活验证失败 (errno=${result.errno ?? 'unknown'}): ${result.errmsg || '未登录'}`)
+        }
         log.info(`Baidu keepalive: session alive for ${account.nickname || account.id}`)
       } catch (err) {
         log.warn(`Baidu keepalive failed for ${account.nickname || account.id}:`, String(err))
+        if (String(err).includes('Cookie') || String(err).includes('未登录') || String(err).includes('errno=-6')) {
+          this._onSessionInvalidated?.(account.id)
+        }
       }
-    }, 5 * 60 * 1000) // 每 5 分钟
+    }
+
+    // Refresh once immediately after startup, then keep the server-side session warm.
+    void keepalive()
+    const timer = setInterval(keepalive, 4 * 60 * 1000) // 每 4 分钟
 
     this._keepaliveTimers.set(account.id, timer)
   }
@@ -616,7 +680,91 @@ export class BaiduAdapter implements DriveAdapter {
     return cookies
   }
 
-  private async fetchBdstoken(cookies: string): Promise<string> {
+  /**
+   * 百度文件列表使用完整路径作为 FileItem.id，但 filemetas/download 接口要求 fs_id。
+   * 兼容旧任务和渲染端传入的路径，同时保留直接传数字 fs_id 的快速路径。
+   */
+  private async resolveFileFsId(account: DriveAccount, fileId: string): Promise<string> {
+    const normalized = String(fileId || '').trim()
+    if (/^\d+$/.test(normalized)) return normalized
+    if (!normalized.startsWith('/')) return normalized
+
+    const parentPath = getParentPath(normalized)
+    const parentId = parentPath === '/' ? '0' : parentPath
+    const result = await this.listFiles(account, parentId)
+    const item = result.files.find((file) => file.id === normalized || file.path === normalized)
+    const fsId = item?.raw?.fs_id
+    if (fsId !== undefined && fsId !== null && String(fsId).trim()) return String(fsId)
+    throw new Error(`百度文件不存在或无法解析 fs_id: ${normalized}`)
+  }
+
+  /**
+   * filemetas 在百度当前接口中位于 multimedia 资源下。
+   * 旧版 /xpan/file 仍保留为兼容回退，因为部分账号的 API 网关版本不同。
+   */
+  private async fetchFileMeta(account: DriveAccount, fsId: string, token: string): Promise<BaiduFileMeta> {
+    const params: Record<string, string> = {
+      method: 'filemetas',
+      fsids: JSON.stringify([Number(fsId)]),
+      dlink: '1',
+    }
+    if (token) params.access_token = token
+
+    const endpoints = [`${BAIDU_API}/multimedia`, `${BAIDU_API}/file`]
+    const failures: string[] = []
+    for (const endpoint of endpoints) {
+      try {
+        const res = await baiduRequest<BaiduFileMetaResponse>(endpoint, token, {
+          params,
+          ...this.cookieRequestOptions(account),
+        })
+        const item = res.list?.[0]
+        if (item?.dlink) {
+          log.info(`Baidu filemetas succeeded via ${endpoint.replace(BAIDU_BASE, '')}, fs_id=${fsId}`)
+          return item
+        }
+        failures.push(`${endpoint.replace(BAIDU_BASE, '')}: errno=${res.errno ?? res.error_code ?? 'n/a'} ${res.errmsg || res.error_msg || ''}`.trim())
+      } catch (err) {
+        failures.push(`${endpoint.replace(BAIDU_BASE, '')}: ${String(err)}`)
+      }
+    }
+
+    const detail = failures.join('；')
+    // 百度已逐步收紧 Cookie 下载权限。9019/need verify 表示当前会话
+    // 没有官方开放平台的 netdisk 授权，继续重试网页接口也不会得到 dlink。
+    if (/9019|need verify/i.test(detail)) {
+      throw new Error('百度官方下载需要 OAuth 授权（9019 need verify）。当前 Cookie 登录只能用于网页操作，请在账号管理中新增并完成“百度 OAuth 授权”账号后再进行云端迁移。')
+    }
+    throw new Error(`百度 filemetas 未返回下载链接（fs_id=${fsId}）。${detail}`)
+  }
+
+  private appendAccessToken(url: string, token: string): string {
+    if (!token || /(?:^|[?&])access_token=/.test(url)) return url
+    return `${url}${url.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}`
+  }
+
+  private async fetchBaiduDownload(url: string, account: DriveAccount, token: string, signal?: AbortSignal): Promise<Response> {
+    const downloadUrl = this.appendAccessToken(url, token)
+    const response = await fetch(downloadUrl, {
+      signal,
+      redirect: 'follow',
+      headers: {
+        // 百度 dlink 对 Referer 和桌面端 UA 较敏感；开源 bdcli/baidupcsapi 也会显式设置这些头。
+        'User-Agent': this.accountUserAgent(account),
+        Referer: 'https://pan.baidu.com/disk/home',
+        ...(this.isCookieLogin(account) ? { Cookie: account.credential.cookies || '' } : {}),
+      },
+    })
+    let finalUrl = response.url
+    try { finalUrl = new URL(response.url).origin + new URL(response.url).pathname } catch { /* ignore */ }
+    log.info(`Baidu download response: status=${response.status} url=${finalUrl}`)
+    if (!response.ok) {
+      throw new Error(`百度下载请求失败 (${response.status} ${response.statusText})`)
+    }
+    return response
+  }
+
+  private async fetchBdstoken(account: DriveAccount): Promise<string> {
     if (this._bdstoken && this._bdstokenExpiresAt > Date.now()) return this._bdstoken
 
     const params = {
@@ -630,9 +778,15 @@ export class BaiduAdapter implements DriveAdapter {
     const url = `${BAIDU_BASE}/api/gettemplatevariable?${qs}`
 
     try {
-      const res = await baiduRequest<{ errno: number; result?: { bdstoken?: string } }>(
-        url, '', { cookies },
+      const beforeCookies = account.credential.cookies || ''
+      let res = await baiduRequest<{ errno: number; result?: { bdstoken?: string } }>(
+        url, '', this.cookieRequestOptions(account),
       )
+      if (res.errno === -6 && account.credential.cookies !== beforeCookies) {
+        res = await baiduRequest<{ errno: number; result?: { bdstoken?: string } }>(
+          url, '', this.cookieRequestOptions(account),
+        )
+      }
       if (res.errno === 0 && res.result?.bdstoken) {
         this._bdstoken = res.result.bdstoken
         // bdstoken 缓存 5 分钟（百度服务端可能随时失效）
@@ -657,7 +811,8 @@ export class BaiduAdapter implements DriveAdapter {
     token: string, method: 'list' | 'search', baseParams: Record<string, string>,
     opts: { pageSize?: number; maxPages?: number; cookies?: string } = {},
   ): Promise<BaiduFileItem[]> {
-    const pageSize = opts.pageSize || 100; const maxPages = opts.maxPages || 100
+    const { baiduPageSize, requestDelayMs } = getRequestSettings()
+    const pageSize = opts.pageSize ?? baiduPageSize; const maxPages = opts.maxPages || 100
     const allItems: BaiduFileItem[] = []
     for (let page = 0; page < maxPages; page++) {
       const params: Record<string, string> = { ...baseParams }
@@ -674,6 +829,7 @@ export class BaiduAdapter implements DriveAdapter {
       }
       const list = resAny.list || []; allItems.push(...list)
       if (!resAny.has_more || list.length < pageSize) break
+      if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
     return allItems
   }
@@ -681,10 +837,9 @@ export class BaiduAdapter implements DriveAdapter {
   async checkLogin(account: DriveAccount): Promise<boolean> {
     try {
       const token = await this.ensureToken(account)
-      const cookies = this.isCookieLogin(account) ? account.credential.cookies || '' : undefined
       const params: Record<string, string> = { method: 'uinfo' }
       if (token) params.access_token = token
-      const res = await baiduRequest<BaiduUserInfo>(`${BAIDU_API}/nas`, token || '', { params, cookies })
+      const res = await baiduRequest<BaiduUserInfo>(`${BAIDU_API}/nas`, token || '', { params, ...this.cookieRequestOptions(account) })
       const data = res as any
       return data.errno === 0 || !!data.baidu_name || !!data.netdisk_name
     } catch (err) { log.warn('Baidu checkLogin failed:', String(err)); return false }
@@ -692,10 +847,9 @@ export class BaiduAdapter implements DriveAdapter {
 
   async getUserInfo(account: DriveAccount): Promise<{ nickname: string; avatar?: string }> {
     const token = await this.ensureToken(account)
-    const cookies = this.isCookieLogin(account) ? account.credential.cookies || '' : undefined
     const params: Record<string, string> = { method: 'uinfo' }
     if (token) params.access_token = token
-    const res = await baiduRequest<BaiduUserInfo>(`${BAIDU_API}/nas`, token || '', { params, cookies })
+    const res = await baiduRequest<BaiduUserInfo>(`${BAIDU_API}/nas`, token || '', { params, ...this.cookieRequestOptions(account) })
     const data = res as any
     if (data.errno !== 0 && !data.baidu_name && !data.netdisk_name)
       throw new Error(`Baidu getUserInfo failed: ${data.errmsg || 'unknown error'}`)
@@ -707,17 +861,24 @@ export class BaiduAdapter implements DriveAdapter {
     const dir = parentId === '0' ? '/' : parentId
 
     if (cookies) {
-      const bdstoken = await this.fetchBdstoken(cookies)
-      const params = {
-        order: 'time', desc: '1', showempty: '0', web: '1',
-        page: '1', num: '1000', dir, bdstoken,
+      const bdstoken = await this.fetchBdstoken(account)
+      const { baiduPageSize: pageSize, requestDelayMs } = getRequestSettings()
+      const allItems: BaiduFileItem[] = []
+      for (let page = 1; page <= 100; page++) {
+        const params = {
+          order: 'time', desc: '1', showempty: '0', web: '1',
+          page: String(page), num: String(pageSize), dir, bdstoken,
+        }
+        const res = await baiduRequest<{ errno: number; list?: BaiduFileItem[]; errmsg?: string; has_more?: number | boolean }>(
+          `${BAIDU_BASE}/api/list`, '', { params, ...this.cookieRequestOptions(account) },
+        )
+        if (res.errno !== 0) throw new Error(`Baidu list failed: errno=${res.errno}`)
+        const items = res.list || []
+        allItems.push(...items)
+        if (res.has_more === 0 || res.has_more === false || items.length < pageSize) break
+        if (requestDelayMs > 0) await sleep(requestDelayMs)
       }
-      const res = await baiduRequest<{ errno: number; list?: BaiduFileItem[]; errmsg?: string }>(
-        `${BAIDU_BASE}/api/list`, '', { params, cookies },
-      )
-      if (res.errno !== 0) throw new Error(`Baidu list failed: errno=${res.errno}`)
-      const list = res.list || []
-      return { files: list.map((f) => mapBaiduFile(f, account.id)), parentId, hasMore: false }
+      return { files: allItems.map((f) => mapBaiduFile(f, account.id)), parentId, hasMore: false }
     }
 
     const token = await this.ensureToken(account)
@@ -730,13 +891,24 @@ export class BaiduAdapter implements DriveAdapter {
   async searchFiles(account: DriveAccount, keyword: string): Promise<FileItem[]> {
     const cookies = this.isCookieLogin(account) ? account.credential.cookies : undefined
     if (cookies) {
-      const bdstoken = await this.fetchBdstoken(cookies)
-      const params = { key: keyword, dir: '/', web: '1', recursion: '1', page: '1', num: '100', bdstoken }
-      const res = await baiduRequest<{ errno: number; list?: BaiduFileItem[] }>(
-        `${BAIDU_BASE}/api/search`, '', { params, cookies },
-      )
-      if (res.errno !== 0) throw new Error(`Baidu search failed: errno=${res.errno}`)
-      return (res.list || []).map((f) => mapBaiduFile(f, account.id))
+      const bdstoken = await this.fetchBdstoken(account)
+      const { baiduPageSize: pageSize, requestDelayMs } = getRequestSettings()
+      const allItems: BaiduFileItem[] = []
+      for (let page = 1; page <= 100; page++) {
+        const params = {
+          key: keyword, dir: '/', web: '1', recursion: '1',
+          page: String(page), num: String(pageSize), bdstoken,
+        }
+        const res = await baiduRequest<{ errno: number; list?: BaiduFileItem[]; has_more?: number | boolean }>(
+          `${BAIDU_BASE}/api/search`, '', { params, ...this.cookieRequestOptions(account) },
+        )
+        if (res.errno !== 0) throw new Error(`Baidu search failed: errno=${res.errno}`)
+        const items = res.list || []
+        allItems.push(...items)
+        if (res.has_more === 0 || res.has_more === false || items.length < pageSize) break
+        if (requestDelayMs > 0) await sleep(requestDelayMs)
+      }
+      return allItems.map((f) => mapBaiduFile(f, account.id))
     }
     const token = await this.ensureToken(account)
     const rawItems = await this.fetchAllPages(token, 'search', {
@@ -749,10 +921,10 @@ export class BaiduAdapter implements DriveAdapter {
     const cookies = this.isCookieLogin(account) ? account.credential.cookies : undefined
     const path = parentId === '0' ? `/${name}` : `${parentId}/${name}`
     if (cookies) {
-      const bdstoken = await this.fetchBdstoken(cookies)
+      const bdstoken = await this.fetchBdstoken(account)
       const res = await baiduRequest<{ errno: number; path?: string; fs_id?: number }>(
         `${BAIDU_BASE}/api/create`, '', {
-          method: 'POST', params: { a: 'commit', bdstoken }, cookies,
+          method: 'POST', params: { a: 'commit', bdstoken }, ...this.cookieRequestOptions(account),
           formBody: true, body: { path, isdir: '1', block_list: '[]' },
         },
       )
@@ -778,9 +950,8 @@ export class BaiduAdapter implements DriveAdapter {
   async rename(account: DriveAccount, fileId: string, newName: string): Promise<void> {
     if (!fileId || !fileId.startsWith('/')) throw new Error(`Baidu rename: invalid file path "${fileId}"`)
     const token = await this.ensureToken(account)
-    const cookies = this.isCookieLogin(account) ? account.credential.cookies : undefined
     const res = await baiduRequest<BaiduFileOperateData>(`${BAIDU_API}/file`, token, {
-      method: 'POST', params: { method: 'filemanager', access_token: token, opera: 'rename' }, cookies,
+      method: 'POST', params: { method: 'filemanager', access_token: token, opera: 'rename' }, ...this.cookieRequestOptions(account),
       body: { async: 0, filelist: JSON.stringify([{ path: fileId, newname: newName }]) },
     })
     if (res.errno !== 0) throw new Error(`Baidu rename failed (errno=${res.errno}): ${res.errmsg}`)
@@ -789,11 +960,10 @@ export class BaiduAdapter implements DriveAdapter {
   async move(account: DriveAccount, fileIds: string[], targetDirId: string): Promise<void> {
     for (const fid of fileIds) if (!fid || !fid.startsWith('/')) throw new Error(`Baidu move: invalid file path "${fid}"`)
     const token = await this.ensureToken(account)
-    const cookies = this.isCookieLogin(account) ? account.credential.cookies : undefined
     const dest = targetDirId === '0' ? '/' : targetDirId
     const filelist = fileIds.map((filePath) => ({ path: filePath, dest, newname: '' }))
     const res = await baiduRequest<BaiduFileOperateData>(`${BAIDU_API}/file`, token, {
-      method: 'POST', params: { method: 'filemanager', access_token: token, opera: 'move' }, cookies,
+      method: 'POST', params: { method: 'filemanager', access_token: token, opera: 'move' }, ...this.cookieRequestOptions(account),
       body: { async: 0, filelist: JSON.stringify(filelist) },
     })
     if (res.errno !== 0) throw new Error(`Baidu move failed (errno=${res.errno}): ${res.errmsg}`)
@@ -802,9 +972,8 @@ export class BaiduAdapter implements DriveAdapter {
   async delete(account: DriveAccount, fileIds: string[]): Promise<void> {
     for (const fid of fileIds) if (!fid || !fid.startsWith('/')) throw new Error(`Baidu delete: invalid file path "${fid}"`)
     const token = await this.ensureToken(account)
-    const cookies = this.isCookieLogin(account) ? account.credential.cookies : undefined
     const res = await baiduRequest<BaiduFileOperateData>(`${BAIDU_API}/file`, token, {
-      method: 'POST', params: { method: 'filemanager', access_token: token, opera: 'delete' }, cookies,
+      method: 'POST', params: { method: 'filemanager', access_token: token, opera: 'delete' }, ...this.cookieRequestOptions(account),
       body: { async: 0, filelist: JSON.stringify(fileIds) },
     })
     if (res.errno !== 0) throw new Error(`Baidu delete failed (errno=${res.errno}): ${res.errmsg}`)
@@ -1125,6 +1294,7 @@ export class BaiduAdapter implements DriveAdapter {
     const fs = require('fs')
     const path = require('path')
     const crypto = require('crypto')
+    options?.signal?.throwIfAborted()
 
     const token = await this.ensureToken(account)
     const fileName = options?.fileName || path.basename(localFilePath)
@@ -1151,6 +1321,7 @@ export class BaiduAdapter implements DriveAdapter {
     const sliceBuf = Buffer.alloc(sliceSize)
     try {
       for (let i = 0; i < totalSlices; i++) {
+        options?.signal?.throwIfAborted()
         const start = i * sliceSize
         const end = Math.min(start + sliceSize, fileSize)
         const chunkSize = end - start
@@ -1175,6 +1346,7 @@ export class BaiduAdapter implements DriveAdapter {
           method: 'POST',
           body: `path=${encodeURIComponent(targetPath)}&size=${fileSize}&block_list=${encodeURIComponent(JSON.stringify([fileMd5]))}`,
           extraHeaders: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          ...this.cookieRequestOptions(account),
         },
       )
 
@@ -1201,6 +1373,7 @@ export class BaiduAdapter implements DriveAdapter {
         method: 'POST',
         body: `path=${encodeURIComponent(targetPath)}&size=${fileSize}&isdir=0&autoinit=1&rtype=1&block_list=${encodeURIComponent(JSON.stringify(sliceMd5List))}&content-md5=${fileMd5}`,
         extraHeaders: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        ...this.cookieRequestOptions(account),
       },
     )
 
@@ -1227,6 +1400,7 @@ export class BaiduAdapter implements DriveAdapter {
     const uploadBuf = Buffer.alloc(sliceSize)
     try {
     for (let i = 0; i < totalSlices; i++) {
+      options?.signal?.throwIfAborted()
       if (!blockList.includes(i)) continue // 跳过已上传的分片
 
       const start = i * sliceSize
@@ -1242,6 +1416,7 @@ export class BaiduAdapter implements DriveAdapter {
             method: 'locateupload',
             access_token: token,
           },
+          ...this.cookieRequestOptions(account),
         },
       )
 
@@ -1264,27 +1439,49 @@ export class BaiduAdapter implements DriveAdapter {
           method: 'POST',
           url: `https://${uploadHost}/rest/2.0/pcs/superfile2?method=upload&access_token=${token}&type=tmpfile&path=${encodeURIComponent(targetPath)}&uploadid=${uploadId}&partseq=${i}`,
         })
+        const abortRequest = () => request.abort()
+        const cleanup = () => options?.signal?.removeEventListener('abort', abortRequest)
+        const finish = () => { cleanup(); resolve() }
+        const fail = (error: unknown) => {
+          cleanup()
+          reject(error instanceof Error ? error : new Error('上传已取消'))
+        }
+        if (options?.signal?.aborted) {
+          request.abort()
+          fail(options.signal.reason)
+          return
+        }
+        options?.signal?.addEventListener('abort', abortRequest, { once: true })
         request.setHeader('Content-Type', `multipart/form-data; boundary=${boundary}`)
         request.setHeader('Content-Length', String(body.length))
+        request.setHeader('User-Agent', this.accountUserAgent(account))
+        if (account.credential.cookies) request.setHeader('Cookie', account.credential.cookies)
         request.write(body)
         request.on('response', (response) => {
+          const rotatedCookies = mergeSetCookieHeaders(
+            account.credential.cookies || '',
+            getSetCookieHeaders(response.headers as Record<string, string[] | string | undefined>),
+          )
+          if (rotatedCookies && rotatedCookies !== account.credential.cookies) {
+            this.persistRotatedCookies(account, rotatedCookies)
+          }
           let responseData = ''
           response.on('data', (chunk) => { responseData += chunk.toString() })
           response.on('end', () => {
             try {
               const result = JSON.parse(responseData)
               if (result.error_code || result.errno) {
-                reject(new Error(`Upload slice ${i + 1} failed: ${result.error_msg || result.errmsg || 'unknown'}`))
+                fail(new Error(`Upload slice ${i + 1} failed: ${result.error_msg || result.errmsg || 'unknown'}`))
               } else {
-                resolve()
+                finish()
               }
             } catch {
-              resolve() // 解析失败也继续
+              finish() // 解析失败也继续
             }
           })
-          response.on('error', (err) => reject(err))
+          response.on('error', fail)
         })
-        request.on('error', (err) => reject(err))
+        request.on('error', fail)
         request.end()
       })
 
@@ -1292,7 +1489,7 @@ export class BaiduAdapter implements DriveAdapter {
       options?.onProgress?.({
         loaded: end,
         total: fileSize,
-        percent: Math.round((end / fileSize) * 100),
+        percent: fileSize > 0 ? Math.round((end / fileSize) * 100) : 100,
         speed: 0,
       })
     }
@@ -1310,6 +1507,7 @@ export class BaiduAdapter implements DriveAdapter {
         method: 'POST',
         body: `path=${encodeURIComponent(targetPath)}&size=${fileSize}&isdir=0&rtype=1&uploadid=${uploadId}&block_list=${encodeURIComponent(JSON.stringify(sliceMd5List))}`,
         extraHeaders: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        ...this.cookieRequestOptions(account),
       },
     )
 
@@ -1341,7 +1539,7 @@ export class BaiduAdapter implements DriveAdapter {
     }))
 
     if (cookies) {
-      const bdstoken = await this.fetchBdstoken(cookies)
+      const bdstoken = await this.fetchBdstoken(account)
       await baiduRequest(`${BAIDU_BASE}/api/filemanager`, '', {
         params: {
           opera: 'copy',
@@ -1349,7 +1547,7 @@ export class BaiduAdapter implements DriveAdapter {
         },
         method: 'POST',
         body: { filelist: body },
-        cookies,
+        ...this.cookieRequestOptions(account),
       })
     } else {
       await baiduRequest(`${BAIDU_API}/file`, token || '', {
@@ -1367,40 +1565,31 @@ export class BaiduAdapter implements DriveAdapter {
   async getDownloadUrl(account: DriveAccount, fileId: string): Promise<string> {
     const token = await this.ensureToken(account)
     const cookies = this.isCookieLogin(account) ? account.credential.cookies : undefined
+    const fsId = await this.resolveFileFsId(account, fileId)
 
-    // 获取文件信息
-    const params: Record<string, string> = {
-      method: 'filemetas',
-      access_token: token || '',
-      fsids: `[${fileId}]`,
-      dlink: '1',
-    }
-
-    const res = await baiduRequest<{ list?: Array<{ dlink: string; filename: string; size: number }> }>(
-      `${BAIDU_API}/file`, token || '', { params, cookies },
-    )
-
-    if (!res.list || res.list.length === 0 || !res.list[0].dlink) {
-      // 如果是 Cookie 登录模式，尝试使用 Web API
+    try {
+      const info = await this.fetchFileMeta(account, fsId, token)
+      return this.appendAccessToken(info.dlink || '', token)
+    } catch (metaError) {
+      // Cookie 登录仍支持网页端接口，这是百度桌面端目前使用的兼容路径。
       if (cookies) {
-        const bdstoken = await this.fetchBdstoken(cookies)
-        const webParams = {
-          fid_list: `[${fileId}]`,
-          type: 'dlink',
-          vip: '2',
-          bdstoken,
-        }
-        const webRes = await baiduRequest<{ errno: number; dlink?: Array<{ dlink: string }> }>(
-          `${BAIDU_BASE}/api/download`, '', { params: webParams, cookies },
+        const bdstoken = await this.fetchBdstoken(account)
+        const webRes = await baiduRequest<{ errno?: number; errmsg?: string; dlink?: Array<{ dlink?: string }> }>(
+          `${BAIDU_BASE}/api/download`, '', {
+            params: { fid_list: `[${fsId}]`, type: 'dlink', vip: '2', bdstoken },
+            ...this.cookieRequestOptions(account),
+          },
         )
-        if (webRes.errno === 0 && webRes.dlink && webRes.dlink.length > 0) {
-          return webRes.dlink[0].dlink
+        const dlink = webRes.dlink?.[0]?.dlink
+        if (webRes.errno === 0 && dlink) return dlink
+        const webError = `${String(metaError)}；网页下载接口 errno=${webRes.errno ?? 'n/a'} ${webRes.errmsg || ''}`.trim()
+        if (/9019|need verify|OAuth 授权/.test(String(metaError))) {
+          throw new Error(String(metaError))
         }
+        throw new Error(webError)
       }
-      throw new Error('获取下载链接失败')
+      throw metaError
     }
-
-    return res.list[0].dlink
   }
 
   /**
@@ -1413,119 +1602,53 @@ export class BaiduAdapter implements DriveAdapter {
     options?: DownloadOptions,
   ): Promise<DownloadResult> {
     const fs = require('fs')
-    const path = require('path')
+    options?.signal?.throwIfAborted()
 
     const token = await this.ensureToken(account)
     const cookies = this.isCookieLogin(account) ? account.credential.cookies : undefined
+    const fsId = await this.resolveFileFsId(account, fileId)
 
-    // 获取文件信息
-    const params: Record<string, string> = {
-      method: 'filemetas',
-      access_token: token || '',
-      fsids: `[${fileId}]`,
-      dlink: '1',
-    }
-
-    const res = await baiduRequest<{ list?: Array<{ dlink: string; filename: string; size: number }> }>(
-      `${BAIDU_API}/file`, token || '', { params, cookies },
-    )
-
-    if (!res.list || res.list.length === 0 || !res.list[0].dlink) {
-      // 如果是 Cookie 登录模式，尝试使用 Web API
-      if (cookies) {
-        const bdstoken = await this.fetchBdstoken(cookies)
-        const webParams = {
-          fid_list: `[${fileId}]`,
-          type: 'dlink',
-          vip: '2',
-          bdstoken,
+    let fileInfo: BaiduFileMeta
+    try {
+      fileInfo = await this.fetchFileMeta(account, fsId, token)
+    } catch (metaError) {
+      // Cookie 登录回退到网页下载接口（/api/download）。
+      if (!cookies) throw metaError
+      const bdstoken = await this.fetchBdstoken(account)
+      const webRes = await baiduRequest<{ errno?: number; errmsg?: string; dlink?: Array<{ dlink?: string; filename?: string; size?: number }> }>(
+        `${BAIDU_BASE}/api/download`, '', {
+          params: { fid_list: `[${fsId}]`, type: 'dlink', vip: '2', bdstoken },
+          ...this.cookieRequestOptions(account),
+        },
+      )
+      const webInfo = webRes.dlink?.[0]
+      if (webRes.errno !== 0 || !webInfo?.dlink) {
+        const webError = `${String(metaError)}；网页下载接口 errno=${webRes.errno ?? 'n/a'} ${webRes.errmsg || ''}`.trim()
+        if (/9019|need verify|OAuth 授权/.test(String(metaError))) {
+          throw new Error(String(metaError))
         }
-        const webRes = await baiduRequest<{ errno: number; dlink?: Array<{ dlink: string; filename: string; size: number }> }>(
-          `${BAIDU_BASE}/api/download`, '', { params: webParams, cookies },
-        )
-        if (webRes.errno === 0 && webRes.dlink && webRes.dlink.length > 0) {
-          const fileInfo = webRes.dlink[0]
-          const fileName = options?.fileName || fileInfo.filename || `file_${fileId}`
-          const fileSize = fileInfo.size || 0
-          const downloadUrl = fileInfo.dlink
-
-          // 下载文件
-          const response = await fetch(downloadUrl, {
-            headers: {
-              'User-Agent': BAIDU_UA,
-              'Cookie': cookies,
-            },
-          })
-
-          if (!response.ok) {
-            throw new Error(`下载失败: ${response.statusText}`)
-          }
-
-          const localPath = path.join(localDirPath, fileName)
-          const writer = fs.createWriteStream(localPath)
-          const reader = response.body?.getReader()
-          if (!reader) {
-            throw new Error('无法读取响应流')
-          }
-
-          let loaded = 0
-          const startTime = Date.now()
-
-          try {
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-
-              writer.write(Buffer.from(value))
-              loaded += value.length
-
-              const elapsed = (Date.now() - startTime) / 1000
-              const speed = elapsed > 0 ? loaded / elapsed : 0
-
-              options?.onProgress?.({
-                loaded,
-                total: fileSize,
-                percent: Math.round((loaded / fileSize) * 100),
-                speed,
-              })
-            }
-
-            writer.end()
-
-            await new Promise<void>((resolve, reject) => {
-              writer.on('finish', resolve)
-              writer.on('error', reject)
-            })
-
-            return {
-              success: true,
-              localPath,
-              fileName,
-              fileSize,
-            }
-          } catch (err) {
-            reader.cancel().catch(() => {})
-            writer.destroy()
-            try { fs.unlinkSync(localPath) } catch {}
-            throw err
-          }
-        }
+        throw new Error(webError)
       }
-      throw new Error('获取下载链接失败')
+      fileInfo = webInfo
     }
 
-    const fileInfo = res.list[0]
-    const fileName = options?.fileName || fileInfo.filename
-    const fileSize = fileInfo.size
-    const downloadUrl = fileInfo.dlink
-    const localPath = path.join(localDirPath, fileName)
+    const fileName = options?.fileName || fileInfo.filename || `file_${fsId}`
+    const fileSize = fileInfo.size || 0
+    const downloadUrl = fileInfo.dlink || ''
+    const localPath = resolvePathInside(localDirPath, sanitizeFileName(fileName))
 
-    // 下载文件（需要添加 User-Agent）
-    const response = await fetch(downloadUrl, {
-      headers: {
-        'User-Agent': BAIDU_UA,
-      },
-    })
+    // dlink 可能先返回 302 到 CDN，fetch 会跟随重定向；OAuth dlink 需附带 access_token。
+    const response = await this.fetchBaiduDownload(downloadUrl, account, token, options?.signal)
+
+    if (cookies) {
+      const rotatedCookies = mergeSetCookieHeaders(
+        account.credential.cookies || '',
+        getFetchSetCookieHeaders(response.headers),
+      )
+      if (rotatedCookies && rotatedCookies !== account.credential.cookies) {
+        this.persistRotatedCookies(account, rotatedCookies)
+      }
+    }
 
     if (!response.ok) {
       throw new Error(`下载失败: ${response.statusText}`)
@@ -1555,7 +1678,7 @@ export class BaiduAdapter implements DriveAdapter {
         options?.onProgress?.({
           loaded,
           total: fileSize,
-          percent: Math.round((loaded / fileSize) * 100),
+          percent: fileSize > 0 ? Math.round((loaded / fileSize) * 100) : 0,
           speed,
         })
       }
@@ -1588,10 +1711,10 @@ export class BaiduAdapter implements DriveAdapter {
 
     if (cookies) {
       // Cookie 模式
-      const bdstoken = await this.fetchBdstoken(cookies)
+      const bdstoken = await this.fetchBdstoken(account)
       const params: Record<string, string> = { checkfree: '1', checkexpire: '1' }
       if (bdstoken) params.bdstoken = bdstoken
-      const data = await baiduRequest<any>('https://pan.baidu.com/api/quota', '', { params, cookies })
+      const data = await baiduRequest<any>('https://pan.baidu.com/api/quota', '', { params, ...this.cookieRequestOptions(account) })
       return {
         used: data.used || 0,
         total: data.total || 0,
@@ -1606,6 +1729,16 @@ export class BaiduAdapter implements DriveAdapter {
         total: data.total || 0,
       }
     }
+  }
+
+  async getMembership(account: DriveAccount) {
+    const token = await this.ensureToken(account)
+    const params: Record<string, string> = { method: 'uinfo' }
+    if (token) params.access_token = token
+    const data = await baiduRequest<BaiduUserInfo & Record<string, unknown>>(
+      `${BAIDU_API}/nas`, token || '', { params, ...this.cookieRequestOptions(account) },
+    )
+    return normalizeMembership(data, '百度')
   }
 }
 
@@ -1655,5 +1788,14 @@ export async function baiduRefreshToken(refreshToken: string): Promise<{ access_
 
 export function baiduGetAuthUrl(): string {
   ensureBaiduCredentials()
-  return `https://openapi.baidu.com/oauth/2.0/authorize?client_id=${_clientId}&response_type=code&redirect_uri=${encodeURIComponent(_redirectUri)}&scope=basic,netdisk&display=page`
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: _clientId,
+    redirect_uri: _redirectUri,
+    scope: 'basic,netdisk',
+    display: 'tv',
+    qrcode: '1',
+    force_login: '1',
+  })
+  return `https://openapi.baidu.com/oauth/2.0/authorize?${params.toString()}`
 }

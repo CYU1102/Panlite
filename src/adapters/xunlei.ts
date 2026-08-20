@@ -1,7 +1,16 @@
-import { net, session } from 'electron'
+import { BrowserWindow, net, session } from 'electron'
 import type { DriveAdapter } from './base'
-import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult, UploadOptions, UploadResult, DownloadOptions, DownloadResult } from '../shared/types'
+import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, TransferLinkInput, TransferResult, UploadOptions, UploadResult, DownloadOptions, DownloadResult } from '../shared/types'
 import log from 'electron-log'
+import { resolvePathInside, sanitizeFileName } from '../main/file-transfer'
+import { normalizeMembership } from '../shared/membership'
+import {
+  buildXunleiSharePageUrl,
+  classifyXunleiTask,
+  extractXunleiSharePassword,
+  getXunleiRestoreTaskId,
+  isXunleiRestoreComplete,
+} from '../shared/xunlei-share'
 
 /**
  * 迅雷网盘适配器
@@ -21,13 +30,15 @@ const BROWSER_DRIVE_API = 'https://api-pan.xunlei.com/drive/v1'
 // alist thunder_browser 凭据（用户名密码登录）
 const ALIST_CLIENT_ID = 'ZUBzD9J_XPXfn7f7'
 const ALIST_CLIENT_SECRET = 'yESVmHecEe6F0aou69vl-g'
-const ALIST_CLIENT_VERSION = '1.10.0.2633'
-const ALIST_PACKAGE_NAME = 'com.xunlei.browser'
 const ALIST_DRIVE_API = 'https://x-api-pan.xunlei.com/drive/v1'
 
 // 通用配置
 const XLUSER_API_URL = 'https://xluser-ssl.xunlei.com/v1'
 const DEVICE_ID = '925b7631473a13716b791d7f28289cad'
+const SHARE_PAGE_TIMEOUT_MS = 20_000
+const SHARE_PAGE_POLL_INTERVAL_MS = 500
+const RESTORE_TASK_TIMEOUT_MS = 120_000
+const RESTORE_TASK_POLL_INTERVAL_MS = 1_000
 
 // captcha_sign 硬编码值（alist 使用）
 const CAPTCHA_TIMESTAMP = '1645241033384'
@@ -284,7 +295,7 @@ async function doGetCaptchaToken(accountId: string, userId: string, clientId: st
   log.info(`Xunlei: refreshing captcha token (clientId=${clientId}, userId=${userId})...`)
   try {
     const result = await getCaptchaToken('get:/drive/v1/files', userId, clientId)
-    log.info(`Xunlei: captcha token response: ${JSON.stringify(result).substring(0, 200)}`)
+    log.info(`Xunlei: captcha token response received (hasToken=${!!result.captcha_token}, expiresIn=${result.expires_in || 0}, requiresVerification=${!!result.url})`)
 
     if (result.url) {
       throw new Error(`需要验证: ${result.url}`)
@@ -371,6 +382,136 @@ function extractShareId(url: string): string {
   const match = url.match(/pan\.xunlei\.com\/s\/([a-zA-Z0-9_-]+)/)
   if (match) return match[1]
   throw new Error('无法解析迅雷分享链接')
+}
+
+interface XunleiSharePageFile {
+  fileId: string
+  name: string
+  isDir: boolean
+  size: number
+}
+
+interface XunleiSharePageSnapshot {
+  ready?: boolean
+  error?: string
+  title?: string
+  pageText?: string
+  files?: XunleiSharePageFile[]
+  allFileIds?: string[]
+  passCodeToken?: string
+}
+
+function sharePageFailureMessage(snapshot: XunleiSharePageSnapshot | null, hasPassword: boolean): string {
+  const text = snapshot?.pageText || ''
+  if (/提取码.*(?:错误|不正确)|密码.*(?:错误|不正确)/i.test(text)) return '转存失败：迅雷分享提取码错误'
+  if (/分享.*(?:已失效|已过期|不存在|被取消|已删除)|链接.*(?:已失效|已过期)/i.test(text)) {
+    return '转存失败：迅雷分享已失效或不存在'
+  }
+  if (/请输入提取码|需要提取码|访问码/i.test(text)) {
+    return hasPassword ? '转存失败：迅雷分享提取码错误或页面未完成验证' : '转存失败：该迅雷分享需要提取码'
+  }
+  if (/请先登录|登录后查看/i.test(text)) return '转存失败：迅雷登录已失效'
+  return '转存失败：等待迅雷分享页数据超时，请检查分享链接是否有效'
+}
+
+async function loadXunleiSharePage(input: TransferLinkInput, shareId: string): Promise<XunleiSharePageSnapshot> {
+  const password = extractXunleiSharePassword(input.url, input.password)
+  const sharePageUrl = buildXunleiSharePageUrl(shareId, input.url, input.password)
+  let shareWindow: BrowserWindow | null = null
+  let latestSnapshot: XunleiSharePageSnapshot | null = null
+
+  try {
+    shareWindow = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 800,
+      webPreferences: {
+        partition: 'persist:xunlei',
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
+    })
+    shareWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    await shareWindow.loadURL(sharePageUrl)
+
+    const deadline = Date.now() + SHARE_PAGE_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      if (!shareWindow || shareWindow.isDestroyed()) throw new Error('迅雷分享页窗口已意外关闭')
+      latestSnapshot = await shareWindow.webContents.executeJavaScript(`
+        (() => {
+          try {
+            const nuxt = window.__NUXT__ || {};
+            const candidates = [
+              nuxt && nuxt.state && nuxt.state.share,
+              window.$nuxt && window.$nuxt.$store && window.$nuxt.$store.state && window.$nuxt.$store.state.share,
+              nuxt && nuxt.data && !Array.isArray(nuxt.data) && nuxt.data.share,
+              Array.isArray(nuxt.data) && nuxt.data[0] && (nuxt.data[0].share || nuxt.data[0])
+            ];
+            const share = candidates.find(Boolean);
+            const pageText = (document.body && document.body.innerText || '').slice(0, 1000);
+            if (!share) return { ready: false, title: document.title || '', pageText };
+
+            const files = [];
+            const ids = [];
+            const seenIds = new Set();
+            const addFile = (value, fallbackId) => {
+              const item = value && typeof value === 'object' ? value : {};
+              const id = String(item.id || item.file_id || fallbackId || (typeof value === 'string' ? value : '') || '');
+              if (!id || seenIds.has(id)) return;
+              seenIds.add(id);
+              ids.push(id);
+              files.push({
+                fileId: id,
+                name: String(item.name || item.file_name || ''),
+                isDir: item.kind === 'drive#folder' || item.kind === 'folder' || item.is_dir === true,
+                size: Number(item.size || 0)
+              });
+            };
+
+            const rawFiles = share.files || share.fileList || share.shareFiles || {};
+            if (Array.isArray(rawFiles)) rawFiles.forEach((item) => addFile(item, ''));
+            else if (rawFiles && typeof rawFiles === 'object') {
+              Object.entries(rawFiles).forEach(([id, item]) => addFile(item, id));
+            }
+
+            const rawLists = [share.list, share.getAllFilesId, share.allFileIds, share.file_ids];
+            rawLists.forEach((list) => {
+              if (Array.isArray(list)) list.forEach((item) => addFile(item, ''));
+            });
+
+            const shareInfo = share.shareInfo || share.share_info || {};
+            return {
+              ready: files.length > 0,
+              title: String(shareInfo.title || share.title || document.title || ''),
+              pageText,
+              files,
+              allFileIds: ids,
+              passCodeToken: String(
+                shareInfo.passCodeToken || shareInfo.pass_code_token ||
+                share.passCodeToken || share.pass_code_token || ''
+              )
+            };
+          } catch (error) {
+            return { ready: false, error: error && error.message ? error.message : String(error) };
+          }
+        })()
+      `) as XunleiSharePageSnapshot
+
+      if (latestSnapshot?.error) throw new Error(`读取迅雷分享页失败：${latestSnapshot.error}`)
+      if (latestSnapshot?.ready && latestSnapshot.files?.length) return latestSnapshot
+      await new Promise(resolve => setTimeout(resolve, SHARE_PAGE_POLL_INTERVAL_MS))
+    }
+
+    throw new Error(sharePageFailureMessage(latestSnapshot, !!password))
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (message.startsWith('转存失败：') || message.startsWith('读取迅雷分享页失败：')) throw err
+    throw new Error(`转存失败：无法加载迅雷分享页（${message}）`)
+  } finally {
+    if (shareWindow && !shareWindow.isDestroyed()) shareWindow.destroy()
+  }
 }
 
 // ── Adapter ──
@@ -544,6 +685,21 @@ export class XunleiAdapter implements DriveAdapter {
     throw new Error('迅雷网盘暂不支持容量查询')
   }
 
+  async getMembership(account: DriveAccount) {
+    const { accessToken, captchaToken, clientId, driveApi } = await ensureTokens(account, this._onCredentialRefreshed)
+    const endpoints = [`${driveApi}/about`, `${BROWSER_DRIVE_API}/about`, `${ALIST_DRIVE_API}/about`]
+    for (const url of endpoints) {
+      try {
+        const data = await xunleiRequest<any>(url, 'GET', accessToken, captchaToken, clientId)
+        const membership = normalizeMembership(data, '迅雷')
+        if (membership.known) return membership
+      } catch (err) {
+        log.warn(`Xunlei membership query failed for ${url}:`, String(err))
+      }
+    }
+    return normalizeMembership(undefined, '迅雷')
+  }
+
   async createShare(account: DriveAccount, items: Array<{ fileId: string; name?: string; isDir?: boolean }>, options?: ShareOptions): Promise<ShareInfo> {
     const { accessToken, captchaToken, clientId } = await ensureTokens(account, this._onCredentialRefreshed)
     // 浏览器客户端用 api-pan.xunlei.com
@@ -564,7 +720,7 @@ export class XunleiAdapter implements DriveAdapter {
     log.info(`Xunlei createShare: ${JSON.stringify(body)}`)
 
     const ses = session.fromPartition('persist:xunlei')
-    const res = await ses.fetch(`${BROWSER_DRIVE_API}/share`, {
+    const res = await ses.fetch(`${shareApi}/share`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -605,59 +761,19 @@ export class XunleiAdapter implements DriveAdapter {
 
   async getShareDetail(account: DriveAccount, input: TransferLinkInput): Promise<ShareDetail> {
     const shareId = extractShareId(input.url)
-    const { accessToken, captchaToken, clientId, driveApi } = await ensureTokens(account, this._onCredentialRefreshed)
-
-    // 尝试多个可能的分享详情端点
-    const endpoints = [
-      // GET 请求
-      { url: `${driveApi}/share/${shareId}`, method: 'GET' as const },
-      { url: `${driveApi}/share/${shareId}/detail`, method: 'GET' as const },
-      { url: `${BROWSER_DRIVE_API}/share/${shareId}`, method: 'GET' as const },
-      { url: `${ALIST_DRIVE_API}/share/${shareId}`, method: 'GET' as const },
-      // POST 请求（某些 API 使用 POST 获取详情）
-      { url: `${driveApi}/share/detail`, method: 'POST' as const, body: { share_id: shareId } },
-      { url: `${BROWSER_DRIVE_API}/share/detail`, method: 'POST' as const, body: { share_id: shareId } },
-      { url: `${ALIST_DRIVE_API}/share/detail`, method: 'POST' as const, body: { share_id: shareId } },
-      // 尝试 /share/list 端点
-      { url: `${driveApi}/share/list`, method: 'POST' as const, body: { share_id: shareId } },
-      { url: `${BROWSER_DRIVE_API}/share/list`, method: 'POST' as const, body: { share_id: shareId } },
-    ]
-
-    for (const endpoint of endpoints) {
-      try {
-        log.info(`Xunlei getShareDetail: trying ${endpoint.url} (${endpoint.method})`)
-        const res = endpoint.method === 'POST'
-          ? await xunleiRequest<any>(endpoint.url, 'POST', accessToken, captchaToken, clientId, endpoint.body)
-          : await xunleiRequest<any>(endpoint.url, 'GET', accessToken, captchaToken, clientId)
-        log.info(`Xunlei getShareDetail response: ${JSON.stringify(res).substring(0, 500)}`)
-
-        // 检查是否有文件列表
-        const files = res.files || res.share_list?.[0]?.files || res.data?.files || []
-        if (files.length > 0 || res.title || res.data?.title) {
-          return {
-            platform: 'xunlei',
-            shareId,
-            title: res.title || res.share_list?.[0]?.title || res.data?.title || '',
-            files: files.map((f: any) => ({
-              fileId: f.id || f.file_id || '',
-              name: f.name || f.file_name || '',
-              isDir: f.kind === 'folder' || f.is_dir === true,
-              size: f.size || 0,
-            })),
-          }
-        }
-      } catch (err) {
-        log.warn(`Xunlei getShareDetail [${endpoint.url}] failed:`, String(err))
-      }
-    }
-
-    // 所有端点都失败，返回空
-    log.warn(`Xunlei getShareDetail: all endpoints failed for shareId=${shareId}`)
+    await ensureTokens(account, this._onCredentialRefreshed)
+    log.info(`Xunlei getShareDetail: loading browser share data for shareId=${shareId}`)
+    const snapshot = await loadXunleiSharePage(input, shareId)
     return {
       platform: 'xunlei',
       shareId,
-      title: '',
-      files: [],
+      title: snapshot.title || '',
+      files: (snapshot.files || []).map(file => ({
+        fileId: file.fileId,
+        name: file.name,
+        isDir: file.isDir,
+        size: file.size,
+      })),
     }
   }
 
@@ -763,102 +879,23 @@ export class XunleiAdapter implements DriveAdapter {
 
   async saveSharedFiles(account: DriveAccount, input: TransferLinkInput, targetDirId: string): Promise<TransferResult> {
     const shareId = extractShareId(input.url)
-    const { accessToken, captchaToken, clientId } = await ensureTokens(account, this._onCredentialRefreshed)
+    const { accessToken, captchaToken, clientId, driveApi } = await ensureTokens(account, this._onCredentialRefreshed)
 
     log.info(`Xunlei saveSharedFiles: shareId=${shareId}, targetDirId=${targetDirId}`)
 
-    // Step 1: 使用 BrowserWindow 加载分享页面，从 __NUXT__ 中提取数据
-    let files: Array<{ fileId: string; name: string }> = []
-    let passCodeToken = ''
-    let allFileIds: string[] = []
+    // Step 1: 加载分享页。提取码会拼入 URL，避免密码分享始终读不到文件。
+    log.info(`Xunlei saveSharedFiles: loading browser share data`)
+    const snapshot = await loadXunleiSharePage(input, shareId)
+    const files = snapshot.files || []
+    const passCodeToken = snapshot.passCodeToken || ''
+    const fileIds = snapshot.allFileIds?.length ? snapshot.allFileIds : files.map(file => file.fileId)
+    if (fileIds.length === 0) throw new Error('转存失败：迅雷分享中没有可转存文件')
 
-    try {
-      log.info(`Xunlei saveSharedFiles: loading share page in BrowserWindow`)
-      const { BrowserWindow } = require('electron')
-
-      const shareWindow = new BrowserWindow({
-        show: false,
-        width: 1280,
-        height: 800,
-        webPreferences: {
-          partition: 'persist:xunlei',
-          nodeIntegration: false,
-          contextIsolation: true,
-        },
-      })
-
-      const sharePageUrl = `https://pan.xunlei.com/s/${shareId}`
-      await shareWindow.loadURL(sharePageUrl)
-
-      // 等待页面加载和 JavaScript 执行
-      await new Promise(resolve => setTimeout(resolve, 5000))
-
-      // 从 __NUXT__ 中提取分享数据
-      const nuxtData = await shareWindow.webContents.executeJavaScript(`
-        (function() {
-          try {
-            if (window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.share) {
-              var share = window.__NUXT__.state.share;
-              return {
-                files: share.files || {},
-                list: share.list || [],
-                passCodeToken: (share.shareInfo && share.shareInfo.passCodeToken) || '',
-                getAllFilesId: share.getAllFilesId || []
-              };
-            }
-            return null;
-          } catch(e) {
-            return { error: e.message };
-          }
-        })()
-      `)
-
-      shareWindow.close()
-
-      log.info(`Xunlei saveSharedFiles: __NUXT__ data: ${JSON.stringify(nuxtData).substring(0, 500)}`)
-
-      if (nuxtData && !nuxtData.error) {
-        // 提取文件列表
-        const filesMap = nuxtData.files || {}
-        for (const [fileId, fileObj] of Object.entries(filesMap)) {
-          const f = fileObj as any
-          files.push({
-            fileId: f.id || fileId,
-            name: f.name || '',
-          })
-        }
-
-        // 如果 files 为空，使用 list
-        if (files.length === 0 && nuxtData.list) {
-          for (const fileId of nuxtData.list) {
-            files.push({ fileId, name: '' })
-          }
-        }
-
-        // 使用 getAllFilesId 作为备选
-        if (files.length === 0 && nuxtData.getAllFilesId) {
-          for (const fileId of nuxtData.getAllFilesId) {
-            files.push({ fileId, name: '' })
-          }
-        }
-
-        passCodeToken = nuxtData.passCodeToken || ''
-        allFileIds = nuxtData.getAllFilesId || files.map(f => f.fileId)
-      }
-    } catch (err) {
-      log.warn(`Xunlei saveSharedFiles: BrowserWindow approach failed:`, String(err))
-    }
-
-    if (files.length === 0) {
-      throw new Error('转存失败：分享中没有文件或无法获取分享详情')
-    }
-
-    const fileIds = allFileIds.length > 0 ? allFileIds : files.map(f => f.fileId)
     log.info(`Xunlei saveSharedFiles: found ${fileIds.length} files: ${fileIds.join(',')}`)
-    log.info(`Xunlei saveSharedFiles: passCodeToken=${passCodeToken.substring(0, 30)}...`)
+    log.info(`Xunlei saveSharedFiles: passCodeToken=${passCodeToken ? 'present' : 'empty'}`)
 
     // Step 2: 调用转存 API (POST /drive/v1/share/restore)
-    const saveUrl = `${BROWSER_DRIVE_API}/share/restore`
+    const saveUrl = `${driveApi}/share/restore`
     const saveBody = {
       ancestor_ids: [],
       file_ids: fileIds,
@@ -891,38 +928,52 @@ export class XunleiAdapter implements DriveAdapter {
       throw new Error('转存失败：登录已失效或无权限')
     }
 
-    const data = JSON.parse(text)
+    let data: any
+    try {
+      data = JSON.parse(text)
+    } catch {
+      throw new Error(`迅雷转存失败：接口返回了无效数据（HTTP ${res.status}）`)
+    }
 
     // 检查 API 错误
-    if (data.error || data.error_code) {
+    if (!res.ok || data.error || data.error_code) {
       const errMsg = data.error_description || data.error || '未知错误'
       const errCode = data.error_code || 0
+      const normalizedError = String(errMsg).toLowerCase()
 
-      if (errCode === 41001 || errMsg.includes('login') || errMsg.includes('token')) {
+      if (errCode === 41001 || normalizedError.includes('login') || normalizedError.includes('token')) {
         throw new Error('转存失败：登录已失效')
       }
-      if (errCode === 41014 || errMsg.includes('share') || errMsg.includes('expired')) {
+      if (errCode === 41014 || normalizedError.includes('share') || normalizedError.includes('expired')) {
         throw new Error('转存失败：分享已失效')
       }
-      if (errCode === 41019 || errCode === 32003 || errMsg.includes('quota') || errMsg.includes('space')) {
+      if (errCode === 41019 || errCode === 32003 || normalizedError.includes('quota') || normalizedError.includes('space')) {
         throw new Error('转存失败：容量不足')
       }
-      if (errCode === 41013 || errMsg.includes('violation') || errMsg.includes('illegal')) {
+      if (errCode === 41013 || normalizedError.includes('violation') || normalizedError.includes('illegal')) {
         throw new Error('转存失败：文件违规')
       }
 
-      throw new Error(`迅雷转存失败: ${errMsg} (code: ${errCode})`)
+      throw new Error(`迅雷转存失败：${errMsg}（HTTP ${res.status}，code: ${errCode}）`)
+    }
+
+    const shareStatus = String(data.share_status || '').toUpperCase()
+    if (shareStatus && shareStatus !== 'OK') {
+      throw new Error(`迅雷转存失败：${data.share_status_text || shareStatus}`)
     }
 
     // Step 3: 轮询任务状态
-    const taskId = data.id || data.task_id
+    const taskId = getXunleiRestoreTaskId(data)
     if (taskId) {
       log.info(`Xunlei saveSharedFiles: task created, taskId=${taskId}, polling...`)
+      const deadline = Date.now() + RESTORE_TASK_TIMEOUT_MS
+      let completed = false
+      let lastPhase = ''
 
-      for (let i = 0; i < 30; i++) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, RESTORE_TASK_POLL_INTERVAL_MS))
 
-        const taskRes = await ses.fetch(`${BROWSER_DRIVE_API}/tasks/${taskId}`, {
+        const taskRes = await ses.fetch(`${driveApi}/tasks/${taskId}`, {
           method: 'GET',
           headers: {
             'x-client-id': clientId,
@@ -933,18 +984,38 @@ export class XunleiAdapter implements DriveAdapter {
         })
 
         const taskText = await taskRes.text()
-        const taskData = JSON.parse(taskText)
-        log.info(`Xunlei saveSharedFiles: task status=${taskData.phase}, progress=${taskData.progress}`)
+        let taskData: any
+        try {
+          taskData = JSON.parse(taskText)
+        } catch {
+          throw new Error(`转存失败：迅雷任务状态返回了无效数据（HTTP ${taskRes.status}）`)
+        }
+        if (!taskRes.ok) {
+          const taskError = taskData.error_description || taskData.error || taskData.message || taskRes.statusText
+          throw new Error(`转存失败：无法查询迅雷任务状态（${taskError || `HTTP ${taskRes.status}`}）`)
+        }
 
-        if (taskData.phase === 'PHASE_TYPE_COMPLETE') {
+        const taskStatus = classifyXunleiTask(taskData)
+        lastPhase = taskStatus.phase || lastPhase
+        log.info(`Xunlei saveSharedFiles: task status=${taskStatus.phase || 'unknown'}, progress=${taskData.progress ?? taskData.data?.progress ?? ''}`)
+
+        if (taskStatus.state === 'complete') {
           log.info(`Xunlei saveSharedFiles: task completed!`)
+          completed = true
           break
         }
 
-        if (taskData.phase === 'PHASE_TYPE_FAILED') {
-          throw new Error(`转存失败：${taskData.message || '任务失败'}`)
+        if (taskStatus.state === 'failed') {
+          throw new Error(`转存失败：${taskStatus.message || '迅雷任务执行失败'}`)
         }
       }
+
+      if (!completed) {
+        throw new Error(`转存超时：迅雷任务在 ${RESTORE_TASK_TIMEOUT_MS / 1000} 秒内未完成${lastPhase ? `（状态：${lastPhase}）` : ''}`)
+      }
+    } else if (!isXunleiRestoreComplete(data)) {
+      const restoreStatus = data.restore_status || data.status || 'unknown'
+      throw new Error(`迅雷转存失败：接口未返回任务 ID 或完成状态（状态：${restoreStatus}）`)
     }
 
     // 转存成功
@@ -967,6 +1038,7 @@ export class XunleiAdapter implements DriveAdapter {
     const fs = require('fs')
     const path = require('path')
     const crypto = require('crypto')
+    options?.signal?.throwIfAborted()
 
     const fileName = options?.fileName || path.basename(localFilePath)
     const fileSize = fs.statSync(localFilePath).size
@@ -992,6 +1064,7 @@ export class XunleiAdapter implements DriveAdapter {
 
     const ses = session.fromPartition('persist:xunlei')
     const preRes = await ses.fetch(`${driveApi}/files`, {
+      signal: options?.signal,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1037,6 +1110,7 @@ export class XunleiAdapter implements DriveAdapter {
     log.info(`Xunlei upload: uploading to S3, size=${fileSize}`)
 
     const s3Res = await ses.fetch(s3Url, {
+      signal: options?.signal,
       method: 'PUT',
       headers: {
         'Content-Type': 'application/octet-stream',
@@ -1065,6 +1139,7 @@ export class XunleiAdapter implements DriveAdapter {
     }
 
     const finishRes = await ses.fetch(`${driveApi}/files/upload/finish`, {
+      signal: options?.signal,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1109,10 +1184,10 @@ export class XunleiAdapter implements DriveAdapter {
 
   async download(account: DriveAccount, fileId: string, localDirPath: string, options?: DownloadOptions): Promise<DownloadResult> {
     const fs = require('fs')
-    const path = require('path')
+    options?.signal?.throwIfAborted()
 
     const fileName = options?.fileName || 'download'
-    const localPath = path.join(localDirPath, fileName)
+    const localPath = resolvePathInside(localDirPath, sanitizeFileName(fileName))
 
     // 获取下载链接
     const downloadUrl = await this.getDownloadUrl(account, fileId)
@@ -1123,6 +1198,7 @@ export class XunleiAdapter implements DriveAdapter {
     // 下载文件
     const ses = session.fromPartition('persist:xunlei')
     const response = await ses.fetch(downloadUrl, {
+      signal: options?.signal,
       headers: {
         'User-Agent': 'AndroidDownloadManager/13 (Linux; U; Android 13; M2004J7AC Build/SP1A.210812.016)',
       },

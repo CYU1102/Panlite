@@ -3,9 +3,16 @@
     title="批量转存"
     :model-value="modelValue"
     width="560px"
+    class="transfer-dialog"
     @close="emit('update:modelValue', false)"
   >
     <div class="transfer-content">
+      <div class="workflow-strip" aria-label="转存步骤">
+        <div v-for="(step, index) in ['选择账号', '添加链接', '确认目录']" :key="step" class="workflow-step" :class="{ active: transferStep === index + 1, done: transferStep > index + 1 }" :aria-current="transferStep === index + 1 ? 'step' : undefined">
+          <span>{{ transferStep > index + 1 ? '✓' : index + 1 }}</span>
+          <strong>{{ step }}</strong>
+        </div>
+      </div>
       <el-alert
         v-if="needsCookieHint"
         title="百度转存需要 Cookie 认证（BDUSS）"
@@ -15,7 +22,27 @@
         show-icon
       />
 
-      <el-form label-width="80px">
+      <el-form label-position="top" class="transfer-form">
+        <el-form-item label="目标账号">
+          <el-select
+            v-model="selectedAccountId"
+            placeholder="请选择要转存到的账号"
+            filterable
+            style="width: 100%"
+            @change="onTargetAccountChange"
+          >
+            <el-option
+              v-for="account in accountStore.accounts"
+              :key="account.id"
+              :label="`${account.nickname}（${platformNames[account.platform] || account.platform}）`"
+              :value="account.id"
+            />
+          </el-select>
+          <p v-if="accountStore.accounts.length === 0" class="hint warning-hint">
+            暂无可用账号，请先在顶部添加账号
+          </p>
+        </el-form-item>
+
         <el-form-item label="分享链接">
           <div class="links-area">
             <el-input
@@ -53,8 +80,26 @@
         </el-form-item>
 
         <el-form-item label="目标目录">
-          <el-input v-model="targetPath" placeholder="留空则保存到根目录" clearable />
-          <p class="hint">填写网盘内的目标路径，如 /我的资源</p>
+          <div class="directory-picker">
+            <el-input :model-value="targetDirName" readonly />
+            <el-button @click="showDirectoryTree = !showDirectoryTree">
+              {{ showDirectoryTree ? '收起' : '选择目录' }}
+            </el-button>
+          </div>
+          <div v-if="showDirectoryTree" class="directory-tree">
+            <el-tree
+              :key="selectedAccountId"
+              :data="directoryTreeData"
+              :props="{ label: 'name', children: 'children', isLeaf: 'isLeaf' }"
+              node-key="id"
+              lazy
+              highlight-current
+              :load="loadDirectoryNode"
+              :expand-on-click-node="false"
+              @current-change="onDirectorySelect"
+            />
+          </div>
+          <p class="hint selected-target"><FolderCheck :size="12" />转存文件将保存到“{{ targetDirName }}”</p>
         </el-form-item>
 
         <el-form-item label="高级选项">
@@ -87,7 +132,7 @@
         type="primary"
         @click="onConfirm"
         :loading="loading"
-        :disabled="validLinks.length === 0"
+        :disabled="validLinks.length === 0 || !selectedAccountId"
       >
         开始转存 ({{ validLinks.length }})
       </el-button>
@@ -96,14 +141,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { ElMessage } from 'element-plus'
-import { CheckCircle2, AlertTriangle, XCircle } from 'lucide-vue-next'
+import { ref, computed, watch } from 'vue'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { CheckCircle2, AlertTriangle, XCircle, FolderCheck } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
 import { useAppStore } from '../stores/app'
+import { useAccountStore } from '../stores/account'
+import type { FileItem, TransferLinkInput } from '@shared/types'
 
 const props = defineProps<{
   modelValue: boolean
+  initialLinks?: TransferLinkInput[]
+  initialTargetDirId?: string
+  initialTargetPath?: string
+  initialTargetName?: string
 }>()
 
 const emit = defineEmits<{
@@ -112,17 +163,115 @@ const emit = defineEmits<{
 }>()
 
 const appStore = useAppStore()
+const accountStore = useAccountStore()
 const loading = ref(false)
 const bulkText = ref('')
+const selectedAccountId = ref('')
 const unifiedPassword = ref('')
 const targetPath = ref('')
+const targetDirId = ref('0')
+const targetDirName = ref('根目录')
+const showDirectoryTree = ref(false)
 const autoShare = ref(false)
 const verifyFirst = ref(false)
 
+const transferStep = computed(() => {
+  if (!selectedAccountId.value) return 1
+  if (validLinks.value.length === 0) return 2
+  return 3
+})
+
 const needsCookieHint = computed(() => {
-  const acc = appStore.currentAccount
+  const acc = accountStore.accounts.find((account) => account.id === selectedAccountId.value)
   return acc?.platform === 'baidu' && acc?.loginType === 'oauth'
 })
+
+const platformNames: Record<string, string> = {
+  quark: '夸克',
+  baidu: '百度',
+  uc: 'UC',
+  xunlei: '迅雷',
+}
+
+interface DirectoryNode {
+  id: string
+  name: string
+  path?: string
+  children?: DirectoryNode[]
+  isLeaf?: boolean
+}
+
+const directoryTreeData: DirectoryNode[] = [{
+  id: '0',
+  name: '根目录',
+  children: [],
+  isLeaf: false,
+}]
+
+watch(() => props.modelValue, async (visible) => {
+  if (!visible) return
+
+  if (accountStore.accounts.length === 0) {
+    await accountStore.fetchAccounts()
+  }
+
+  selectedAccountId.value = appStore.currentAccount?.id
+    || accountStore.accounts[0]?.id
+    || ''
+  targetDirId.value = props.initialTargetDirId || '0'
+  targetPath.value = props.initialTargetPath || ''
+  targetDirName.value = props.initialTargetName || '根目录'
+  showDirectoryTree.value = false
+
+  if (props.initialLinks?.length) {
+    bulkText.value = props.initialLinks
+      .map((link) => `${link.url}${link.password ? ` 提取码: ${link.password}` : ''}`)
+      .join('\n')
+  }
+}, { immediate: true })
+
+function onTargetAccountChange(accountId: string) {
+  const isCurrentAccount = accountId === appStore.currentAccount?.id
+  targetDirId.value = isCurrentAccount ? (props.initialTargetDirId || '0') : '0'
+  targetPath.value = isCurrentAccount ? (props.initialTargetPath || '') : ''
+  targetDirName.value = isCurrentAccount ? (props.initialTargetName || '根目录') : '根目录'
+}
+
+async function loadDirectoryNode(
+  node: { data: DirectoryNode },
+  resolve: (data: DirectoryNode[]) => void,
+) {
+  if (!selectedAccountId.value) {
+    resolve([])
+    return
+  }
+
+  try {
+    const result = await electronApi.listFiles(selectedAccountId.value, node.data.id)
+    if (!result.success) {
+      resolve([])
+      return
+    }
+
+    resolve(result.files
+      .filter((file: FileItem) => file.isDir)
+      .map((file: FileItem) => ({
+        id: file.id,
+        name: file.name,
+        path: file.path,
+        children: [],
+        isLeaf: false,
+      })))
+  } catch {
+    resolve([])
+  }
+}
+
+function onDirectorySelect(node: DirectoryNode) {
+  targetDirId.value = node.id
+  targetDirName.value = node.name
+  targetPath.value = node.path || ''
+}
 
 interface ParsedLink {
   url: string
@@ -215,7 +364,10 @@ function onBulkInput() {
 }
 
 async function onConfirm() {
-  if (!appStore.currentAccount) return
+  if (!selectedAccountId.value) {
+    ElMessage.warning('请先选择目标账号')
+    return
+  }
 
   const links = validLinks.value.map((l) => ({
     url: l.url,
@@ -230,10 +382,11 @@ async function onConfirm() {
   loading.value = true
   try {
     const result = await electronApi.batchTransfer(
-      appStore.currentAccount.id,
+      selectedAccountId.value,
       links,
-      undefined,
+      targetDirId.value,
       targetPath.value.trim() || undefined,
+      { autoShare: autoShare.value },
     )
     if (result.success) {
       ElMessage.success(`已创建转存任务（${links.length} 个链接），请在任务日志中查看进度`)
@@ -242,6 +395,8 @@ async function onConfirm() {
       bulkText.value = ''
       unifiedPassword.value = ''
       targetPath.value = ''
+      targetDirId.value = '0'
+      targetDirName.value = '根目录'
     } else {
       ElMessage.error(result.error || '创建转存任务失败')
     }
@@ -298,6 +453,26 @@ async function onConfirm() {
   font-size: 11px;
   color: #9ca3af;
   margin-top: 4px;
+}
+
+.warning-hint {
+  color: #e6a23c;
+}
+
+.directory-picker {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.directory-tree {
+  width: 100%;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
 }
 
 .preview-list {
@@ -378,4 +553,44 @@ async function onConfirm() {
   color: #9ca3af;
   text-align: center;
 }
+.workflow-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 10px;
+  background: var(--pl-surface-subtle);
+  border: 1px solid var(--pl-border);
+  border-radius: 12px;
+}
+.workflow-step { display: flex; align-items: center; gap: 7px; color: var(--pl-text-muted); font-size: 11px; }
+.workflow-step > span { width: 23px; height: 23px; display: grid; place-items: center; flex: 0 0 auto; background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: 8px; font-size: 10px; }
+.workflow-step strong { font-weight: 600; }
+.workflow-step.active { color: var(--pl-primary-hover); }
+.workflow-step.active > span { color: #fff; background: var(--pl-primary); border-color: var(--pl-primary); box-shadow: 0 3px 8px rgba(52, 120, 246, .2); }
+.workflow-step.done { color: var(--pl-success); }
+.workflow-step.done > span { color: var(--pl-success); background: var(--pl-success-soft); border-color: #ccebe2; }
+.transfer-form { padding: 14px 14px 1px; background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); border-radius: 12px; }
+.transfer-form :deep(.el-form-item) { margin-bottom: 15px; }
+.transfer-form :deep(.el-form-item__label) { height: auto; margin-bottom: 6px; color: var(--pl-text-secondary); font-size: 12px; font-weight: 650; line-height: 1.35; }
+.link-stats { gap: 7px; flex-wrap: wrap; }
+.stat-valid, .stat-dup, .stat-invalid { padding: 4px 7px; border-radius: 7px; }
+.stat-valid { color: var(--pl-success); background: var(--pl-success-soft); }
+.stat-dup { color: var(--pl-warning); background: var(--pl-warning-soft); }
+.stat-invalid { color: var(--pl-danger); background: var(--pl-danger-soft); }
+.hint { color: var(--pl-text-muted); }
+.warning-hint { color: var(--pl-warning); }
+.directory-picker { gap: 7px; }
+.directory-tree { padding: 8px; background: var(--pl-surface); border-color: var(--pl-border); border-radius: 11px; }
+.directory-tree :deep(.el-tree-node__content) { height: 32px; border-radius: 7px; }
+.directory-tree :deep(.el-tree-node__content:hover),
+.directory-tree :deep(.is-current > .el-tree-node__content) { color: var(--pl-primary-hover); background: var(--pl-primary-soft); }
+.selected-target { display: flex; align-items: center; gap: 4px; color: var(--pl-success); }
+.preview-list { padding: 11px; background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); border-radius: 12px; }
+.preview-item { min-height: 34px; padding: 6px 8px; color: var(--pl-text-secondary); border: 1px solid var(--pl-border); border-radius: 8px; transition: transform .15s ease, border-color .15s ease; }
+.preview-item:hover { border-color: #c8d9f6; transform: translateX(2px); }
+.preview-item.invalid { color: var(--pl-danger); background: var(--pl-danger-soft); border-color: #f4cbd2; }
+.preview-item.dup { color: #9a6518; background: var(--pl-warning-soft); border-color: #f1d79e; }
+.preview-platform { color: var(--pl-primary); background: var(--pl-primary-soft); border-radius: 5px; }
+.preview-pwd { color: var(--pl-text-secondary); }
+.preview-more { color: var(--pl-text-muted); }
 </style>

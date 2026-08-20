@@ -57,7 +57,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { PLATFORM_LABELS } from '@shared/constants'
 import { electronApi } from '../api/ipc'
 import { useAppStore } from '../stores/app'

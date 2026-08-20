@@ -5,6 +5,7 @@ export const IPC_CHANNELS = {
   ACCOUNT_DELETE: 'account:delete',
   ACCOUNT_CHECK: 'account:check',
   ACCOUNT_QUOTA: 'account:quota',
+  ACCOUNT_MEMBERSHIP: 'account:membership',
   ACCOUNT_GET_CREDENTIAL: 'account:get-credential',
 
   // File
@@ -16,11 +17,21 @@ export const IPC_CHANNELS = {
   FILE_DELETE: 'file:delete',
   FILE_COPY: 'file:copy',
   FILE_GET_LINK: 'file:get-link',
+  FILE_PREVIEW_PREPARE: 'file-preview:create',
+  FILE_PREVIEW_CLEANUP: 'file-preview:cleanup',
+
+  // Global search
+  GLOBAL_SEARCH: 'global-search:execute',
+  GLOBAL_SEARCH_HISTORY: 'global-search:history',
+  SAVED_SEARCH_LIST: 'saved-search:list',
+  SAVED_SEARCH_SAVE: 'saved-search:save',
+  SAVED_SEARCH_DELETE: 'saved-search:delete',
 
   // Batch operations (task-based)
   BATCH_RENAME: 'batch:rename',
   BATCH_MOVE: 'batch:move',
   BATCH_DELETE: 'batch:delete',
+  CLOUD_TRANSFER_CREATE: 'cloud-transfer:create',
 
   // Share
   SHARE_BATCH_CREATE: 'share:batch-create',
@@ -37,6 +48,12 @@ export const IPC_CHANNELS = {
   // Download
   DOWNLOAD_FILES: 'download:files',
   DOWNLOAD_SELECT_DIR: 'download:select-dir',
+
+  // Upload
+  UPLOAD_SELECT_FILES: 'upload:select-files',
+  UPLOAD_SELECT_FOLDER: 'upload:select-folder',
+  UPLOAD_HANDLE_DROP: 'upload:handle-drop',
+  UPLOAD_FILES: 'upload:files',
 
   // Archive
   ARCHIVE_LIST: 'archive:list',
@@ -86,8 +103,29 @@ export const IPC_CHANNELS = {
   TASK_LIST: 'task:list',
   TASK_RETRY: 'task:retry',
   TASK_CANCEL: 'task:cancel',
+  TASK_PAUSE: 'task:pause',
+  TASK_RESUME: 'task:resume',
+  TASK_DELETE: 'task:delete',
   TASK_LOGS: 'task:logs',
   TASK_UPDATED: 'task:updated',
+
+  // Backup and security
+  BACKUP_CREATE: 'backup:create',
+  BACKUP_INSPECT: 'backup:inspect',
+  BACKUP_RESTORE: 'backup:restore',
+  CONFIG_BACKUP_EXPORT: 'config-backup:export',
+  CONFIG_BACKUP_PREVIEW: 'config-backup:preview',
+  CONFIG_BACKUP_IMPORT: 'config-backup:import',
+  APP_LOCK_STATUS: 'app-lock:status',
+  APP_LOCK_CONFIGURE: 'app-lock:configure',
+  APP_LOCK_UNLOCK: 'app-lock:unlock',
+  APP_LOCK_NOW: 'app-lock:now',
+  APP_LOCK_TOUCH: 'app-lock:touch',
+  APP_LOCK_CHANGE_PASSWORD: 'app-lock:change-password',
+  APP_LOCK_DISABLE: 'app-lock:disable',
+  APP_LOCK_SET_AUTO_LOCK: 'app-lock:set-auto-lock',
+  APP_LOCK_CHANGED: 'app-lock:changed',
+  APP_NAVIGATE: 'app:navigate',
 
   // Export
   EXPORT_CSV: 'export:csv',
@@ -110,6 +148,39 @@ export const IPC_CHANNELS = {
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
   SETTINGS_GET_ALL: 'settings:get-all',
+
+  // AI workspace (independent from share/transfer/cloud-transfer)
+  AI_SELECT_FILES: 'ai:select-files',
+  AI_IMPORT_FILES: 'ai:import-files',
+  AI_DOCUMENT_LIST: 'ai:document-list',
+  AI_DOCUMENT_DELETE: 'ai:document-delete',
+  AI_DOCUMENT_REINDEX: 'ai:document-reindex',
+  AI_TASK_LIST: 'ai:task-list',
+  AI_TASK_UPDATED: 'ai:task-updated',
+  AI_PROVIDER_GET: 'ai:provider-get',
+  AI_PROVIDER_SAVE: 'ai:provider-save',
+  AI_PROVIDER_TEST: 'ai:provider-test',
+  AI_PROVIDER_LIST: 'ai:provider-list',
+  AI_PROVIDER_ACTIVATE: 'ai:provider-activate',
+  AI_PROVIDER_DELETE: 'ai:provider-delete',
+  AI_PROVIDER_USAGE: 'ai:provider-usage',
+  AI_LOCAL_TOOLS_GET: 'ai:local-tools-get',
+  AI_LOCAL_TOOLS_SAVE: 'ai:local-tools-save',
+  AI_LOCAL_TOOLS_SELECT: 'ai:local-tools-select',
+  AI_ASK: 'ai:ask',
+  AI_ASK_STREAM_START: 'ai:ask-stream-start',
+  AI_ASK_STREAM_CANCEL: 'ai:ask-stream-cancel',
+  AI_ASK_STREAM_EVENT: 'ai:ask-stream-event',
+  AI_CONVERSATION_LIST: 'ai:conversation-list',
+  AI_CONVERSATION_CREATE: 'ai:conversation-create',
+  AI_CONVERSATION_RENAME: 'ai:conversation-rename',
+  AI_CONVERSATION_DELETE: 'ai:conversation-delete',
+  AI_CONVERSATION_SET_DOCUMENTS: 'ai:conversation-set-documents',
+  AI_CONVERSATION_MESSAGES: 'ai:conversation-messages',
+  AI_CONVERSATION_SEARCH: 'ai:conversation-search',
+  AI_CONVERSATION_EXPORT: 'ai:conversation-export',
+  AI_CONVERSATION_TRUNCATE: 'ai:conversation-truncate',
+  AI_KNOWLEDGE_EXPORT: 'ai:knowledge-export',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
@@ -137,17 +208,21 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
   batch_share: '批量分享',
   transfer: '转存',
   batch_transfer: '批量转存',
+  cloud_transfer: '跨网盘迁移',
   upload: '上传文件',
   download: '下载文件',
-  decompress: '解压文件',
+  archive_extract: '解压文件',
+  archive_compress: '创建压缩包',
 }
 
 export const TASK_STATUS_LABELS: Record<string, string> = {
   pending: '等待中',
   running: '执行中',
   success: '已完成',
+  partial_success: '部分完成',
   failed: '失败',
   paused: '已暂停',
+  cancelled: '已取消',
 }
 
 export const MAX_RETRY_COUNT = 3

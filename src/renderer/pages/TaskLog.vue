@@ -43,102 +43,102 @@
       </div>
     </div>
 
-    <!-- Task table -->
+    <!-- Task cards -->
     <div class="task-card">
-      <el-table
-        :data="filteredTasks"
-        style="width: 100%"
-        :header-cell-style="headerStyle"
-        :row-style="{ height: '52px' }"
-        :cell-style="{ padding: '0' }"
-        empty-text="暂无任务"
-      >
-        <el-table-column label="任务" min-width="240">
-          <template #default="{ row }">
-            <div class="task-name-cell">
-              <div class="task-type-icon" :class="row.taskType">
-                <component :is="taskTypeIcon(row.taskType)" :size="16" />
-              </div>
-              <div class="task-info">
+      <div v-if="filteredTasks.length > 0" class="task-list">
+        <article
+          v-for="row in filteredTasks"
+          :key="row.id"
+          class="task-row"
+          :class="row.status"
+          @click="onViewLog(row)"
+        >
+          <div class="task-row-main">
+            <div class="task-type-icon" :class="row.taskType">
+              <component :is="taskTypeIcon(row.taskType)" :size="17" />
+            </div>
+            <div class="task-info">
+              <div class="task-title-row">
                 <span class="task-title">{{ row.title }}</span>
                 <span class="task-type-label">{{ TASK_TYPE_LABELS[row.taskType] || row.taskType }}</span>
               </div>
+              <div class="task-meta">
+                {{ formatTimestamp(row.createdAt) }} · 重试 {{ row.retryCount }} 次
+                <span v-if="row.status === 'running'"> · {{ progressMetrics(row) }}</span>
+              </div>
             </div>
-          </template>
-        </el-table-column>
+          </div>
 
-        <el-table-column label="状态" width="120" align="center">
-          <template #default="{ row }">
+          <div class="task-row-progress">
             <div class="task-status-badge" :class="row.status">
               <component :is="taskStatusIcon(row.status)" :size="12" />
               {{ TASK_STATUS_LABELS[row.status] || row.status }}
             </div>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="进度" width="140" align="center">
-          <template #default="{ row }">
             <div class="progress-cell">
-              <el-progress
-                v-if="row.status === 'running'"
-                :percentage="row.progress"
-                :stroke-width="6"
-                :show-text="false"
-                color="#3b82f6"
-              />
-              <div v-else class="progress-bar-bg">
+              <div class="progress-bar-bg">
                 <div class="progress-bar-fill" :style="{ width: row.progress + '%' }" :class="row.status"></div>
               </div>
               <span class="progress-text">{{ row.progress }}%</span>
             </div>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="重试" width="70" align="center">
-          <template #default="{ row }">
-            <span class="cell-muted">{{ row.retryCount }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="创建时间" width="140" align="center">
-          <template #default="{ row }">
-            <span class="cell-muted">{{ formatTimestamp(row.createdAt) }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="120" align="center" fixed="right">
-          <template #default="{ row }">
-            <div class="action-btns">
-              <button
-                v-if="row.status === 'failed'"
-                class="action-btn"
-                title="重试"
-                @click="onRetry(row)"
-              >
-                <RotateCw :size="14" />
-              </button>
-              <button
-                v-if="row.status === 'pending' || row.status === 'running'"
-                class="action-btn danger"
-                title="取消"
-                @click="onCancel(row)"
-              >
-                <X :size="14" />
-              </button>
-              <button class="action-btn" title="查看日志" @click="onViewLog(row)">
-                <FileText :size="14" />
-              </button>
-            </div>
-          </template>
-        </el-table-column>
-
-        <template #empty>
-          <div class="table-empty">
-            <ListTodo :size="40" :stroke-width="1" />
-            <p>暂无任务记录</p>
           </div>
-        </template>
-      </el-table>
+
+          <div class="task-row-actions" @click.stop>
+            <button
+              v-if="row.status === 'failed' || row.status === 'partial_success' || row.status === 'cancelled'"
+              class="task-action primary"
+              title="重新执行此任务"
+              @click="onRetry(row)"
+            >
+              <RotateCw :size="14" />
+              重试
+            </button>
+            <button
+              v-if="row.status === 'pending' || row.status === 'running'"
+              class="task-action"
+              title="暂停此任务"
+              @click="onPause(row)"
+            >
+              <Pause :size="14" />
+              暂停
+            </button>
+            <button
+              v-if="row.status === 'paused'"
+              class="task-action primary"
+              title="恢复此任务"
+              @click="onResume(row)"
+            >
+              <Play :size="14" />
+              恢复
+            </button>
+            <button
+              v-if="row.status === 'pending' || row.status === 'running' || row.status === 'paused'"
+              class="task-action danger"
+              title="取消此任务"
+              @click="onCancel(row)"
+            >
+              <X :size="14" />
+              取消
+            </button>
+            <button class="task-action ghost" title="查看任务日志" @click="onViewLog(row)">
+              <FileText :size="14" />
+              日志
+            </button>
+            <button
+              v-if="['success', 'partial_success', 'failed', 'cancelled'].includes(row.status)"
+              class="task-action ghost danger"
+              title="删除任务记录"
+              @click="onDelete(row)"
+            >
+              <Trash2 :size="14" />
+            </button>
+          </div>
+        </article>
+      </div>
+      <div v-else class="table-empty">
+        <ListTodo :size="42" :stroke-width="1.2" />
+        <strong>暂无任务</strong>
+        <p>任务执行后会在这里显示进度和日志</p>
+      </div>
     </div>
 
     <!-- Stats bar -->
@@ -200,16 +200,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, markRaw } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, computed, onMounted, onUnmounted, markRaw } from 'vue'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import {
   ListTodo, RefreshCw, CheckCircle2, XCircle, Loader2, Clock,
   RotateCw, X, FileText, Copy, Trash2, FolderInput, Plus,
-  CircleDot, AlertCircle, Share2, ArrowDownToLine, ExternalLink, Pause,
+  CircleDot, AlertCircle, Share2, ArrowDownToLine, ExternalLink, Pause, Play,
 } from 'lucide-vue-next'
 import { TASK_TYPE_LABELS, TASK_STATUS_LABELS } from '@shared/constants'
-import { formatTimestamp } from '@shared/utils'
+import { formatFileSize, formatTimestamp } from '@shared/utils'
 import { electronApi } from '../api/ipc'
+import { scheduleUndoableAction } from '../services/undo-feedback'
 import type { Task, LogEntry } from '@shared/types'
 
 const tasks = ref<Task[]>([])
@@ -218,24 +220,17 @@ const taskTypeFilter = ref('')
 const showLogDialog = ref(false)
 const currentLogs = ref<LogEntry[]>([])
 const currentTaskTitle = ref('')
-
-const headerStyle = {
-  background: '#f9fafb',
-  color: '#6b7280',
-  fontWeight: '600',
-  fontSize: '12px',
-  textTransform: 'uppercase',
-  letterSpacing: '0.5px',
-  borderBottom: '1px solid #e5e7eb',
-  height: '44px',
-}
+const nowTick = ref(Date.now())
 
 const statusFilters = computed(() => [
   { value: '', label: '全部', icon: markRaw(ListTodo), count: tasks.value.length },
   { value: 'pending', label: '等待中', icon: markRaw(Clock), count: tasks.value.filter(t => t.status === 'pending').length },
   { value: 'running', label: '执行中', icon: markRaw(Loader2), count: tasks.value.filter(t => t.status === 'running').length },
   { value: 'success', label: '已完成', icon: markRaw(CheckCircle2), count: tasks.value.filter(t => t.status === 'success').length },
+  { value: 'partial_success', label: '部分完成', icon: markRaw(AlertCircle), count: tasks.value.filter(t => t.status === 'partial_success').length },
   { value: 'failed', label: '失败', icon: markRaw(XCircle), count: tasks.value.filter(t => t.status === 'failed').length },
+  { value: 'paused', label: '已暂停', icon: markRaw(Pause), count: tasks.value.filter(t => t.status === 'paused').length },
+  { value: 'cancelled', label: '已取消', icon: markRaw(XCircle), count: tasks.value.filter(t => t.status === 'cancelled').length },
 ])
 
 const typeFilters = computed(() => [
@@ -247,6 +242,10 @@ const typeFilters = computed(() => [
   { value: 'rename', label: '重命名' },
   { value: 'move', label: '移动' },
   { value: 'delete', label: '删除' },
+  { value: 'upload', label: '上传' },
+  { value: 'download', label: '下载' },
+  { value: 'archive_extract', label: '解压' },
+  { value: 'archive_compress', label: '压缩' },
 ])
 
 const filteredTasks = computed(() => {
@@ -281,6 +280,8 @@ function taskStatusIcon(status: string) {
     case 'running': return markRaw(Loader2)
     case 'pending': return markRaw(Clock)
     case 'paused': return markRaw(Pause)
+    case 'partial_success': return markRaw(AlertCircle)
+    case 'cancelled': return markRaw(XCircle)
     default: return markRaw(CircleDot)
   }
 }
@@ -310,6 +311,81 @@ async function onCancel(task: Task) {
   }
 }
 
+function taskTotalBytes(task: Task): number {
+  const payload = task.payload || {}
+  const direct = Number(payload.totalBytes || payload.fileSize || payload.size || 0)
+  if (Number.isFinite(direct) && direct > 0) return direct
+  for (const key of ['files', 'items']) {
+    const values = payload[key]
+    if (Array.isArray(values)) {
+      const total = values.reduce((sum, item) => sum + Number((item as Record<string, unknown>)?.size || (item as Record<string, unknown>)?.fileSize || 0), 0)
+      if (total > 0) return total
+    }
+  }
+  return 0
+}
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '估算中'
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} 秒`
+  if (seconds < 3600) return `${Math.ceil(seconds / 60)} 分钟`
+  return `${(seconds / 3600).toFixed(1)} 小时`
+}
+
+function progressMetrics(task: Task): string {
+  const currentTime = nowTick.value
+  const elapsed = Math.max(1, (currentTime - task.createdAt) / 1000)
+  const progress = Math.max(0, Math.min(100, task.progress))
+  if (progress <= 0) return '正在准备'
+  const totalBytes = taskTotalBytes(task)
+  const remainingSeconds = elapsed * (100 - progress) / progress
+  if (totalBytes > 0) {
+    const bytesPerSecond = totalBytes * progress / 100 / elapsed
+    return `${formatFileSize(bytesPerSecond)}/s · 剩余约 ${formatDuration(remainingSeconds)}`
+  }
+  return `${(progress / elapsed * 60).toFixed(1)}%/分钟 · 剩余约 ${formatDuration(remainingSeconds)}`
+}
+
+async function onPause(task: Task) {
+  const result = await electronApi.pauseTask(task.id)
+  if (result.success) {
+    ElMessage.success('任务已暂停')
+    onRefresh()
+  } else {
+    ElMessage.error(result.error || '暂停失败')
+  }
+}
+
+async function onResume(task: Task) {
+  const result = await electronApi.resumeTask(task.id)
+  if (result.success) {
+    ElMessage.success('任务已恢复')
+    onRefresh()
+  } else {
+    ElMessage.error(result.error || '恢复失败')
+  }
+}
+
+async function onDelete(task: Task) {
+  try {
+    await ElMessageBox.confirm('删除这条任务及其日志记录？', '删除任务记录', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch { return }
+  tasks.value = tasks.value.filter(item => item.id !== task.id)
+  scheduleUndoableAction({
+    title: '任务记录已移除',
+    message: '将在 5 秒后永久删除任务和日志。',
+    onUndo: () => { tasks.value = [...tasks.value, task].sort((left, right) => right.createdAt - left.createdAt) },
+    onCommit: async () => {
+      const result = await electronApi.deleteTask(task.id)
+      if (!result.success) { ElMessage.error(result.error || '删除失败'); await onRefresh() }
+    },
+  })
+}
+
 async function onViewLog(task: Task) {
   currentTaskTitle.value = task.title
   const result = await electronApi.getTaskLogs(task.id)
@@ -319,8 +395,18 @@ async function onViewLog(task: Task) {
   showLogDialog.value = true
 }
 
+let removeTaskListener: (() => void) | undefined
+let clockTimer: ReturnType<typeof setInterval> | undefined
+
 onMounted(() => {
   onRefresh()
+  removeTaskListener = electronApi.onTaskUpdated(() => { void onRefresh() })
+  clockTimer = setInterval(() => { nowTick.value = Date.now() }, 1000)
+})
+
+onUnmounted(() => {
+  removeTaskListener?.()
+  if (clockTimer) clearInterval(clockTimer)
 })
 </script>
 
@@ -329,18 +415,20 @@ onMounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--pl-space-4);
 }
 
 /* ── Page header ── */
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  padding: 20px 24px;
-  background: #ffffff;
-  border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  align-items: center;
+  gap: 20px;
+  padding: 16px 20px;
+  background: var(--pl-surface);
+  border-radius: var(--pl-radius-card);
+  border: 1px solid var(--pl-border);
+  box-shadow: var(--pl-shadow-card);
 }
 
 .header-info {
@@ -353,8 +441,8 @@ onMounted(() => {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: #eff6ff;
-  color: #3b82f6;
+  background: var(--pl-primary-soft);
+  color: var(--pl-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -363,18 +451,22 @@ onMounted(() => {
 .header-info h2 {
   font-size: 16px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--pl-text);
   margin-bottom: 2px;
 }
 
 .header-info p {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .header-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -382,31 +474,38 @@ onMounted(() => {
 .filter-chips {
   display: flex;
   gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
 }
 
 .filter-chip {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 10px;
-  border: 1px solid #e5e7eb;
+  padding: 6px 11px;
+  border: 1px solid var(--pl-border);
   background: #ffffff;
-  border-radius: 6px;
+  border-radius: var(--pl-radius-sm);
   font-size: 12px;
+  white-space: nowrap;
+  flex: 0 0 auto;
   color: #6b7280;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .filter-chip:hover {
-  background: #f9fafb;
-  border-color: #d1d5db;
+  background: #f7f9fc;
+  border-color: var(--pl-border-strong);
 }
 
 .filter-chip.active {
-  background: #eff6ff;
-  border-color: #93c5fd;
-  color: #3b82f6;
+  background: var(--pl-primary-soft);
+  border-color: #b9cdfa;
+  color: var(--pl-primary-hover);
 }
 
 .chip-count {
@@ -417,23 +516,169 @@ onMounted(() => {
   height: 18px;
   padding: 0 4px;
   border-radius: 4px;
-  background: #f3f4f6;
+  background: #f2f4f7;
   font-size: 11px;
   font-weight: 600;
 }
 
 .filter-chip.active .chip-count {
-  background: #dbeafe;
-  color: #3b82f6;
+  background: #dbe7ff;
+  color: var(--pl-primary-hover);
 }
 
 /* ── Task card ── */
 .task-card {
   flex: 1;
-  overflow: hidden;
-  background: #ffffff;
-  border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  overflow: auto;
+  background: var(--pl-surface);
+  border-radius: var(--pl-radius-card);
+  border: 1px solid var(--pl-border);
+  box-shadow: var(--pl-shadow-card);
+  padding: 8px;
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(190px, 240px) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 76px;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: var(--pl-surface);
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.task-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 16px;
+  bottom: 16px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #d9e1ec;
+}
+
+.task-row.running::before { background: var(--pl-primary); }
+.task-row.success::before { background: var(--pl-success); }
+.task-row.partial_success::before,
+.task-row.paused::before { background: var(--pl-warning); }
+.task-row.failed::before { background: var(--pl-danger); }
+
+.task-row:hover {
+  transform: translateY(-1px);
+  border-color: #cfdcf5;
+  background: #fbfdff;
+  box-shadow: 0 8px 20px rgba(31, 41, 55, 0.07);
+}
+
+.task-row:focus-within {
+  border-color: #b9cdfa;
+  box-shadow: 0 0 0 3px rgba(52, 120, 246, 0.1);
+}
+
+.task-row-main,
+.task-title-row,
+.task-meta,
+.task-row-progress,
+.task-row-actions {
+  display: flex;
+  align-items: center;
+}
+
+.task-row-main {
+  gap: 12px;
+  min-width: 0;
+}
+
+.task-title-row {
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-meta {
+  margin-top: 5px;
+  color: var(--pl-text-muted);
+  font-size: 11px;
+}
+
+.task-row-progress {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.task-row-actions {
+  justify-content: flex-end;
+  gap: 6px;
+  opacity: 0.72;
+  transform: translateX(4px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.task-row:hover .task-row-actions,
+.task-row:focus-within .task-row-actions {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.task-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--pl-border);
+  border-radius: 8px;
+  color: var(--pl-text-secondary);
+  background: var(--pl-surface);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.task-action:hover {
+  border-color: #b9cdfa;
+  color: var(--pl-primary-hover);
+  background: var(--pl-primary-soft);
+  transform: translateY(-1px);
+}
+
+.task-action.primary {
+  border-color: transparent;
+  color: #fff;
+  background: var(--pl-primary);
+}
+
+.task-action.primary:hover {
+  color: #fff;
+  background: var(--pl-primary-hover);
+}
+
+.task-action.ghost {
+  padding-inline: 8px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.task-action.danger:hover {
+  border-color: #f3c3cb;
+  color: var(--pl-danger);
+  background: var(--pl-danger-soft);
 }
 
 /* ── Table overrides ── */
@@ -509,17 +754,21 @@ onMounted(() => {
 }
 
 .task-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: #1f2937;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--pl-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .task-type-label {
-  font-size: 11px;
-  color: #9ca3af;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: #f1f4f8;
+  font-size: 10px;
+  color: var(--pl-text-secondary);
 }
 
 /* ── Status badge ── */
@@ -534,18 +783,28 @@ onMounted(() => {
 }
 
 .task-status-badge.success {
-  background: #f0fdf4;
-  color: #22c55e;
+  background: var(--pl-success-soft);
+  color: var(--pl-success);
 }
 
 .task-status-badge.failed {
-  background: #fef2f2;
-  color: #ef4444;
+  background: var(--pl-danger-soft);
+  color: var(--pl-danger);
+}
+
+.task-status-badge.partial_success {
+  background: var(--pl-warning-soft);
+  color: var(--pl-warning);
+}
+
+.task-status-badge.cancelled {
+  background: #f3f4f6;
+  color: var(--pl-text-secondary);
 }
 
 .task-status-badge.running {
-  background: #fffbeb;
-  color: #f59e0b;
+  background: var(--pl-info-soft);
+  color: var(--pl-primary);
 }
 
 .task-status-badge.running svg {
@@ -558,8 +817,8 @@ onMounted(() => {
 }
 
 .task-status-badge.paused {
-  background: #fef3c7;
-  color: #d97706;
+  background: var(--pl-warning-soft);
+  color: var(--pl-warning);
 }
 
 @keyframes spin {
@@ -572,7 +831,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px;
+  padding: 0;
+  width: 100%;
 }
 
 .progress-bar-bg {
@@ -586,21 +846,25 @@ onMounted(() => {
 .progress-bar-fill {
   height: 100%;
   border-radius: 3px;
-  background: #3b82f6;
+  background: var(--pl-primary);
   transition: width 0.3s ease;
 }
 
 .progress-bar-fill.success {
-  background: #22c55e;
+  background: var(--pl-success);
 }
 
 .progress-bar-fill.failed {
-  background: #ef4444;
+  background: var(--pl-danger);
+}
+
+.progress-bar-fill.partial_success {
+  background: var(--pl-warning);
 }
 
 .progress-text {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   min-width: 32px;
   text-align: right;
 }
@@ -664,9 +928,9 @@ onMounted(() => {
   align-items: center;
   gap: 16px;
   padding: 10px 16px;
-  background: #f9fafb;
-  border-radius: 8px;
-  border: 1px solid #f3f4f6;
+  background: #fbfcfe;
+  border-radius: 10px;
+  border: 1px solid #e4e9f1;
 }
 
 .stat-chip {
@@ -791,5 +1055,55 @@ onMounted(() => {
   font-size: 13px;
   color: #374151;
   word-break: break-all;
+}
+
+@media (max-width: 1120px) {
+  .page-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .task-row {
+    grid-template-columns: minmax(220px, 1fr) minmax(170px, 220px);
+  }
+
+  .task-row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    padding-left: 48px;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .task-log {
+    gap: 10px;
+  }
+
+  .task-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 13px;
+  }
+
+  .task-row-actions {
+    grid-column: auto;
+    padding-left: 0;
+    flex-wrap: wrap;
+  }
+
+  .stats-bar {
+    flex-wrap: wrap;
+  }
+
+  .stat-spacer {
+    display: none;
+  }
 }
 </style>

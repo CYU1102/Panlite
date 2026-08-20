@@ -362,6 +362,7 @@ export async function openBaiduLoginWindow(parentWindow: BrowserWindow): Promise
     const onConfirm = async (_event: Electron.IpcMainEvent) => {
       if (resolved) return
       try {
+        const userAgent = loginWindow.webContents.getUserAgent()
         const allCookies = await baiduSession.cookies.get({})
         const cookieStr = allCookies
           .filter((c) => c.domain?.includes('baidu.com'))
@@ -414,7 +415,7 @@ export async function openBaiduLoginWindow(parentWindow: BrowserWindow): Promise
         resolved = true
         ipcMain.removeListener('__login_confirm', onConfirm)
         loginWindow.close()
-        resolve({ success: true, cookies: cookieStr, nickname })
+        resolve({ success: true, cookies: cookieStr, userAgent, nickname })
       } catch (err) {
         log.error('Baidu login confirm error:', String(err))
       }

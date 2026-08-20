@@ -3,6 +3,9 @@ import type { DriveAdapter } from './base'
 import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult, UploadOptions, UploadResult, DownloadOptions, DownloadResult } from '../shared/types'
 import { generateId, sleep, randomInt } from '../shared/utils'
 import log from 'electron-log'
+import { resolvePathInside, sanitizeFileName } from '../main/file-transfer'
+import { getRequestSettings } from '../main/request-settings'
+import { normalizeMembership } from '../shared/membership'
 
 // ── 常量（完全参照 QuarkPanTool） ──
 
@@ -217,7 +220,7 @@ export class QuarkAdapter implements DriveAdapter {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
 
-    const pageSize = 200
+    const { quarkPageSize: pageSize, requestDelayMs } = getRequestSettings()
     const maxPages = 100
     const allFiles: FileItem[] = []
 
@@ -253,7 +256,7 @@ export class QuarkAdapter implements DriveAdapter {
         if (items.length < pageSize) break
       }
 
-      await sleep(200)
+      if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
 
     return { files: allFiles, parentId, hasMore: false }
@@ -266,7 +269,7 @@ export class QuarkAdapter implements DriveAdapter {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
 
-    const pageSize = 50
+    const { quarkPageSize: pageSize, requestDelayMs } = getRequestSettings()
     const maxPages = 100
     const allFiles: FileItem[] = []
 
@@ -285,7 +288,7 @@ export class QuarkAdapter implements DriveAdapter {
       allFiles.push(...items.map((f: QuarkFileItem) => mapQuarkFile(f, account.id)))
 
       if (items.length < pageSize) break
-      await sleep(200)
+      if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
 
     return allFiles
@@ -738,6 +741,7 @@ export class QuarkAdapter implements DriveAdapter {
     const fs = require('fs')
     const path = require('path')
     const crypto = require('crypto')
+    options?.signal?.throwIfAborted()
 
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
@@ -831,6 +835,7 @@ export class QuarkAdapter implements DriveAdapter {
 
     try {
     for (let i = 0; i < totalParts; i++) {
+      options?.signal?.throwIfAborted()
       const start = i * partSize
       const end = Math.min(start + partSize, fileSize)
       const chunkSize = end - start
@@ -869,6 +874,7 @@ export class QuarkAdapter implements DriveAdapter {
       // alist: SetQueryParams + SetBody(bytes).Put(u)
       const ossUrl = `${ossBaseUrl}?partNumber=${partNumber}&uploadId=${uploadId}`
       const ossRes = await fetch(ossUrl, {
+        signal: options?.signal,
         method: 'PUT',
         headers: {
           'Authorization': authKey,
@@ -892,7 +898,7 @@ export class QuarkAdapter implements DriveAdapter {
       options?.onProgress?.({
         loaded: uploadedBytes,
         total: fileSize,
-        percent: Math.round((uploadedBytes / fileSize) * 100),
+        percent: fileSize > 0 ? Math.round((uploadedBytes / fileSize) * 100) : 100,
         speed: 0,
       })
     }
@@ -937,6 +943,7 @@ export class QuarkAdapter implements DriveAdapter {
 
     const commitUrl = `${ossBaseUrl}?uploadId=${uploadId}`
     const commitRes = await fetch(commitUrl, {
+      signal: options?.signal,
       method: 'POST',
       headers: {
         'Authorization': commitAuthRes.data?.auth_key,
@@ -1062,18 +1069,20 @@ export class QuarkAdapter implements DriveAdapter {
   ): Promise<DownloadResult> {
     const fs = require('fs')
     const path = require('path')
+    options?.signal?.throwIfAborted()
 
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
 
     const fileName = options?.fileName || 'download'
-    const localPath = path.join(localDirPath, fileName)
+    const localPath = resolvePathInside(localDirPath, sanitizeFileName(fileName))
 
     // 获取下载链接
     const downloadUrl = await this.getDownloadUrl(account, fileId)
 
     // 下载文件（alist: 带 Cookie/Referer/User-Agent）
     const response = await fetch(downloadUrl, {
+      signal: options?.signal,
       headers: {
         'Cookie': cookies,
         'Referer': 'https://pan.quark.cn/',
@@ -1183,6 +1192,17 @@ export class QuarkAdapter implements DriveAdapter {
     }
 
     throw new Error('夸克网盘暂不支持容量查询')
+  }
+
+  async getMembership(account: DriveAccount) {
+    const cookies = account.credential.cookies || ''
+    if (!cookies) throw new Error('未登录')
+    const data = await quarkRequest<any>(
+      'https://drive-pc.quark.cn/1/clouddrive/member',
+      cookies,
+      { params: { pr: 'ucpro', fr: 'pc' } },
+    )
+    return normalizeMembership(data, '夸克')
   }
 }
 

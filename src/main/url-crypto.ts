@@ -1,82 +1,100 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'crypto'
+import { app, safeStorage } from 'electron'
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import log from 'electron-log'
 
-/**
- * URL加密/解密工具
- * 参考 xinyue-search 的 encryptObject/decryptObject 实现
- * 使用 AES-256-CBC 加密算法
- */
+const FORMAT_PREFIX = 'pl2'
+const KEY_FILE_NAME = 'url-crypto.key'
+const LEGACY_KEY = Buffer.from('ABCD0000000000000000000000000000')
+const LEGACY_IV = Buffer.from('1234567890123456')
 
-// 加密密钥（与xinyue-search一致）
-const ENCRYPTION_KEY = 'ABCD0000000000000000000000000000' // 32字节 for AES-256
-const IV = '1234567890123456' // 16字节 IV（与xinyue-search一致）
+let cachedKey: Buffer | null = null
 
-/**
- * 加密URL
- * 与 xinyue-search 的 encryptObject 逻辑一致
- */
+function getOrCreateKey(): Buffer {
+  if (cachedKey) return cachedKey
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法保护 URL 加密密钥')
+
+  const keyPath = join(app.getPath('userData'), KEY_FILE_NAME)
+  if (existsSync(keyPath)) {
+    const protectedKey = Buffer.from(readFileSync(keyPath, 'utf8'), 'base64')
+    cachedKey = Buffer.from(safeStorage.decryptString(protectedKey), 'base64')
+    if (cachedKey.length !== 32) throw new Error('URL 加密密钥损坏')
+    return cachedKey
+  }
+
+  const key = randomBytes(32)
+  const protectedKey = safeStorage.encryptString(key.toString('base64'))
+  mkdirSync(dirname(keyPath), { recursive: true })
+  writeFileSync(keyPath, protectedKey.toString('base64'), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+  cachedKey = key
+  return key
+}
+
+function decryptLegacy(value: string): string {
+  const decipher = createDecipheriv('aes-256-cbc', LEGACY_KEY, LEGACY_IV)
+  return decipher.update(value, 'base64', 'utf8') + decipher.final('utf8')
+}
+
+/** Encrypt with a per-installation key, a random nonce, and authenticated AES-256-GCM. */
 export function encryptUrl(url: string): string {
   try {
-    const cipher = createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), Buffer.from(IV))
-    let encrypted = cipher.update(url, 'utf8', 'base64')
-    encrypted += cipher.final('base64')
-    return encrypted
+    const nonce = randomBytes(12)
+    const cipher = createCipheriv('aes-256-gcm', getOrCreateKey(), nonce)
+    const ciphertext = Buffer.concat([cipher.update(url, 'utf8'), cipher.final()])
+    const tag = cipher.getAuthTag()
+    return [FORMAT_PREFIX, nonce.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join('.')
   } catch (err) {
     log.error('[URL Crypto] Encryption error:', String(err))
-    return url
+    throw err
   }
 }
 
-/**
- * 解密URL
- * 与 xinyue-search 的 decryptObject 逻辑一致
- */
+/** Decrypt the authenticated format, with read-only support for legacy CBC values. */
 export function decryptUrl(encryptedUrl: string): string {
   try {
-    const decipher = createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), Buffer.from(IV))
-    let decrypted = decipher.update(encryptedUrl, 'base64', 'utf8')
-    decrypted += decipher.final('utf8')
-    return decrypted
+    if (!encryptedUrl.startsWith(`${FORMAT_PREFIX}.`)) return decryptLegacy(encryptedUrl)
+
+    const parts = encryptedUrl.split('.')
+    if (parts.length !== 4) throw new Error('无效的 URL 加密格式')
+    const nonce = Buffer.from(parts[1], 'base64url')
+    const tag = Buffer.from(parts[2], 'base64url')
+    const ciphertext = Buffer.from(parts[3], 'base64url')
+    if (nonce.length !== 12 || tag.length !== 16) throw new Error('无效的 URL 加密参数')
+
+    const decipher = createDecipheriv('aes-256-gcm', getOrCreateKey(), nonce)
+    decipher.setAuthTag(tag)
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8')
   } catch (err) {
     log.error('[URL Crypto] Decryption error:', String(err))
-    return encryptedUrl
+    throw err
   }
 }
 
-/**
- * 批量加密URL
- */
 export function encryptUrls(urls: string[]): string[] {
   return urls.map(encryptUrl)
 }
 
-/**
- * 批量解密URL
- */
 export function decryptUrls(encryptedUrls: string[]): string[] {
   return encryptedUrls.map(decryptUrl)
 }
 
-/**
- * 检查字符串是否是加密的URL
- * 简单判断：加密后的字符串是base64格式且长度较长
- */
-export function isEncryptedUrl(str: string): boolean {
-  // Base64格式检查
-  const base64Regex = /^[A-Za-z0-9+/]+=*$/
-  if (!base64Regex.test(str)) return false
+export function isEncryptedUrl(value: string): boolean {
+  if (value.startsWith(`${FORMAT_PREFIX}.`)) {
+    try {
+      return decryptUrl(value).startsWith('http')
+    } catch {
+      return false
+    }
+  }
 
-  // 加密后的URL通常较长
-  if (str.length < 20) return false
-
-  // 尝试解密看看是否能还原
+  if (!/^[A-Za-z0-9+/]+=*$/.test(value) || value.length < 20) return false
   try {
-    const decrypted = decryptUrl(str)
-    // 如果解密后包含网盘链接特征，说明是加密的
+    const decrypted = decryptLegacy(value)
     return decrypted.includes('pan.quark.cn') ||
-           decrypted.includes('pan.baidu.com') ||
-           decrypted.includes('drive.uc.cn') ||
-           decrypted.includes('pan.xunlei.com')
+      decrypted.includes('pan.baidu.com') ||
+      decrypted.includes('drive.uc.cn') ||
+      decrypted.includes('pan.xunlei.com')
   } catch {
     return false
   }

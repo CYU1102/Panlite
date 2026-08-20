@@ -1,3 +1,5 @@
+import type { MembershipInfo } from './membership'
+
 export type Platform =
   | 'quark' | 'baidu' | 'uc' | 'xunlei'
 
@@ -5,9 +7,9 @@ export type AccountStatus = 'active' | 'expired' | 'error'
 
 export type LoginType = 'cookie' | 'oauth' | 'token' | 'password' | 'sms' | 'authorization' | 'api_key'
 
-export type TaskType = 'rename' | 'move' | 'delete' | 'mkdir' | 'share' | 'batch_share' | 'transfer' | 'batch_transfer' | 'upload' | 'download' | 'decompress'
+export type TaskType = 'rename' | 'move' | 'delete' | 'mkdir' | 'share' | 'batch_share' | 'transfer' | 'batch_transfer' | 'cloud_transfer' | 'upload' | 'download' | 'archive_extract' | 'archive_compress'
 
-export type TaskStatus = 'pending' | 'running' | 'success' | 'failed' | 'paused'
+export type TaskStatus = 'pending' | 'running' | 'success' | 'partial_success' | 'failed' | 'paused' | 'cancelled'
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug'
 
@@ -36,6 +38,7 @@ export interface DriveAccount {
   createdAt: number
   updatedAt: number
   lastCheckAt?: number
+  membership?: MembershipInfo
 }
 
 export interface FileItem {
@@ -211,6 +214,8 @@ export interface SearchResultItem {
 // ---- Upload types ----
 
 export interface UploadOptions {
+  /** 取消正在进行的上传和本地文件读取 */
+  signal?: AbortSignal
   /** 文件名（默认使用本地文件名） */
   fileName?: string
   /** 是否覆盖同名文件 */
@@ -240,6 +245,18 @@ export interface UploadFileInfo {
   localPath: string
   fileName: string
   fileSize: number
+  /** Relative path below the selected upload roots. Includes fileName. */
+  relativePath?: string
+}
+
+export type FileConflictPolicy = 'overwrite' | 'skip' | 'rename'
+
+export interface TransferItemResult {
+  key: string
+  name: string
+  status: 'success' | 'failed' | 'skipped'
+  error?: string
+  outputPath?: string
 }
 
 export interface UploadTaskPayload {
@@ -249,6 +266,10 @@ export interface UploadTaskPayload {
   targetDirId: string
   targetPath?: string
   overwrite?: boolean
+  conflictPolicy?: FileConflictPolicy
+  results?: TransferItemResult[]
+  /** Persisted relative-directory to remote-ID map for crash-safe retries. */
+  remoteDirectoryIds?: Record<string, string>
 }
 
 export interface UploadParams {
@@ -256,11 +277,14 @@ export interface UploadParams {
   files: UploadFileInfo[]
   targetDirId: string
   overwrite?: boolean
+  conflictPolicy?: FileConflictPolicy
 }
 
 // ---- Download types ----
 
 export interface DownloadOptions {
+  /** 取消正在进行的下载 */
+  signal?: AbortSignal
   /** 保存的文件名（默认使用原文件名） */
   fileName?: string
   /** 下载进度回调 */
@@ -287,6 +311,8 @@ export interface DownloadFileInfo {
   fileName: string
   fileSize: number
   isDir: boolean
+  /** Safe relative output path assigned by the task runner. */
+  relativePath?: string
 }
 
 export interface DownloadTaskPayload {
@@ -294,12 +320,53 @@ export interface DownloadTaskPayload {
   platform: Platform
   files: DownloadFileInfo[]
   targetDirPath: string  // 本地目录
+  overwrite?: boolean
+  conflictPolicy?: FileConflictPolicy
+  results?: TransferItemResult[]
+  /** Persisted selected-item to local relative-root map for retries. */
+  resolvedRoots?: Record<string, string>
 }
 
 export interface DownloadParams {
   accountId: string
   files: DownloadFileInfo[]
   targetDirPath: string
+  overwrite?: boolean
+  conflictPolicy?: FileConflictPolicy
+}
+
+// ---- Cloud transfer types ----
+
+export interface CloudTransferFileInfo {
+  fileId: string
+  fileName: string
+  fileSize: number
+  isDir: boolean
+  path?: string
+}
+
+export interface CloudTransferTaskPayload {
+  sourceAccountId: string
+  sourcePlatform: Platform
+  targetAccountId: string
+  targetPlatform: Platform
+  files: CloudTransferFileInfo[]
+  targetDirId: string
+  targetPath?: string
+  targetAncestorIds?: string[]
+  conflictPolicy: FileConflictPolicy
+  results?: TransferItemResult[]
+  remoteDirectoryIds?: Record<string, string>
+}
+
+export interface CloudTransferParams {
+  sourceAccountId: string
+  targetAccountId: string
+  files: CloudTransferFileInfo[]
+  targetDirId: string
+  targetPath?: string
+  targetAncestorIds?: string[]
+  conflictPolicy?: FileConflictPolicy
 }
 
 // ---- Quota types ----
@@ -332,4 +399,34 @@ export interface ArchiveExtractOptions {
   password?: string
   targetDir: string  // 本地目标目录路径
   files?: string[]  // 指定解压的文件，空则全部解压
+}
+
+export interface ArchiveExtractTaskPayload {
+  accountId: string
+  platform: Platform
+  fileId: string
+  fileName: string
+  options: ArchiveExtractOptions
+}
+
+export interface ArchiveCompressFileInfo {
+  fileId: string
+  downloadId: string
+  fileName: string
+  fileSize: number
+}
+
+export interface ArchiveCompressOptions {
+  format?: 'zip' | 'tar'
+  targetDir: string
+  archiveName: string
+}
+
+export interface ArchiveCompressTaskPayload {
+  accountId: string
+  platform: Platform
+  files: ArchiveCompressFileInfo[]
+  targetDirId: string
+  archiveName: string
+  format: 'zip' | 'tar'
 }

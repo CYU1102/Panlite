@@ -1,5 +1,9 @@
 ﻿import type { AddAccountParams, DriveAccount, UploadFileInfo, UploadParams, DownloadFileInfo, DownloadParams, ArchiveMeta, ArchiveExtractOptions } from '@shared/types'
 
+import type { CloudTransferParams } from '@shared/types'
+import type { MembershipInfo } from '@shared/membership'
+import type { AiAskInput, AiAskResult, AiAskStreamEvent, AiConversation, AiConversationCreateInput, AiConversationMessage, AiConversationSearchHit, AiDocument, AiImportFileInput, AiLocalToolStatus, AiLocalToolsConfig, AiProviderConfig, AiProviderSaveInput, AiProviderUsage, AiTask } from '@shared/ai-types'
+
 export interface LoginResult {
   success: boolean
   cookies?: string
@@ -42,6 +46,7 @@ export interface FileListResult {
   hasMore: boolean
   cached?: boolean
   cacheTime?: number | null
+  offlineReason?: string
   error?: string
 }
 
@@ -72,7 +77,6 @@ export interface XunleiLoginResult {
 declare global {
   interface Window {
     electronAPI: {
-      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
       openQuarkLogin: () => Promise<LoginResult>
       getBaiduAuthUrl: () => Promise<SimpleResult>
       loginBaidu: (code: string) => Promise<BaiduLoginResult>
@@ -84,6 +88,7 @@ declare global {
       listAccounts: () => Promise<AccountListResult>
       deleteAccount: (id: string) => Promise<SimpleResult>
       checkAccount: (id: string) => Promise<AccountCheckResult>
+      getAccountMembership: (id: string) => Promise<SimpleResult & { membership?: MembershipInfo }>
       getAccountQuota: () => Promise<SimpleResult & { quotas?: Array<{ accountId: string; platform: string; nickname: string; quota: { used: number; total: number } | null; error?: string }> }>
       listFiles: (accountId: string, parentId: string, useCache?: boolean) => Promise<FileListResult>
       searchFiles: (accountId: string, keyword: string, options?: {
@@ -102,9 +107,17 @@ declare global {
       deleteFiles: (accountId: string, fileIds: string[]) => Promise<SimpleResult>
       copyFiles: (accountId: string, fileIds: string[], targetDirId: string) => Promise<SimpleResult>
       getFileLink: (accountId: string, fileId: string) => Promise<SimpleResult & { url?: string }>
+      prepareFilePreview: (accountId: string, fileId: string, fileName: string, fileSize?: number) => Promise<SimpleResult>
+      cleanupFilePreview: (sessionId: string) => Promise<SimpleResult>
+      globalSearch: (input: unknown) => Promise<SimpleResult>
+      getGlobalSearchHistory: () => Promise<SimpleResult>
+      listSavedSearches: () => Promise<SimpleResult>
+      saveSearch: (input: unknown) => Promise<SimpleResult>
+      deleteSavedSearch: (id: string) => Promise<SimpleResult>
       batchRename: (accountId: string, items: { fileId: string; path?: string; newName: string }[]) => Promise<SimpleResult>
       batchMove: (accountId: string, items: { fileId: string; path?: string }[], targetDirId: string, targetPath?: string) => Promise<SimpleResult>
       batchDelete: (accountId: string, items: { fileId: string; path?: string }[]) => Promise<SimpleResult>
+      cloudTransfer: (params: CloudTransferParams) => Promise<SimpleResult & { taskId?: string }>
       batchShare: (accountId: string, items: { fileId: string; name?: string; isDir?: boolean; raw?: Record<string, unknown> }[], options?: { expireDays?: number; password?: string; title?: string }) => Promise<SimpleResult>
       shareList: (filters?: { accountId?: string; platform?: string; status?: string; keyword?: string }) => Promise<SimpleResult & { links?: unknown[] }>
       shareDelete: (id: string) => Promise<SimpleResult>
@@ -115,9 +128,14 @@ declare global {
       transferExportCsv: (filters?: { accountId?: string; platform?: string; status?: string }) => Promise<SimpleResult & { csv?: string }>
       selectDownloadDir: () => Promise<SimpleResult & { dirPath?: string }>
       downloadFiles: (params: DownloadParams) => Promise<SimpleResult>
+      getPathForFile: (file: File) => string
+      selectUploadFiles: () => Promise<SimpleResult & { files?: UploadFileInfo[] }>
+      selectUploadFolder: () => Promise<SimpleResult & { files?: UploadFileInfo[]; folderName?: string }>
+      handleDragUpload: (filePaths: string[]) => Promise<SimpleResult & { files?: UploadFileInfo[] }>
+      uploadFiles: (params: UploadParams) => Promise<SimpleResult & { taskId?: string }>
       archiveList: (accountId: string, fileId: string, fileName: string, password?: string) => Promise<SimpleResult & { meta?: ArchiveMeta }>
-      archiveExtract: (accountId: string, fileId: string, fileName: string, options: ArchiveExtractOptions) => Promise<SimpleResult>
-      archiveCompress: (accountId: string, fileIds: string[], options: { format?: string; targetDir: string; archiveName: string }) => Promise<SimpleResult & { fileId?: string }>
+      archiveExtract: (accountId: string, fileId: string, fileName: string, options: ArchiveExtractOptions) => Promise<SimpleResult & { taskId?: string }>
+      archiveCompress: (accountId: string, fileIds: string[], options: { format?: 'zip' | 'tar'; targetDir: string; archiveName: string }) => Promise<SimpleResult & { taskId?: string }>
       aggregateSearch: (keyword: string) => Promise<SimpleResult & { results?: Array<{ title: string; url: string; password?: string; platform: string; source: string }> }>
       linkVerify: (accountId: string, links: { url: string; password?: string }[]) => Promise<SimpleResult & { results?: Array<{ url: string; valid: boolean; title?: string; fileCount?: number; error?: string }> }>
       searchSourcesList: () => Promise<SimpleResult & { sources?: unknown[] }>
@@ -144,11 +162,59 @@ declare global {
       listTasks: () => Promise<SimpleResult>
       retryTask: (taskId: string) => Promise<SimpleResult>
       cancelTask: (taskId: string) => Promise<SimpleResult>
+      pauseTask: (taskId: string) => Promise<SimpleResult>
+      resumeTask: (taskId: string) => Promise<SimpleResult>
+      deleteTask: (taskId: string) => Promise<SimpleResult>
       getTaskLogs: (taskId: string) => Promise<SimpleResult>
       onTaskUpdated: (callback: (task: unknown) => void) => () => void
       exportCsv: (accountId: string, parentId: string) => Promise<SimpleResult>
       showSaveDialog: (options: unknown) => Promise<{ canceled: boolean; filePath?: string }>
+      showOpenDialog: (options: unknown) => Promise<{ canceled: boolean; filePaths?: string[] }>
+      createBackup: (filePath: string, options?: unknown) => Promise<SimpleResult>
+      inspectBackup: (filePath: string) => Promise<SimpleResult>
+      restoreBackup: (filePath: string, options?: unknown) => Promise<SimpleResult>
+      exportConfigBackup: () => Promise<SimpleResult & { backup?: string }>
+      previewConfigBackup: (input: string, options?: unknown) => Promise<SimpleResult>
+      importConfigBackup: (input: string, options?: unknown) => Promise<SimpleResult>
+      getAppLockStatus: () => Promise<SimpleResult>
+      configureAppLock: (input: unknown) => Promise<SimpleResult>
+      unlockApp: (password: string) => Promise<SimpleResult>
+      lockApp: () => Promise<SimpleResult>
+      touchAppLock: () => Promise<SimpleResult>
+      onAppLockChanged: (callback: (state: unknown) => void) => () => void
+      onAppNavigate: (callback: (path: string) => void) => () => void
       openExternal: (url: string) => Promise<SimpleResult>
+      aiSelectFiles: () => Promise<SimpleResult & { files?: Array<{ localPath: string; fileName: string; fileSize: number }> }>
+      aiImportFiles: (inputs: AiImportFileInput[]) => Promise<SimpleResult & { documents?: AiDocument[]; taskIds?: string[] }>
+      aiDocumentList: () => Promise<SimpleResult & { documents?: AiDocument[] }>
+      aiDocumentDelete: (id: string) => Promise<SimpleResult>
+      aiDocumentReindex: (id: string) => Promise<SimpleResult & { document?: AiDocument; taskId?: string }>
+      aiTaskList: () => Promise<SimpleResult & { tasks?: AiTask[] }>
+      aiProviderGet: () => Promise<SimpleResult & { config?: AiProviderConfig }>
+      aiProviderSave: (input: AiProviderSaveInput) => Promise<SimpleResult & { config?: AiProviderConfig }>
+      aiProviderTest: () => Promise<SimpleResult & { message?: string }>
+      aiProviderList: () => Promise<SimpleResult & { profiles?: AiProviderConfig[]; active?: AiProviderConfig }>
+      aiProviderActivate: (id: string) => Promise<SimpleResult & { config?: AiProviderConfig }>
+      aiProviderDelete: (id: string) => Promise<SimpleResult>
+      aiProviderUsage: () => Promise<SimpleResult & { usage?: AiProviderUsage[] }>
+      aiLocalToolsGet: () => Promise<SimpleResult & { config?: AiLocalToolsConfig; tools?: AiLocalToolStatus[] }>
+      aiLocalToolsSave: (input: Partial<AiLocalToolsConfig>) => Promise<SimpleResult & { config?: AiLocalToolsConfig; tools?: AiLocalToolStatus[] }>
+      aiLocalToolsSelect: (key: string) => Promise<SimpleResult & { filePath?: string }>
+      aiAsk: (input: AiAskInput) => Promise<AiAskResult>
+      aiAskStreamStart: (input: AiAskInput) => Promise<SimpleResult & { requestId?: string }>
+      aiAskStreamCancel: (requestId: string) => Promise<SimpleResult>
+      onAiAskStreamEvent: (callback: (event: AiAskStreamEvent) => void) => () => void
+      aiConversationList: () => Promise<SimpleResult & { conversations?: AiConversation[] }>
+      aiConversationCreate: (input: AiConversationCreateInput) => Promise<SimpleResult & { conversation?: AiConversation }>
+      aiConversationRename: (id: string, title: string) => Promise<SimpleResult & { conversation?: AiConversation }>
+      aiConversationDelete: (id: string) => Promise<SimpleResult>
+      aiConversationSetDocuments: (id: string, documentIds: string[]) => Promise<SimpleResult & { conversation?: AiConversation }>
+      aiConversationMessages: (id: string) => Promise<SimpleResult & { messages?: AiConversationMessage[] }>
+      aiConversationSearch: (query: string) => Promise<SimpleResult & { hits?: AiConversationSearchHit[] }>
+      aiConversationExport: (id: string) => Promise<SimpleResult & { canceled?: boolean; filePath?: string }>
+      aiConversationTruncate: (conversationId: string, messageId: string) => Promise<SimpleResult>
+      aiKnowledgeExport: () => Promise<SimpleResult & { canceled?: boolean; filePath?: string }>
+      onAiTaskUpdated: (callback: (task: AiTask) => void) => () => void
       getSetting: (key: string) => Promise<SimpleResult & { value?: string | null }>
       setSetting: (key: string, value: string) => Promise<SimpleResult>
       getAllSettings: () => Promise<SimpleResult & { settings?: Record<string, string> }>

@@ -109,7 +109,11 @@ export function registerEmbeddedBrowserHandlers(): void {
   // 在默认浏览器中打开URL
   ipcMain.handle('shell:openExternal', async (_event, url: string) => {
     try {
-      await shell.openExternal(url)
+      const target = new URL(url)
+      if (target.protocol !== 'https:' && target.protocol !== 'http:') {
+        return { success: false, error: '仅允许打开 HTTP(S) 链接' }
+      }
+      await shell.openExternal(target.toString())
       return { success: true }
     } catch (err) {
       return { success: false, error: String(err) }

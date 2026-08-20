@@ -4,23 +4,55 @@ directories:
   output: release
   buildResources: build
 files:
-  - "dist"
+  - "dist/**/*"
   - "package.json"
-  - "node_modules/better-sqlite3/**/*"
-  - "node_modules/p-queue/**/*"
-  - "node_modules/event-iterator/**/*"
-  - "node_modules/p-timeout/**/*"
-  - "node_modules/electron-log/**/*"
-  - "node_modules/uuid/**/*"
-  - "!node_modules/**/*"
+  - "!**/*.map"
+  # Native modules often ship their full C/C++ source and build intermediates.
+  # Only the runtime binding and JavaScript loader are required after packaging.
+  - "!node_modules/better-sqlite3/deps/**/*"
+  - "!node_modules/better-sqlite3/src/**/*"
+  - "!node_modules/better-sqlite3/build/deps/**/*"
+  - "!node_modules/better-sqlite3/build/obj/**/*"
+  - "!node_modules/better-sqlite3/build/obj.target/**/*"
+  - "!node_modules/better-sqlite3/build/Makefile"
+  - "!node_modules/better-sqlite3/build/*.mk"
+  - "!node_modules/better-sqlite3/build/*.gypi"
+  - "!node_modules/better-sqlite3/build/*.vcxproj*"
+  # tar-stream exposes bare-fs only for the separate Bare runtime. Electron's
+  # Node runtime never selects that conditional implementation.
+  - "!node_modules/bare-fs/**/*"
+  - "!node_modules/bare-url/**/*"
+  - "!node_modules/bare-path/**/*"
+  - "!node_modules/bare-stream/**/*"
+  # Development-only package metadata is not read at runtime.
+  - "!node_modules/**/*.d.ts"
+  - "!node_modules/**/*.md"
+  - "!node_modules/**/{test,tests,docs,example,examples}/**/*"
+  - "!node_modules/7zip-bin/linux/**/*"
+  - "!node_modules/7zip-bin/mac/**/*"
+  - "!node_modules/7zip-bin/win/arm64/**/*"
+  - "!node_modules/7zip-bin/win/ia32/**/*"
+  - "!node_modules/node-unrar-js/esm/**/*"
+  - "!node_modules/pdf2json/bin/**/*"
+  - "!node_modules/pdf2json/dist/pdfparser.js"
+  - "!node_modules/pdf2json/dist/*.d.*"
+  - "!node_modules/pdf2json/readme.md"
 asar: true
+# PanLite currently exposes a Simplified Chinese UI. Keep English as Chromium's
+# fallback locale instead of shipping every Electron language pack.
+electronLanguages:
+  - zh-CN
+  - en-US
 asarUnpack:
-  - "**/*.node"
-  - "node_modules/better-sqlite3/**/*"
+  - "node_modules/better-sqlite3/build/Release/*.node"
+  - "node_modules/node-unrar-js/dist/js/*.wasm"
+  - "node_modules/7zip-bin/win/x64/7za.exe"
 npmRebuild: true
+compression: maximum
 win:
   target:
     - nsis
+  artifactName: "${productName}-Setup-${version}.${ext}"
   # icon: build/icon.png  # 暂时使用默认图标
   signAndEditExecutable: false
 nsis:

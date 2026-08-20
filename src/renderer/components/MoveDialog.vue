@@ -3,10 +3,11 @@
     title="移动到"
     :model-value="modelValue"
     width="560px"
+    class="move-dialog"
     @close="onClose"
   >
     <div class="move-content">
-      <p class="info">已选择 {{ files.length }} 个文件</p>
+      <div class="info"><FolderInput :size="16" /><span>正在移动 <strong>{{ files.length }}</strong> 个项目</span></div>
 
       <!-- Breadcrumb navigation -->
       <div class="folder-nav">
@@ -43,17 +44,20 @@
           :key="folder.id"
           class="folder-item"
           :class="{ disabled: isDisabled(folder) }"
+          :tabindex="isDisabled(folder) ? -1 : 0"
+          :aria-disabled="isDisabled(folder)"
           @click="onFolderClick(folder)"
+          @keydown.enter="onFolderClick(folder)"
         >
-          <FolderOpen :size="16" :stroke-width="1.5" />
+          <span class="folder-icon"><FolderOpen :size="16" :stroke-width="1.5" /></span>
           <span class="folder-name">{{ folder.name }}</span>
           <ChevronRight :size="14" class="folder-arrow" />
         </div>
       </div>
 
       <p class="target-info" v-if="navStack.length > 0">
-        目标：<strong>{{ currentFolder.name }}</strong>
-        <span v-if="currentFolder.id !== '0'"> ({{ currentFolder.id }})</span>
+        <FolderCheck :size="15" />
+        <span>将移动到</span><strong>{{ currentFolder.name }}</strong>
       </p>
     </div>
 
@@ -66,8 +70,8 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { FolderOpen, ChevronRight, ArrowLeft } from 'lucide-vue-next'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { FolderOpen, ChevronRight, ArrowLeft, FolderInput, FolderCheck } from 'lucide-vue-next'
 import type { FileItem } from '@shared/types'
 import { electronApi } from '../api/ipc'
 
@@ -293,4 +297,37 @@ watch(() => props.modelValue, (open) => {
   color: #6b7280;
   padding: 4px 0;
 }
+.move-content { gap: 11px; }
+.info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 6px 10px;
+  color: var(--pl-primary-hover);
+  background: var(--pl-primary-soft);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.folder-nav { padding: 8px 10px; background: var(--pl-surface-subtle); border-color: var(--pl-border); border-radius: 11px; }
+.crumb { color: var(--pl-text-secondary); border-radius: 7px; }
+.crumb:hover { color: var(--pl-primary); background: var(--pl-primary-soft); }
+.crumb.active { color: var(--pl-text); }
+.crumb-sep { color: var(--pl-border-strong); }
+.nav-btn { color: var(--pl-text-secondary); background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: 8px; transition: all .16s ease; }
+.nav-btn:hover:not(:disabled) { color: var(--pl-primary); background: var(--pl-primary-soft); border-color: #cfe0ff; transform: translateX(-1px); }
+.folder-list { min-height: 230px; background: var(--pl-surface-subtle); border-color: var(--pl-border); border-radius: 12px; }
+.folder-item { gap: 10px; min-height: 46px; padding: 6px 10px; color: var(--pl-text); border-bottom-color: var(--pl-border); transition: background-color .16s ease, color .16s ease, padding-left .16s ease; }
+.folder-item:hover,
+.folder-item:focus-visible { color: var(--pl-primary-hover); background: var(--pl-primary-soft); outline: none; padding-left: 13px; }
+.folder-item.disabled { opacity: .38; }
+.folder-item.disabled:hover { padding-left: 10px; background: transparent; }
+.folder-icon { width: 31px; height: 31px; display: grid; place-items: center; color: var(--pl-primary); background: var(--pl-primary-soft); border-radius: 9px; }
+.folder-arrow { color: var(--pl-border-strong); transition: transform .16s ease, color .16s ease; }
+.folder-item:hover .folder-arrow { color: var(--pl-primary); transform: translateX(2px); }
+.folder-empty { min-height: 220px; justify-content: center; color: var(--pl-border-strong); }
+.folder-empty span { color: var(--pl-text-muted); }
+.target-info { display: flex; align-items: center; gap: 6px; margin: 0; padding: 9px 11px; color: var(--pl-text-secondary); background: var(--pl-success-soft); border: 1px solid #ccebe2; border-radius: 10px; }
+.target-info svg { color: var(--pl-success); }
+.target-info strong { color: #117b69; }
 </style>

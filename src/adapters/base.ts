@@ -1,4 +1,5 @@
 import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult, ParsedShareLink, UploadOptions, UploadResult, DownloadOptions, DownloadResult, QuotaInfo } from '../shared/types'
+import type { MembershipInfo } from '../shared/membership'
 
 export interface DriveAdapter {
   /** Verify the account is still logged in */
@@ -9,6 +10,9 @@ export interface DriveAdapter {
 
   /** Get storage quota info (optional) */
   getQuota?(account: DriveAccount): Promise<QuotaInfo>
+
+  /** Query the provider's current membership/VIP state when available. */
+  getMembership?(account: DriveAccount): Promise<MembershipInfo>
 
   /** List files in a directory (auto-paging, returns all files) */
   listFiles(account: DriveAccount, parentId: string): Promise<FileListResult>
