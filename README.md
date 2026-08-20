@@ -73,11 +73,18 @@ PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨
 
 ### 下载安装包
 
-前往 [GitHub Releases](https://github.com/CYU1102/Panlite/releases/latest) 下载最新版 `PanLite-Setup-*.exe`，然后按安装向导完成安装。当前仅提供 Windows x64 安装包；由于暂未配置代码签名，Windows 首次运行时可能显示安全提示，请确认下载来源为本仓库后继续。
+前往 [GitHub Releases](https://github.com/CYU1102/Panlite/releases/latest) 下载适合当前设备的安装包：
+
+- Windows 10/11 x64：`PanLite-Setup-*.exe`
+- Apple Silicon Mac：`PanLite-*-mac-arm64.dmg`
+- Intel Mac：`PanLite-*-mac-x64.dmg`
+
+当前安装包尚未配置 Windows 或 Apple Developer 代码签名。首次运行时系统可能显示安全提示，请确认文件来自本仓库后继续；macOS 用户可以在“系统设置 → 隐私与安全性”中允许打开。
 
 ### 环境要求
 
 - Windows 10/11 x64
+- macOS（Apple Silicon arm64 或 Intel x64）
 - Node.js 20 或更高版本
 - npm 10 或更高版本
 

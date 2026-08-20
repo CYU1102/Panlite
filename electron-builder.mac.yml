@@ -1,0 +1,47 @@
+appId: com.panlite.app
+productName: PanLite
+directories:
+  output: release-macos
+  buildResources: build
+files:
+  - "dist/**/*"
+  - "package.json"
+  - "!**/*.map"
+  - "!node_modules/better-sqlite3/deps/**/*"
+  - "!node_modules/better-sqlite3/src/**/*"
+  - "!node_modules/better-sqlite3/build/deps/**/*"
+  - "!node_modules/better-sqlite3/build/obj/**/*"
+  - "!node_modules/better-sqlite3/build/obj.target/**/*"
+  - "!node_modules/better-sqlite3/build/Makefile"
+  - "!node_modules/better-sqlite3/build/*.mk"
+  - "!node_modules/better-sqlite3/build/*.gypi"
+  - "!node_modules/bare-fs/**/*"
+  - "!node_modules/bare-url/**/*"
+  - "!node_modules/bare-path/**/*"
+  - "!node_modules/bare-stream/**/*"
+  - "!node_modules/**/*.d.ts"
+  - "!node_modules/**/*.md"
+  - "!node_modules/**/{test,tests,docs,example,examples}/**/*"
+  - "!node_modules/7zip-bin/linux/**/*"
+  - "!node_modules/7zip-bin/win/**/*"
+  - "!node_modules/node-unrar-js/esm/**/*"
+  - "!node_modules/pdf2json/bin/**/*"
+  - "!node_modules/pdf2json/dist/pdfparser.js"
+  - "!node_modules/pdf2json/dist/*.d.*"
+  - "!node_modules/pdf2json/readme.md"
+asar: true
+electronLanguages:
+  - zh-CN
+  - en-US
+asarUnpack:
+  - "node_modules/better-sqlite3/build/Release/*.node"
+  - "node_modules/node-unrar-js/dist/js/*.wasm"
+  - "node_modules/7zip-bin/mac/*/7za"
+npmRebuild: true
+compression: maximum
+mac:
+  target:
+    - dmg
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"
+  category: public.app-category.productivity
+  identity: null
