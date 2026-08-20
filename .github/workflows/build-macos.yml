@@ -30,10 +30,10 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -54,7 +54,7 @@ jobs:
       - name: Build unsigned DMG
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npx electron-builder --mac dmg --${{ matrix.arch }} --config electron-builder.mac.yml
+        run: npx electron-builder --mac dmg --${{ matrix.arch }} --config electron-builder.mac.yml --publish never
 
       - name: Verify and upload release assets
         env:
