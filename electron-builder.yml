@@ -1,12 +1,22 @@
 appId: com.panlite.app
 productName: PanLite
+extraMetadata:
+  panliteUpdates:
+    enabled: false
 directories:
   output: release
   buildResources: build
+# Reuse Electron installed by npm to avoid downloading and extracting the
+# same runtime again during packaging.
+electronDist: node_modules/electron/dist
 files:
-  - "dist/**/*"
+  - "dist/main/**/*"
+  - "dist/renderer/**/*"
   - "package.json"
   - "!**/*.map"
+  - "!dist/reports/**/*"
+  - "!dist/quality/**/*"
+  - "build/icon.png"
   # Native modules often ship their full C/C++ source and build intermediates.
   # Only the runtime binding and JavaScript loader are required after packaging.
   - "!node_modules/better-sqlite3/deps/**/*"
@@ -48,14 +58,20 @@ asarUnpack:
   - "node_modules/node-unrar-js/dist/js/*.wasm"
   - "node_modules/7zip-bin/win/x64/7za.exe"
 npmRebuild: true
+afterExtract: scripts/cleanup-electron-runtime.cjs
+afterSign: scripts/verify-packaged-native.cjs
 compression: maximum
 win:
   target:
     - nsis
   artifactName: "${productName}-Setup-${version}.${ext}"
-  # icon: build/icon.png  # 暂时使用默认图标
-  signAndEditExecutable: false
+  icon: build/icon.ico
+  signAndEditExecutable: true
+  # Keep icon/version resources in smoke builds without using a signing identity.
+  signExecutable: false
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico

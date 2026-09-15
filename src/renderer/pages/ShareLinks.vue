@@ -149,7 +149,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="260" align="center" fixed="right">
+        <el-table-column label="操作" width="292" align="center" fixed="right">
           <template #default="{ row }">
             <div class="action-btns">
               <button class="action-btn action-primary" title="复制链接和提取码" :aria-label="`复制 ${row.title || '分享记录'} 的链接和提取码`" @click="onCopy(row, true)">
@@ -165,6 +165,9 @@
                 <span>打开</span>
               </button>
               <span class="action-divider" aria-hidden="true"></span>
+              <button v-if="row.status === 'active'" class="action-btn action-icon danger" title="使分享链接失效" :aria-label="`使 ${row.title || '分享记录'} 失效`" @click="onCancel(row)">
+                <Link2Off :size="14" />
+              </button>
               <button class="action-btn action-icon danger" title="删除记录" :aria-label="`删除 ${row.title || '分享记录'}`" @click="onDelete(row)">
                 <Trash2 :size="14" />
               </button>
@@ -204,7 +207,7 @@
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
-import { Share2, Download, RefreshCw, Search, Copy, Link, ExternalLink, Trash2, CheckCircle2, Plus, RotateCcw } from 'lucide-vue-next'
+import { Share2, Download, RefreshCw, Search, Copy, Link, Link2Off, ExternalLink, Trash2, CheckCircle2, Plus, RotateCcw } from 'lucide-vue-next'
 import { PLATFORM_LABELS } from '@shared/constants'
 import { formatTimestamp } from '@shared/utils'
 import { electronApi } from '../api/ipc'
@@ -233,27 +236,25 @@ function onSelectionChange(rows: ShareLinkRow[]) {
 }
 
 async function onBatchDelete() {
-  if (selectedRows.value.length === 0) return
+  const selected = [...selectedRows.value]
+  if (!selected.length) return
   try {
     await ElMessageBox.confirm(
-      `确定要删除选中的 ${selectedRows.value.length} 条记录吗？`,
-      '批量删除',
+      `确定要删除选中的 ${selected.length} 条记录吗？`, '批量删除',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
   } catch { return }
-
-  let deletedCount = 0
-  for (const row of selectedRows.value) {
-    const result = await electronApi.shareDelete(row.id)
-    if (result.success) deletedCount++
+  const deletedIds = new Set<string>()
+  for (const row of selected) {
+    try {
+      const result = await electronApi.shareDelete(row.id)
+      if (result.success) deletedIds.add(row.id)
+    } catch { /* Keep unsuccessful records available for retry. */ }
   }
-
-  if (deletedCount > 0) {
-    const ids = new Set(selectedRows.value.map(r => r.id))
-    links.value = links.value.filter(l => !ids.has(l.id))
-    selectedRows.value = []
-    ElMessage.success(`已删除 ${deletedCount} 条记录`)
-  }
+  links.value = links.value.filter(row => !deletedIds.has(row.id))
+  selectedRows.value = selectedRows.value.filter(row => !deletedIds.has(row.id))
+  if (deletedIds.size) ElMessage.success(`已删除 ${deletedIds.size} 条记录`)
+  if (deletedIds.size < selected.length) ElMessage.error(`${selected.length - deletedIds.size} 条记录删除失败，请重试`)
 }
 
 const filters = reactive({
@@ -270,6 +271,7 @@ const platformFilters = [
   { value: 'baidu', label: '百度' },
   { value: 'uc', label: 'UC' },
   { value: 'xunlei', label: '迅雷' },
+  { value: 'aliyun_web', label: '阿里网页版' },
 ]
 
 const statusFilters = [
@@ -336,6 +338,25 @@ function onCopy(row: ShareLinkRow, withPwd: boolean) {
 
 function onOpen(row: ShareLinkRow) {
   window.open(row.share_url, '_blank')
+}
+
+async function onCancel(row: ShareLinkRow) {
+  try {
+    await ElMessageBox.confirm('确定要让这个分享链接立即失效吗？此操作会同步到网盘。', '取消分享', {
+      type: 'warning',
+      confirmButtonText: '使其失效',
+      cancelButtonText: '返回',
+    })
+  } catch { return }
+
+  const result = await electronApi.shareCancel(row.id)
+  if (result.success) {
+    row.status = 'cancelled'
+    row.updated_at = Date.now()
+    ElMessage.success('分享链接已失效')
+  } else {
+    ElMessage.error(result.error || '取消分享失败')
+  }
 }
 
 async function onDelete(row: ShareLinkRow) {
@@ -493,37 +514,37 @@ onMounted(() => loadData())
   padding: 0 4px;
   border-radius: 4px;
   background: #f2f4f7;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
 }
 
 .table-card {
   flex: 1;
   overflow: auto;
-  background: #ffffff;
+  background: var(--pl-surface);
   border-radius: var(--pl-radius-card);
   border: 1px solid var(--pl-border);
   box-shadow: var(--pl-shadow-card);
 }
 
 :deep(.el-table) {
-  --el-table-border-color: #f3f4f6;
-  --el-table-row-hover-bg-color: #f9fafb;
+  --el-table-border-color: var(--pl-hover);
+  --el-table-row-hover-bg-color: var(--pl-surface-subtle);
 }
 
 :deep(.el-table th.el-table__cell) {
-  background: #f9fafb !important;
+  background: var(--pl-surface-subtle) !important;
 }
 
 :deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--pl-hover);
 }
 
 .platform-badge {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 500;
 }
 
@@ -549,25 +570,25 @@ onMounted(() => loadData())
 
 .cell-main {
   font-size: 13px;
-  color: #1f2937;
+  color: var(--pl-text);
 }
 
 .cell-link {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   word-break: break-all;
 }
 
 .cell-muted {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .status-badge {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 500;
 }
 
@@ -582,8 +603,8 @@ onMounted(() => loadData())
 }
 
 .status-badge.cancelled {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
 }
 
 .status-badge.failed {
@@ -607,14 +628,14 @@ onMounted(() => loadData())
   border: none;
   background: transparent;
   border-radius: 6px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .action-btn:hover {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
 }
 
 .action-btn.danger:hover {
@@ -627,13 +648,18 @@ onMounted(() => loadData())
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 48px 0;
-  color: #d1d5db;
+  width: 100%;
+  max-width: 560px;
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--pl-border);
 }
 
 .table-empty p {
+  margin: 0;
   font-size: 13px;
-  color: #9ca3af;
+  line-height: 1.7;
+  color: var(--pl-text-muted, var(--pl-text-muted));
 }
 
 /* ── Batch bar ── */
@@ -672,9 +698,9 @@ onMounted(() => loadData())
   align-items: center;
   gap: 16px;
   padding: 10px 16px;
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 8px;
-  border: 1px solid #f3f4f6;
+  border: 1px solid var(--pl-hover);
 }
 
 .stat-chip {
@@ -682,7 +708,7 @@ onMounted(() => loadData())
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 /* Interactive records workspace */
@@ -720,7 +746,7 @@ onMounted(() => loadData())
 .filter-label {
   flex-shrink: 0;
   color: var(--pl-text-muted);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
 }
 
@@ -776,7 +802,7 @@ onMounted(() => loadData())
   align-items: flex-end;
   gap: 2px;
   color: var(--pl-text-muted);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
 }
 
 .clear-filter {
@@ -787,7 +813,7 @@ onMounted(() => loadData())
   border: 0;
   background: transparent;
   color: var(--pl-primary);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   cursor: pointer;
 }
 
@@ -896,7 +922,7 @@ onMounted(() => loadData())
   background: transparent;
   color: var(--pl-text-secondary);
   border-radius: var(--pl-radius-sm);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
 }
 

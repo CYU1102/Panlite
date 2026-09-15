@@ -130,14 +130,14 @@ async function onConfirm() {
 
 .info {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 .info-bar {
   display: flex;
   gap: 16px;
   padding: 10px 12px;
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 8px;
 }
 
@@ -149,11 +149,11 @@ async function onConfirm() {
 }
 
 .info-label {
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .info-value {
-  color: #374151;
+  color: var(--pl-text);
   font-weight: 500;
 }
 
@@ -161,7 +161,7 @@ async function onConfirm() {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 500;
 }
 
@@ -176,26 +176,26 @@ async function onConfirm() {
 }
 
 .file-list {
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 8px;
   padding: 12px;
 }
 
 .file-list-title {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   margin-bottom: 8px;
 }
 
 .file-item {
   font-size: 13px;
-  color: #374151;
+  color: var(--pl-text);
   padding: 4px 0;
 }
 
 .more {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   margin-top: 4px;
 }
 </style>

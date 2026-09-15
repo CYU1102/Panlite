@@ -1,6 +1,6 @@
-import { createWriteStream, mkdirSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs'
-import { join, extname } from 'path'
-import { pipeline } from 'stream/promises'
+import { createReadStream, createWriteStream, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, unlinkSync, existsSync } from 'fs'
+import { join, extname, dirname, resolve } from 'path'
+import { finished, pipeline } from 'stream/promises'
 import type { ArchiveFileInfo, ArchiveMeta } from '../shared/types'
 import log from 'electron-log'
 import { ARCHIVE_LIMITS, assertArchiveLimits, resolveArchiveEntryPath } from './archive-security'
@@ -54,32 +54,56 @@ export function getArchiveFormat(filename: string): string {
 
 // ── ZIP 解压 ──
 
-async function listZipFiles(filePath: string, password?: string): Promise<{ files: ArchiveFileInfo[]; isEncrypted: boolean }> {
+async function withZipDirectory<T>(filePath: string, operation: (directory: any) => Promise<T>): Promise<T> {
+  const unzipper = require('unzipper')
+  const streams = new Set<ReturnType<typeof createReadStream>>()
   try {
-    const unzipper = require('unzipper')
-    const files: ArchiveFileInfo[] = []
-    let isEncrypted = false
+    // Open.file resolves when metadata is parsed, before its underlying readers close.
+    // Own those readers so listing, extraction and failure all release the ZIP first.
+    const directory = await unzipper.Open.custom({
+      size: async () => statSync(filePath).size,
+      stream: (start: number, length?: number) => {
+        const stream = createReadStream(filePath, { start, end: length ? start + length : undefined })
+        streams.add(stream)
+        stream.once('close', () => streams.delete(stream))
+        return stream
+      },
+    })
+    return await operation(directory)
+  } finally {
+    await Promise.all([...streams].map(stream => {
+      const closed = finished(stream).catch(() => undefined)
+      stream.destroy()
+      return closed
+    }))
+  }
+}
 
-    const directory = await unzipper.Open.file(filePath)
+async function listZipFiles(filePath: string, _password?: string): Promise<{ files: ArchiveFileInfo[]; isEncrypted: boolean }> {
+  try {
+    return await withZipDirectory(filePath, async directory => {
+      const files: ArchiveFileInfo[] = []
+      let isEncrypted = false
 
-    for (const entry of directory.files) {
-      if (files.length >= ARCHIVE_LIMITS.maxEntries) throw new Error('压缩包文件数量超过限制')
-      // 检测是否加密（encrypted bit in general purpose bit flag）
-      if (entry.flags && (entry.flags & 0x01) !== 0) {
-        isEncrypted = true
+      for (const entry of directory.files) {
+        if (files.length >= ARCHIVE_LIMITS.maxEntries) throw new Error('压缩包文件数量超过限制')
+        // 检测是否加密（encrypted bit in general purpose bit flag）
+        if (entry.flags && (entry.flags & 0x01) !== 0) {
+          isEncrypted = true
+        }
+
+        files.push({
+          name: entry.path.split('/').pop() || entry.path,
+          path: entry.path,
+          size: entry.uncompressedSize || 0,
+          isDir: entry.type === 'Directory',
+          compressedSize: entry.compressedSize,
+          modifiedAt: entry.lastModifiedDateTime ? new Date(entry.lastModifiedDateTime).getTime() : undefined,
+        })
       }
 
-      files.push({
-        name: entry.path.split('/').pop() || entry.path,
-        path: entry.path,
-        size: entry.size || 0,
-        isDir: entry.type === 'Directory',
-        compressedSize: entry.compressedSize,
-        modifiedAt: entry.lastModifiedDateTime ? new Date(entry.lastModifiedDateTime).getTime() : undefined,
-      })
-    }
-
-    return { files, isEncrypted }
+      return { files, isEncrypted }
+    })
   } catch (err) {
     log.error('Failed to list ZIP files:', err)
     throw new Error('无法读取ZIP文件内容')
@@ -88,31 +112,29 @@ async function listZipFiles(filePath: string, password?: string): Promise<{ file
 
 async function extractZip(filePath: string, outputDir: string, password?: string, files?: string[], runtime: ArchiveOperationOptions = {}): Promise<void> {
   try {
-    const unzipper = require('unzipper')
+    await withZipDirectory(filePath, async directory => {
+      const selectedEntries = directory.files.filter((entry: { path: string }) => !files || files.includes(entry.path))
+      let completed = 0
+      for (const entry of selectedEntries) {
+        throwIfAborted(runtime.signal)
+        // 如果指定了文件，只解压指定的文件
+        const targetPath = resolveArchiveEntryPath(outputDir, entry.path)
 
-    const directory = await unzipper.Open.file(filePath)
+        if (entry.type === 'Directory') {
+          mkdirSync(targetPath, { recursive: true })
+        } else {
+          // 确保父目录存在
+          const parentDir = join(targetPath, '..')
+          mkdirSync(parentDir, { recursive: true })
 
-    const selectedEntries = directory.files.filter((entry: { path: string }) => !files || files.includes(entry.path))
-    let completed = 0
-    for (const entry of selectedEntries) {
-      throwIfAborted(runtime.signal)
-      // 如果指定了文件，只解压指定的文件
-      const targetPath = resolveArchiveEntryPath(outputDir, entry.path)
-
-      if (entry.type === 'Directory') {
-        mkdirSync(targetPath, { recursive: true })
-      } else {
-        // 确保父目录存在
-        const parentDir = join(targetPath, '..')
-        mkdirSync(parentDir, { recursive: true })
-
-        // 解压文件
-        const readStream = entry.stream(password)
-        const writeStream = createWriteStream(targetPath)
-        await pipeline(readStream, writeStream, { signal: runtime.signal })
+          // 解压文件
+          const readStream = entry.stream(password)
+          const writeStream = createWriteStream(targetPath)
+          await pipeline(readStream, writeStream, { signal: runtime.signal })
+        }
+        runtime.onProgress?.(++completed, selectedEntries.length)
       }
-      runtime.onProgress?.(++completed, selectedEntries.length)
-    }
+    })
   } catch (err) {
     log.error('Failed to extract ZIP:', err)
     throw new Error('解压ZIP文件失败')
@@ -196,6 +218,11 @@ async function extractRar(filePath: string, outputDir: string, password?: string
 
 // ── 7Z 解压 ──
 
+/** Executables cannot be spawned from Electron's virtual ASAR filesystem. */
+export function resolve7ZipExecutablePath(binaryPath: string): string {
+  return binaryPath.replace(/([\\/])app\.asar(?=[\\/]node_modules[\\/]7zip-bin[\\/])/, '$1app.asar.unpacked')
+}
+
 async function list7zFiles(filePath: string, password?: string): Promise<ArchiveFileInfo[]> {
   try {
     const Seven = require('node-7z')
@@ -203,7 +230,7 @@ async function list7zFiles(filePath: string, password?: string): Promise<Archive
     const files: ArchiveFileInfo[] = []
 
     const stream = Seven.list(filePath, {
-      $bin: path7za,
+      $bin: resolve7ZipExecutablePath(path7za),
       password: password || '',
     })
     const result = await new Promise<any[]>((resolve, reject) => {
@@ -243,7 +270,7 @@ async function extract7z(filePath: string, outputDir: string, password?: string,
 
     throwIfAborted(runtime.signal)
     const stream = Seven.extractFull(filePath, outputDir, {
-      $bin: path7za,
+      $bin: resolve7ZipExecutablePath(path7za),
       password: password || '',
       $cherryPick: files || undefined,
     })
@@ -494,63 +521,88 @@ export async function compressToZip(
   files?: Array<{ relativePath: string; fullPath: string }>,
   runtime: ArchiveOperationOptions = {},
 ): Promise<void> {
+  let temporaryDirectory: string | undefined
   try {
     throwIfAborted(runtime.signal)
     const archiver = require('archiver')
-    // 创建输出流
-    const output = createWriteStream(outputPath)
+    temporaryDirectory = mkdtempSync(join(dirname(outputPath), '.panlite-archive-'))
+    const temporaryPath = join(temporaryDirectory, 'complete.zip')
+    const inputs: Array<{ relativePath: string; fullPath: string }> = []
+    if (files?.length) {
+      inputs.push(...files)
+    } else {
+      const collect = (directory: string, prefix = '') => {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          const fullPath = join(directory, entry.name)
+          // Do not read our own output when it lives under the source directory.
+          if (resolve(fullPath) === resolve(outputPath) || resolve(fullPath) === resolve(temporaryDirectory!)) continue
+          const relativePath = prefix + entry.name
+          inputs.push({ relativePath, fullPath })
+          if (entry.isDirectory()) collect(fullPath, relativePath + '/')
+        }
+      }
+      collect(sourceDir)
+    }
+    const output = createWriteStream(temporaryPath)
     const archive = archiver('zip', {
       zlib: { level: 6 }, // 压缩级别
     })
 
-    // 监听事件
-    archive.on('warning', (err: any) => {
-      if (err.code === 'ENOENT') {
-        log.warn('Archive warning:', err)
-      } else {
-        throw err
-      }
-    })
-
-    archive.on('error', (err: any) => {
-      throw err
-    })
+    // Missing inputs must fail the job instead of producing a successful partial archive.
+    archive.on('warning', (err: Error) => archive.destroy(err))
 
     archive.on('progress', (progress: { entries?: { processed?: number; total?: number } }) => {
-      runtime.onProgress?.(progress.entries?.processed || 0, progress.entries?.total || files?.length || 0)
+      runtime.onProgress?.(progress.entries?.processed || 0, inputs.length)
     })
 
-    const abort = () => archive.abort()
-    runtime.signal?.addEventListener('abort', abort, { once: true })
+    // Attach stream error/close and abort handling before finalization can emit events.
+    const completion = pipeline(archive, output, { signal: runtime.signal })
+    let input: ReturnType<typeof createReadStream> | undefined
+    // Destroying archiver alone leaves its queue and input sources running.
+    void completion.catch((error: Error) => {
+      archive.abort()
+      input?.destroy(error)
+    })
 
-    // 管道到输出流
-    archive.pipe(output)
-
-    if (files && files.length > 0) {
-      // 添加指定文件
-      for (const file of files) {
-        archive.file(file.fullPath, { name: file.relativePath })
+    try {
+      for (const file of inputs) {
+        throwIfAborted(runtime.signal)
+        const stats = lstatSync(file.fullPath)
+        const data = { name: file.relativePath, mode: stats.mode, date: stats.mtime, stats }
+        if (stats.isDirectory()) {
+          archive.append(Buffer.alloc(0), { ...data, type: 'directory' })
+        } else if (stats.isSymbolicLink()) {
+          archive.symlink(file.relativePath, readlinkSync(file.fullPath), stats.mode)
+        } else if (stats.isFile()) {
+          input = createReadStream(file.fullPath, { signal: runtime.signal })
+          const closed = finished(input)
+          input.once('error', (error: Error) => archive.destroy(error))
+          archive.append(input, data)
+          // Only open one input at a time and wait for its descriptor to close.
+          await closed
+          input = undefined
+        } else {
+          throw new Error(`不支持的文件类型: ${file.relativePath}`)
+        }
       }
-    } else {
-      // 添加整个目录
-      archive.directory(sourceDir, false)
+      void archive.finalize().catch((error: Error) => archive.destroy(error))
+    } catch (error) {
+      archive.abort()
+      archive.destroy(error as Error)
+      if (input) {
+        const closed = finished(input).catch(() => undefined)
+        input.destroy()
+        await closed
+      }
     }
-
-    // 完成压缩
-    await archive.finalize()
-
-    // 等待输出流关闭
-    await new Promise<void>((resolve, reject) => {
-      output.on('close', () => {
-        runtime.signal?.removeEventListener('abort', abort)
-        resolve()
-      })
-      output.on('error', reject)
-    })
+    await completion
     throwIfAborted(runtime.signal)
+    renameSync(temporaryPath, outputPath)
   } catch (err) {
     log.error('Failed to create ZIP:', err)
     throw new Error('创建ZIP文件失败')
+  } finally {
+    if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true })
   }
 }
 

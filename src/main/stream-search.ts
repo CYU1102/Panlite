@@ -9,6 +9,7 @@ import { encryptUrl } from './url-crypto'
 import { getCachedResults, setCachedResults, isProcessing, waitForResults, setProcessingLock, releaseProcessingLock } from './concurrency-control'
 import { IPC_CHANNELS } from '../shared/constants'
 import log from 'electron-log'
+import { getSearchSignal, throwIfSearchCancelled, withSearchSignal } from './search-runtime'
 
 // ── 搜索结果排序算法 ──
 
@@ -22,15 +23,6 @@ const PLATFORM_WEIGHTS: Record<string, number> = {
   baidu: 95,
   uc: 85,
   xunlei: 80,
-}
-
-// 来源类型权重
-const SOURCE_TYPE_WEIGHTS: Record<string, number> = {
-  api: 100,
-  browser: 90,
-  kk: 80,
-  tg: 70,
-  crawler: 60,
 }
 
 /**
@@ -144,6 +136,7 @@ function dbKkSourceToConfig(source: any): KkSearchConfig {
 
 /** 向前端发送流式事件 */
 function sendStreamEvent(windowId: number, event: string, data: any): void {
+  if (getSearchSignal()?.aborted) return
   const window = BrowserWindow.fromId(windowId)
   if (window && !window.isDestroyed()) {
     window.webContents.send(IPC_CHANNELS.SEARCH_STREAM_EVENT, { event, data })
@@ -221,7 +214,7 @@ export async function verifyResourceUrl(url: string): Promise<{
       return { valid: true, error: '无法验证，但链接格式正确' }
     }
 
-  } catch (err) {
+  } catch {
     // 验证出错，假设有效
     return { valid: true }
   }
@@ -269,7 +262,7 @@ export async function verifyResourceUrls(urls: string[]): Promise<Array<{
  * 通过IPC事件实时推送搜索结果
  * 支持并发控制和缓存
  */
-export async function executeStreamSearch(
+async function executeStreamSearchInternal(
   windowId: number,
   keyword: string,
   platform?: string,
@@ -280,6 +273,7 @@ export async function executeStreamSearch(
 ): Promise<void> {
   const verifyLinks = options?.verifyLinks ?? false
   const showEncrypted = options?.showEncrypted ?? false
+  const cacheKey = JSON.stringify(['stream', keyword, platform || '', verifyLinks, showEncrypted])
 
   // 检查关键词是否被屏蔽（与xinyue-search一致）
   if (isKeywordBlocked(keyword)) {
@@ -288,7 +282,7 @@ export async function executeStreamSearch(
   }
 
   // 1. 检查缓存（与xinyue-search一致）
-  const cachedResults = getCachedResults(keyword)
+  const cachedResults = getCachedResults(cacheKey)
   if (cachedResults) {
     log.info(`[Stream Search] Cache hit for "${keyword}"`)
     sendStreamEvent(windowId, 'start', {
@@ -311,7 +305,7 @@ export async function executeStreamSearch(
   }
 
   // 2. 检查是否有正在进行的搜索（与xinyue-search一致）
-  if (isProcessing(keyword)) {
+  if (isProcessing(cacheKey)) {
     log.info(`[Stream Search] Waiting for ongoing search: "${keyword}"`)
     sendStreamEvent(windowId, 'start', {
       keyword,
@@ -323,7 +317,8 @@ export async function executeStreamSearch(
     sendStreamEvent(windowId, 'source', { name: '等待其他搜索完成...', count: 0 })
 
     // 等待其他搜索完成
-    const results = await waitForResults(keyword)
+    const results = await waitForResults(cacheKey, 60000, getSearchSignal())
+    throwIfSearchCancelled()
     if (results) {
       for (const item of results) {
         sendStreamEvent(windowId, 'result', item)
@@ -343,6 +338,7 @@ export async function executeStreamSearch(
   const kkSources = getActiveKkSources(platform)
 
   const totalSources = apiSources.length + tgChannels.length + crawlerSources.length + kkSources.length
+  throwIfSearchCancelled()
 
   if (totalSources === 0) {
     sendStreamEvent(windowId, 'done', { message: '暂无可用搜索源' })
@@ -361,17 +357,41 @@ export async function executeStreamSearch(
     kkSources,
   })
 
-  setProcessingLock(keyword, searchPromise as Promise<any[]>)
+  setProcessingLock(cacheKey, searchPromise as Promise<any[]>)
 
   try {
     const results = await searchPromise
 
     // 5. 缓存结果（与xinyue-search一致）
-    setCachedResults(keyword, results)
+    throwIfSearchCancelled()
+    setCachedResults(cacheKey, results)
 
   } finally {
     // 6. 释放处理锁
-    releaseProcessingLock(keyword)
+    releaseProcessingLock(cacheKey, searchPromise)
+  }
+}
+
+const activeSearches = new Map<number, AbortController>()
+
+export function stopStreamSearch(windowId: number): void {
+  activeSearches.get(windowId)?.abort(new Error('Search cancelled'))
+  activeSearches.delete(windowId)
+}
+
+export async function executeStreamSearch(
+  windowId: number, keyword: string, platform?: string,
+  options?: { verifyLinks?: boolean; showEncrypted?: boolean },
+): Promise<void> {
+  stopStreamSearch(windowId)
+  const controller = new AbortController()
+  activeSearches.set(windowId, controller)
+  try {
+    await withSearchSignal(controller.signal, () => executeStreamSearchInternal(windowId, keyword, platform, options))
+  } catch (error) {
+    if (!controller.signal.aborted) throw error
+  } finally {
+    if (activeSearches.get(windowId) === controller) activeSearches.delete(windowId)
   }
 }
 
@@ -407,6 +427,7 @@ async function performSearch(
 
   // 辅助函数：处理并发送结果
   async function processAndSendResult(item: SearchResultItem, sourceName: string, sourceWeight?: number): Promise<boolean> {
+    throwIfSearchCancelled()
     const key = item.url.split('?')[0]
     if (seen.has(key)) return false
     seen.add(key)
@@ -418,6 +439,7 @@ async function performSearch(
     // 验证链接（如果启用）
     if (verifyLinks) {
       const verification = await verifyResourceUrl(item.url)
+      throwIfSearchCancelled()
       if (!verification.valid) return false
     }
 
@@ -434,13 +456,14 @@ async function performSearch(
   }
 
   // 搜索API源（分为有搜索参数的API源和只有域名的浏览器爬虫源）
-  const apiWithParams = apiSources.filter(s => s.url && s.url.includes('{keyword}'))
-  const browserSources = apiSources.filter(s => s.url && !s.url.includes('{keyword}') && s.url.startsWith('http'))
+  const apiWithParams = apiSources.filter(s => s.type === 'api' && s.url)
+  const browserSources = apiSources.filter(s => s.type !== 'api' && s.url?.startsWith('http'))
 
   if (apiWithParams.length > 0) {
     sendStreamEvent(windowId, 'source', { name: 'API搜索源', count: apiWithParams.length })
 
     for (const source of apiWithParams) {
+      throwIfSearchCancelled()
       try {
         // 使用动态导入避免循环依赖
         const { searchApi } = await import('./search-engine')
@@ -462,6 +485,7 @@ async function performSearch(
     sendStreamEvent(windowId, 'source', { name: '浏览器爬虫', count: topBrowserSources.length })
 
     for (const source of topBrowserSources) {
+      throwIfSearchCancelled()
       try {
         const browserConfig: BrowserCrawlerSource = {
           name: source.name,
@@ -485,6 +509,7 @@ async function performSearch(
     sendStreamEvent(windowId, 'source', { name: 'TG频道', count: tgChannels.length })
 
     for (const channel of tgChannels) {
+      throwIfSearchCancelled()
       try {
         const config = dbTgChannelToConfig(channel)
         const results = await searchTgChannel(config, keyword)
@@ -503,6 +528,7 @@ async function performSearch(
     sendStreamEvent(windowId, 'source', { name: '网页爬虫', count: crawlerSources.length })
 
     for (const source of crawlerSources) {
+      throwIfSearchCancelled()
       try {
         const config = dbCrawlerSourceToConfig(source)
         const results = await searchCrawlerSource(config, keyword)
@@ -521,6 +547,7 @@ async function performSearch(
     sendStreamEvent(windowId, 'source', { name: 'KK搜索', count: kkSources.length })
 
     for (const source of kkSources) {
+      throwIfSearchCancelled()
       try {
         const config = dbKkSourceToConfig(source)
         const results = await searchKk(config, keyword)
@@ -536,6 +563,7 @@ async function performSearch(
 
   // 搜索完成 - 对结果进行智能排序
   const sortedResults = sortResults(allResults, keyword)
+  throwIfSearchCancelled()
 
   sendStreamEvent(windowId, 'done', {
     message: '搜索完成',

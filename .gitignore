@@ -2,7 +2,11 @@ node_modules/
 dist/
 release/
 release-next*/
+output/
 coverage/
+build/node-native/
+build/verified-native/
+scripts/screen.png
 *.db
 *.log
 .env

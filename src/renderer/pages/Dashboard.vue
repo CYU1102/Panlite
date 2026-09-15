@@ -305,10 +305,10 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #ffffff;
+  background: var(--pl-surface);
   padding: 16px 20px;
   border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 }
 
 .header-left {
@@ -332,13 +332,13 @@ onMounted(() => {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--pl-text);
 }
 
 .header-desc {
   margin: 2px 0 0;
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 /* ── 加载/空状态 ── */
@@ -349,7 +349,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .spinning {
@@ -374,8 +374,8 @@ onMounted(() => {
   width: 80px;
   height: 80px;
   border-radius: 20px;
-  background: #f3f4f6;
-  color: #d1d5db;
+  background: var(--pl-hover);
+  color: var(--pl-border);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -384,13 +384,13 @@ onMounted(() => {
 .empty-state h3 {
   margin: 0;
   font-size: 16px;
-  color: #374151;
+  color: var(--pl-text);
 }
 
 .empty-state p {
   margin: 0;
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 /* ── 总览卡片 ── */
@@ -404,10 +404,10 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: #ffffff;
+  background: var(--pl-surface);
   padding: 16px;
   border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 }
 
 .overview-icon {
@@ -448,13 +448,13 @@ onMounted(() => {
 .overview-value {
   font-size: 20px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--pl-text);
   line-height: 1.2;
 }
 
 .overview-label {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   margin-top: 2px;
 }
 
@@ -468,9 +468,9 @@ onMounted(() => {
 }
 
 .quota-card {
-  background: #ffffff;
+  background: var(--pl-surface);
   border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -520,8 +520,8 @@ onMounted(() => {
 
 /* 其他平台默认配色 */
 .quota-avatar:not(.quark):not(.baidu):not(.uc):not(.xunlei) {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
 }
 
 .quota-user {
@@ -533,14 +533,14 @@ onMounted(() => {
 .quota-nickname {
   font-size: 14px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--pl-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .quota-platform {
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   padding: 1px 6px;
   border-radius: 4px;
   width: fit-content;
@@ -568,8 +568,8 @@ onMounted(() => {
 }
 
 .quota-platform:not(.quark):not(.baidu):not(.uc):not(.xunlei) {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
 }
 
 .quota-body {
@@ -596,17 +596,17 @@ onMounted(() => {
 }
 
 .quota-detail-label {
-  color: #9ca3af;
-  font-size: 11px;
+  color: var(--pl-text-muted);
+  font-size: var(--pl-font-xs);
 }
 
 .quota-detail-value {
-  color: #374151;
+  color: var(--pl-text);
   font-weight: 500;
 }
 
 .quota-separator {
-  color: #d1d5db;
+  color: var(--pl-border);
   margin: 0 4px;
   align-self: flex-end;
   margin-bottom: 1px;
@@ -630,12 +630,12 @@ onMounted(() => {
 }
 
 .quota-unsupported-icon {
-  color: #d1d5db;
+  color: var(--pl-border);
 }
 
 .quota-unsupported-text {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .quota-error {
@@ -654,9 +654,9 @@ onMounted(() => {
   align-items: center;
   gap: 20px;
   padding: 10px 16px;
-  background: #ffffff;
+  background: var(--pl-surface);
   border-radius: 10px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
   flex-shrink: 0;
 }
 
@@ -665,7 +665,7 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 /* Interactive light storage workspace */
 .dashboard {
@@ -784,7 +784,7 @@ onMounted(() => {
 
 .overview-note {
   margin-top: 5px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -867,7 +867,7 @@ onMounted(() => {
   border-radius: 999px;
   background: var(--pl-primary-soft);
   color: var(--pl-primary);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
 }
 

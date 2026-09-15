@@ -35,12 +35,22 @@ export type NotificationDispatchResult =
   | 'paused'
   | 'unsupported'
 
+export interface TrayAiProfile {
+  id: string
+  name: string
+  model: string
+  active: boolean
+}
+
 export interface TrayNotificationOptions {
   getWindow: () => BrowserWindow | null
   onOpenTasks: () => void
   onShowWindow?: () => void
   onQuit?: () => void
   onNotificationsPausedChange?: (paused: boolean) => void
+  /** AI 模型快速切换：返回当前配置列表，点击后通过 onActivateAiProfile 切换 */
+  getAiProfiles?: () => TrayAiProfile[]
+  onActivateAiProfile?: (id: string) => void
   trayIcon?: string | NativeImage
   tooltip?: string
   throttleMs?: number
@@ -140,6 +150,24 @@ export class TrayNotificationManager {
           this.options.onOpenTasks()
         },
       },
+    ]
+
+    const aiProfiles = this.options.getAiProfiles?.() || []
+    if (aiProfiles.length > 0 && this.options.onActivateAiProfile) {
+      template.push({
+        label: 'AI 模型',
+        submenu: aiProfiles.map((profile) => ({
+          label: profile.active ? `✓ ${profile.name}（当前）` : `${profile.name}${profile.model ? ` · ${profile.model}` : ''}`,
+          type: 'checkbox' as const,
+          checked: profile.active,
+          click: () => {
+            if (!profile.active) this.options.onActivateAiProfile?.(profile.id)
+          },
+        })),
+      })
+    }
+
+    template.push(
       { type: 'separator' },
       {
         label: '暂停通知',
@@ -152,7 +180,7 @@ export class TrayNotificationManager {
         label: '退出',
         click: () => (this.options.onQuit ?? (() => app.quit()))(),
       },
-    ]
+    )
     this.tray.setContextMenu(Menu.buildFromTemplate(template))
   }
 

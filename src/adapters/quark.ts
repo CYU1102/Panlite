@@ -1,7 +1,12 @@
-import { session, net } from 'electron'
-import type { DriveAdapter } from './base'
+import { writeDownloadResponse } from './download-response'
+import { parseQuarkUcResponse } from './quark-uc-response'
+import { QuarkCookieStore } from './quark-cookie'
+import { session } from 'electron'
+import type { DriveAdapter, DriveDownloadSource } from './base'
 import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult, UploadOptions, UploadResult, DownloadOptions, DownloadResult } from '../shared/types'
-import { generateId, sleep, randomInt } from '../shared/utils'
+import type { SharedDirectoryOptions, SharedDirectoryResult, SharedSaveOptions } from '../shared/subscription-types'
+import { SharedDirectoryPages, sharedEntry } from './shared-directory'
+import { sleep, randomInt } from '../shared/utils'
 import log from 'electron-log'
 import { resolvePathInside, sanitizeFileName } from '../main/file-transfer'
 import { getRequestSettings } from '../main/request-settings'
@@ -12,13 +17,6 @@ import { normalizeMembership } from '../shared/membership'
 const QUARK_UA =
   'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko)' +
   ' Chrome/94.0.4606.71 Safari/537.36 Core/1.94.225.400 QQBrowser/12.2.5544.400'
-
-const QUARK_HEADERS: Record<string, string> = {
-  'user-agent': QUARK_UA,
-  'origin': 'https://pan.quark.cn',
-  'referer': 'https://pan.quark.cn/',
-  'accept-language': 'zh-CN,zh;q=0.9',
-}
 
 // ── 错误码映射 ──
 
@@ -33,6 +31,7 @@ const QUARK_ERROR_CODES: Record<number, string> = {
   [23008]: '文件夹同名冲突',
   [23018]: 'User-Agent 校验失败',
   [32003]: '容量不足',
+  [41026]: '没有可分享的文件（分享可能已失效、被限制保存或提取码不匹配）',
 }
 
 function getQuarkErrorMessage(code: number, action: string): string {
@@ -61,11 +60,8 @@ function buildQuarkParams(extra?: Record<string, string>): Record<string, string
   }
 }
 
-/**
- * 夸克 API 请求（完全参照 QuarkPanTool 的 headers + cookie 方式）
- * 不使用 session.fetch，直接用 net.request + Cookie header
- */
 const QUARK_SESSION = 'persist:quark'
+const quarkCookies = new QuarkCookieStore()
 
 /**
  * 夸克 API 请求（使用 session.fetch + Cookie header）
@@ -73,9 +69,10 @@ const QUARK_SESSION = 'persist:quark'
  */
 async function quarkRequest<T>(
   url: string,
-  cookies: string,
-  options: { method?: string; body?: unknown; params?: Record<string, string> } = {},
+  account: DriveAccount,
+  options: { method?: string; body?: unknown; params?: Record<string, string>; onResponseCookies?: (cookies: string) => void } = {},
 ): Promise<T> {
+  const cookieRequest = quarkCookies.begin(account)
   const method = options.method || 'GET'
   const urlObj = new URL(url)
 
@@ -94,7 +91,7 @@ async function quarkRequest<T>(
     'origin': 'https://pan.quark.cn',
     'referer': 'https://pan.quark.cn/',
     'accept-language': 'zh-CN,zh;q=0.9',
-    'cookie': cookies,
+    'cookie': cookieRequest.cookie,
     'Accept': 'application/json, text/plain, */*',
   }
 
@@ -107,13 +104,10 @@ async function quarkRequest<T>(
 
   const ses = session.fromPartition(QUARK_SESSION)
   const response = await ses.fetch(finalUrl, fetchOptions)
+  const responseCookies = quarkCookies.receive(cookieRequest, response.headers, response.url || finalUrl)
+  options.onResponseCookies?.(responseCookies)
   const text = await response.text()
-
-  try {
-    return JSON.parse(text) as T
-  } catch {
-    throw new Error(`Failed to parse Quark API response: ${text.substring(0, 200)}`)
-  }
+  return parseQuarkUcResponse(text, response.status, urlObj, method, 'quark') as T
 }
 
 // ── 接口定义 ──
@@ -128,6 +122,7 @@ interface QuarkApiResponse {
 }
 
 interface QuarkFileItem {
+  file?: boolean
   fid: string
   pdir_fid: string
   file_name: string
@@ -144,7 +139,7 @@ function mapQuarkFile(f: QuarkFileItem, accountId: string): FileItem {
     path: f.fid,
     parentId: f.pdir_fid,
     name: f.file_name,
-    isDir: f.file_type === 0 || f.dir === true,
+    isDir: typeof f.file === 'boolean' ? !f.file : f.file_type === 0 || f.dir === true,
     size: f.size || 0,
     createdAt: f.created_at,
     updatedAt: f.updated_at,
@@ -189,7 +184,7 @@ export class QuarkAdapter implements DriveAdapter {
       // 完全参照 QuarkPanTool get_user_info
       const res = await quarkRequest<any>(
         'https://pan.quark.cn/account/info?fr=pc&platform=pc',
-        cookies,
+        account,
       )
       return !!(res.data && res.data.nickname)
     } catch (err) {
@@ -207,7 +202,7 @@ export class QuarkAdapter implements DriveAdapter {
 
     const res = await quarkRequest<any>(
       'https://pan.quark.cn/account/info?fr=pc&platform=pc',
-      cookies,
+      account,
     )
     if (!res.data) throw new Error('获取用户信息失败')
     return { nickname: res.data.nickname || '夸克用户', avatar: res.data.avatar }
@@ -223,6 +218,7 @@ export class QuarkAdapter implements DriveAdapter {
     const { quarkPageSize: pageSize, requestDelayMs } = getRequestSettings()
     const maxPages = 100
     const allFiles: FileItem[] = []
+    let complete = false
 
     for (let page = 1; page <= maxPages; page++) {
       // 完全参照 QuarkPanTool get_sorted_file_list 的参数
@@ -237,28 +233,31 @@ export class QuarkAdapter implements DriveAdapter {
 
       const res = await quarkRequest<QuarkApiResponse>(
         'https://drive-pc.quark.cn/1/clouddrive/file/sort',
-        cookies,
+        account,
         { params },
       )
 
       if (res.code !== 0) throw new Error(`获取文件列表失败: ${res.message}`)
 
       const items = res.data?.list
-      if (!Array.isArray(items)) break
+      if (!Array.isArray(items)) throw new Error('夸克文件列表响应无效')
 
       allFiles.push(...items.map((f: QuarkFileItem) => mapQuarkFile(f, account.id)))
 
-      // 参照 QuarkPanTool 的分页逻辑
-      const metadata = res.metadata
-      if (metadata) {
-        if (metadata._total <= metadata._size || metadata._count < metadata._size) break
-      } else {
-        if (items.length < pageSize) break
+      // The live provider can return _total=0 for non-empty directories.
+      // Treat that sentinel as unknown and continue until a short page.
+      const total = res.metadata?._total
+      const hasTotal = typeof total === 'number' && Number.isSafeInteger(total) && total > 0
+      if (hasTotal ? allFiles.length >= total : items.length < pageSize) {
+        complete = true
+        break
       }
+      if (items.length === 0) throw new Error('夸克文件列表不完整：平台总数与分页响应不一致')
 
       if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
 
+    if (!complete) throw new Error('夸克文件列表达到分页上限，结果不完整')
     return { files: allFiles, parentId, hasMore: false }
   }
 
@@ -272,25 +271,30 @@ export class QuarkAdapter implements DriveAdapter {
     const { quarkPageSize: pageSize, requestDelayMs } = getRequestSettings()
     const maxPages = 100
     const allFiles: FileItem[] = []
+    let complete = false
 
     for (let page = 1; page <= maxPages; page++) {
       const res = await quarkRequest<QuarkApiResponse>(
         'https://drive-pc.quark.cn/1/clouddrive/file/search',
-        cookies,
-        { method: 'POST', body: { keyword, _page: page, _size: pageSize, _sort: '' } },
+        account,
+        { params: { q: keyword, _page: String(page), _size: String(pageSize), _fetch_total: 'true', _sort: '' } },
       )
 
       if (res.code !== 0) throw new Error(`搜索失败: ${res.message}`)
 
       const items = res.data?.list
-      if (!Array.isArray(items)) break
+      if (!Array.isArray(items)) throw new Error('夸克搜索列表响应无效')
 
       allFiles.push(...items.map((f: QuarkFileItem) => mapQuarkFile(f, account.id)))
 
-      if (items.length < pageSize) break
+      const total = res.metadata?._total
+      const hasTotal = typeof total === 'number' && Number.isSafeInteger(total) && total > 0
+      if (hasTotal ? allFiles.length >= total : items.length < pageSize) { complete = true; break }
+      if (items.length === 0) throw new Error('夸克搜索结果不完整：平台总数与分页响应不一致')
       if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
 
+    if (!complete) throw new Error('夸克搜索达到分页上限，结果不完整')
     return allFiles
   }
 
@@ -304,7 +308,7 @@ export class QuarkAdapter implements DriveAdapter {
     // 完全参照 QuarkPanTool create_dir
     const res = await quarkRequest<QuarkApiResponse>(
       'https://drive-pc.quark.cn/1/clouddrive/file',
-      cookies,
+      account,
       {
         method: 'POST',
         body: {
@@ -320,6 +324,7 @@ export class QuarkAdapter implements DriveAdapter {
       if (res.code === 23008) throw new Error('文件夹同名冲突，请更换名称后重试')
       throw new Error(`创建文件夹失败: ${res.message}`)
     }
+    if (typeof res.data?.fid !== 'string' || !res.data.fid) throw new Error('夸克新建文件夹响应缺少 ID')
 
     return {
       id: res.data.fid,
@@ -339,8 +344,8 @@ export class QuarkAdapter implements DriveAdapter {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
     const res = await quarkRequest<QuarkApiResponse>(
-      'https://drive-pc.quark.cn/1/clouddrive/rename',
-      cookies,
+      'https://drive-pc.quark.cn/1/clouddrive/file/rename',
+      account,
       { method: 'POST', body: { fid: fileId, file_name: newName } },
     )
     if (res.code !== 0) throw new Error(`重命名失败: ${res.message}`)
@@ -350,11 +355,53 @@ export class QuarkAdapter implements DriveAdapter {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
     const res = await quarkRequest<QuarkApiResponse>(
-      'https://drive-pc.quark.cn/1/clouddrive/move',
-      cookies,
-      { method: 'POST', body: { file_fids: fileIds, to_pdir_fid: targetDirId } },
+      'https://drive-pc.quark.cn/1/clouddrive/file/move',
+      account,
+      { method: 'POST', body: { action_type: 1, exclude_fids: [], filelist: fileIds, to_pdir_fid: targetDirId } },
     )
     if (res.code !== 0) throw new Error(`移动失败: ${res.message}`)
+  }
+
+  async cancelShare(account: DriveAccount, shareId: string): Promise<void> {
+    const cookies = account.credential.cookies
+    if (!cookies) throw new Error('No cookies available')
+    const res = await quarkRequest<QuarkApiResponse>(
+      'https://drive-pc.quark.cn/1/clouddrive/share/delete',
+      account,
+      { method: 'POST', body: { share_ids: [shareId] } },
+    )
+    if (res.code !== 0) throw new Error(`取消分享失败: ${res.message}`)
+  }
+
+  async copy(account: DriveAccount, fileIds: string[], targetDirId: string): Promise<void> {
+    const cookies = account.credential.cookies
+    if (!cookies) throw new Error('No cookies available')
+    const res = await quarkRequest<QuarkApiResponse & { task_id?: string }>(
+      'https://drive-pc.quark.cn/1/clouddrive/file/copy',
+      account,
+      {
+        method: 'POST',
+        body: {
+          action_type: 1,
+          filelist: fileIds.map((fid) => ({ fid, share_f_id: '' })),
+          to_pdir_fid: targetDirId === '0' ? '0' : targetDirId,
+        },
+      },
+    )
+    if (res.code !== 0) throw new Error(`复制失败: ${res.message}`)
+    const taskId = res.data?.task_id
+    if (!taskId) return
+    for (let retryIndex = 0; retryIndex < 50; retryIndex++) {
+      await sleep(randomInt(500, 1000))
+      const taskRes = await quarkRequest<QuarkApiResponse>(
+        'https://drive-pc.quark.cn/1/clouddrive/task',
+        account,
+        { params: { task_id: taskId, retry_index: String(retryIndex) } },
+      )
+      if (taskRes.code !== 0) throw new Error(getQuarkErrorMessage(taskRes.code, '复制'))
+      if (taskRes.data?.status === 2) return
+    }
+    throw new Error('复制超时')
   }
 
   async delete(account: DriveAccount, fileIds: string[]): Promise<void> {
@@ -362,7 +409,7 @@ export class QuarkAdapter implements DriveAdapter {
     if (!cookies) throw new Error('No cookies available')
     const res = await quarkRequest<QuarkApiResponse>(
       'https://drive-pc.quark.cn/1/clouddrive/file/delete',
-      cookies,
+      account,
       { method: 'POST', body: { action_type: 2, exclude_fids: [], filelist: fileIds } },
     )
     if (res.code !== 0) throw new Error(`删除失败: ${res.message}`)
@@ -391,13 +438,13 @@ export class QuarkAdapter implements DriveAdapter {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
 
-    const fid = items[0].fileId
-    const title = options?.title || (items[0].name || '分享文件')
+    const fileIds = items.map((item) => item.fileId)
+    const title = options?.title || (items.length === 1 ? (items[0].name || '分享文件') : `分享 ${items.length} 个文件`)
 
     // ── Step 1: get_share_task_id（参照 QuarkPanTool line 507-536） ──
     const urlType = options?.password ? 2 : 1
     const body: Record<string, unknown> = {
-      fid_list: [fid],
+      fid_list: fileIds,
       title,
       url_type: urlType,
       expired_type: this.mapExpireDays(options?.expireDays),
@@ -408,7 +455,7 @@ export class QuarkAdapter implements DriveAdapter {
 
     const shareRes = await quarkRequest<QuarkApiResponse>(
       'https://drive-pc.quark.cn/1/clouddrive/share',
-      cookies,
+      account,
       { method: 'POST', body },
     )
 
@@ -424,15 +471,12 @@ export class QuarkAdapter implements DriveAdapter {
 
       const taskRes = await quarkRequest<QuarkApiResponse>(
         `https://drive-pc.quark.cn/1/clouddrive/task`,
-        cookies,
+        account,
         { params: { task_id: taskId, retry_index: String(retryIndex) } },
       )
 
-      if (taskRes.code !== 0) {
-        if (taskRes.code === 32003) throw new Error('分享失败：容量不足')
-        if (taskRes.code === 41013) throw new Error('分享失败：文件违规或不可分享')
-        continue
-      }
+      // 非 0 业务码即为夸克侧终态失败，直接抛出而不是空转到超时
+      if (taskRes.code !== 0) throw new Error(getQuarkErrorMessage(taskRes.code, '分享'))
 
       if (taskRes.data?.status === 2) {
         shareId = taskRes.data.share_id || ''
@@ -445,7 +489,7 @@ export class QuarkAdapter implements DriveAdapter {
     // ── Step 3: submit_share（参照 QuarkPanTool line 553-572） ──
     const pwdRes = await quarkRequest<QuarkApiResponse>(
       'https://drive-pc.quark.cn/1/clouddrive/share/password',
-      cookies,
+      account,
       { method: 'POST', body: { share_id: shareId } },
     )
 
@@ -461,11 +505,14 @@ export class QuarkAdapter implements DriveAdapter {
       id: shareId,
       platform: 'quark',
       accountId: account.id,
-      fileIds: [fid],
+      fileIds,
       title,
       shareUrl: finalUrl,
       password: sharePwd,
       createdAt: Date.now(),
+      expiredAt: options?.expireDays && options.expireDays > 0
+        ? Date.now() + options.expireDays * 86_400_000
+        : undefined,
       raw: pwdRes.data,
     }
   }
@@ -489,6 +536,12 @@ export class QuarkAdapter implements DriveAdapter {
    * 获取分享详情（参照 QuarkPanTool get_stoken + get_detail）
    */
   async getShareDetail(account: DriveAccount, input: TransferLinkInput): Promise<ShareDetail> {
+    const directory = await this.listSharedDirectory(account, input)
+    return { platform: 'quark', shareId: directory.shareId, title: directory.title, files: directory.entries }
+  }
+
+  async listSharedDirectory(account: DriveAccount, input: TransferLinkInput, options: SharedDirectoryOptions = {}): Promise<SharedDirectoryResult> {
+    options.signal?.throwIfAborted()
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
 
@@ -501,7 +554,7 @@ export class QuarkAdapter implements DriveAdapter {
     if (!stoken) {
       const tokenRes = await quarkRequest<QuarkApiResponse>(
         'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token',
-        cookies,
+        account,
         { method: 'POST', body: { pwd_id: parsed.shareId, passcode: pwd } },
       )
 
@@ -515,16 +568,18 @@ export class QuarkAdapter implements DriveAdapter {
     }
 
     // Step 2: get_detail（参照 QuarkPanTool line 71-122）
-    const allFiles: ShareDetail['files'] = []
+    const allFiles: SharedDirectoryResult['entries'] = []
     let shareTitle: string | undefined
     let page = 1
     const pageSize = 50
+    const pages = new SharedDirectoryPages()
 
     while (true) {
+      options.signal?.throwIfAborted()
       const params: Record<string, string> = {
         pwd_id: parsed.shareId,
         stoken,
-        pdir_fid: '0',
+        pdir_fid: options.parentId || '0',
         force: '0',
         _page: String(page),
         _size: String(pageSize),
@@ -533,7 +588,7 @@ export class QuarkAdapter implements DriveAdapter {
 
       const detailRes = await quarkRequest<QuarkApiResponse>(
         'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail',
-        cookies,
+        account,
         { params },
       )
 
@@ -546,28 +601,15 @@ export class QuarkAdapter implements DriveAdapter {
 
       if (!shareTitle && detailRes.data?.title) shareTitle = detailRes.data.title
 
-      const list = detailRes.data?.list || []
-      for (const f of list) {
-        allFiles.push({
-          fileId: f.fid,
-          name: f.file_name,
-          isDir: f.dir === 1 || f.is_dir === 1,
-          size: f.size,
-          raw: f,
-        })
-      }
-
-      // 参照 QuarkPanTool 的分页逻辑
-      const metadata = detailRes.metadata
-      if (metadata) {
-        if (metadata._total <= metadata._size || metadata._count < metadata._size) break
-      } else {
-        if (list.length < pageSize) break
-      }
+      if (!Array.isArray(detailRes.data?.list)) throw new Error('分享目录列表无效，无法确认完整性')
+      const list = detailRes.data.list
+      options.signal?.throwIfAborted()
+      for (const f of list) allFiles.push(sharedEntry(f, 'pan'))
+      if (!pages.accept(list.map((f: { fid: string }) => String(f.fid || '')), pageSize, detailRes.metadata)) break
       page++
     }
 
-    return { platform: 'quark', shareId: parsed.shareId, title: shareTitle, files: allFiles }
+    return { shareId: parsed.shareId, title: shareTitle, entries: allFiles, complete: true }
   }
 
   /**
@@ -577,7 +619,8 @@ export class QuarkAdapter implements DriveAdapter {
    * Step 3: get_share_save_task_id -> POST /share/sharepage/save
    * Step 4: submit_task -> 轮询 /task
    */
-  async saveSharedFiles(account: DriveAccount, input: TransferLinkInput, targetDirId: string): Promise<TransferResult> {
+  async saveSharedFiles(account: DriveAccount, input: TransferLinkInput, targetDirId: string, options: SharedSaveOptions = {}): Promise<TransferResult> {
+    options.signal?.throwIfAborted()
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
 
@@ -590,7 +633,7 @@ export class QuarkAdapter implements DriveAdapter {
     if (!stoken) {
       const tokenRes = await quarkRequest<QuarkApiResponse>(
         'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token',
-        cookies,
+        account,
         { method: 'POST', body: { pwd_id: parsed.shareId, passcode: pwd } },
       )
 
@@ -606,16 +649,17 @@ export class QuarkAdapter implements DriveAdapter {
     // ── Step 2: get_detail（参照 QuarkPanTool line 71-122, 213-243） ──
     const allFids: string[] = []
     const allFidTokens: string[] = []
-    const allFileNames: string[] = []
     let isOwner = 0
     let page = 1
     const pageSize = 50
+    const pages = new SharedDirectoryPages()
 
     while (true) {
+      options.signal?.throwIfAborted()
       const params: Record<string, string> = {
         pwd_id: parsed.shareId,
         stoken,
-        pdir_fid: '0',
+        pdir_fid: options.sourceParentId || '0',
         force: '0',
         _page: String(page),
         _size: String(pageSize),
@@ -624,7 +668,7 @@ export class QuarkAdapter implements DriveAdapter {
 
       const detailRes = await quarkRequest<QuarkApiResponse>(
         'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail',
-        cookies,
+        account,
         { params },
       )
 
@@ -640,20 +684,25 @@ export class QuarkAdapter implements DriveAdapter {
         isOwner = detailRes.data.is_owner
       }
 
-      const list = detailRes.data?.list || []
+      if (!Array.isArray(detailRes.data?.list)) throw new Error('分享目录列表无效，无法确认完整性')
+      const list = detailRes.data.list
       for (const f of list) {
         allFids.push(f.fid)
         allFidTokens.push(f.share_fid_token || '')
-        allFileNames.push(f.file_name || '')
       }
 
-      const metadata = detailRes.metadata
-      if (metadata) {
-        if (metadata._total <= metadata._size || metadata._count < metadata._size) break
-      } else {
-        if (list.length < pageSize) break
-      }
+      if (!pages.accept(list.map((f: { fid: string }) => String(f.fid || '')), pageSize, detailRes.metadata)) break
       page++
+    }
+
+    if (input.fileIds?.length) {
+      const selected = new Set(input.fileIds)
+      const keep = allFids.map((fid, index) => selected.has(fid) ? index : -1).filter(index => index >= 0)
+      const fids = keep.map(index => allFids[index])
+      const fidTokens = keep.map(index => allFidTokens[index])
+      allFids.splice(0, allFids.length, ...fids)
+      allFidTokens.splice(0, allFidTokens.length, ...fidTokens)
+      if (allFids.length !== selected.size) throw new Error('分享文件在扫描后发生变化，请重新检查')
     }
 
     if (allFids.length === 0) throw new Error('转存失败：分享中没有文件')
@@ -673,9 +722,10 @@ export class QuarkAdapter implements DriveAdapter {
 
     // ── Step 3: get_share_save_task_id（参照 QuarkPanTool line 301-322） ──
     // 注意：使用 drive.quark.cn 而非 drive-pc.quark.cn（参照 QuarkPanTool line 303）
+    options.signal?.throwIfAborted()
     const saveRes = await quarkRequest<QuarkApiResponse>(
       'https://drive.quark.cn/1/clouddrive/share/sharepage/save',
-      cookies,
+      account,
       {
         method: 'POST',
         body: {
@@ -684,7 +734,7 @@ export class QuarkAdapter implements DriveAdapter {
           to_pdir_fid: targetDirId === '0' ? '' : targetDirId,
           pwd_id: parsed.shareId,
           stoken,
-          pdir_fid: '0',
+          pdir_fid: options.sourceParentId || '0',
           scene: 'link',
         },
       },
@@ -701,20 +751,22 @@ export class QuarkAdapter implements DriveAdapter {
 
       const taskRes = await quarkRequest<QuarkApiResponse>(
         'https://drive-pc.quark.cn/1/clouddrive/task',
-        cookies,
+        account,
         { params: { task_id: taskId, retry_index: String(retryIndex) } },
       )
 
       // 参照 QuarkPanTool: message == 'ok' 且 status == 2 表示完成
-      if (taskRes.code !== 0) {
-        if (taskRes.code === 32003) throw new Error('转存失败：容量不足')
-        if (taskRes.code === 41013) throw new Error('转存失败：目标文件夹不存在')
-        continue
-      }
+      // 非 0 业务码即为夸克侧终态失败，直接抛出而不是空转到超时
+      if (taskRes.code !== 0) throw new Error(getQuarkErrorMessage(taskRes.code, '转存'))
 
       if (taskRes.data?.status === 2) {
         const folderName = taskRes.data.save_as?.to_pdir_name || '根目录'
-        const savedFileIds = taskRes.data.save_as?.save_as_top_fids || allFids
+        // Only the save response identifies files in the receiving account.
+        // Share-page IDs and names cannot establish destination IDs or order.
+        const destinationIds = taskRes.data.save_as?.save_as_top_fids
+        const savedFileIds = Array.isArray(destinationIds)
+          ? destinationIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
+          : undefined
         return {
           platform: 'quark',
           accountId: account.id,
@@ -723,7 +775,6 @@ export class QuarkAdapter implements DriveAdapter {
           savedCount: allFids.length,
           targetDirId,
           savedFileIds,
-          savedFileNames: allFileNames,
           raw: { ...taskRes.data, folder_name: folderName },
         }
       }
@@ -748,6 +799,11 @@ export class QuarkAdapter implements DriveAdapter {
 
     const fileName = options?.fileName || path.basename(localFilePath)
     const fileSize = fs.statSync(localFilePath).size
+    const completedUpload = (fileId: unknown): UploadResult => {
+      options?.signal?.throwIfAborted()
+      options?.onProgress?.({ loaded: fileSize, total: fileSize, percent: 100, speed: 0 })
+      return { success: true, fileId: typeof fileId === 'string' && fileId ? fileId : undefined, fileName, fileSize }
+    }
 
     // 流式计算文件哈希（避免将整个文件读入内存）
     const { md5: md5Hash, sha1: sha1Hash } = await new Promise<{ md5: string; sha1: string }>((resolve, reject) => {
@@ -763,7 +819,7 @@ export class QuarkAdapter implements DriveAdapter {
     const now = Date.now()
     const preRes = await quarkRequest<any>(
       'https://drive-pc.quark.cn/1/clouddrive/file/upload/pre',
-      cookies,
+      account,
       {
         method: 'POST',
         body: {
@@ -773,7 +829,7 @@ export class QuarkAdapter implements DriveAdapter {
           format_type: 'application/octet-stream',
           l_created_at: now,
           l_updated_at: now,
-          pdir_fid: targetDirId === '0' ? '' : targetDirId,
+          pdir_fid: targetDirId || '0',
           size: fileSize,
         },
       },
@@ -783,7 +839,7 @@ export class QuarkAdapter implements DriveAdapter {
       throw new Error(`预上传失败: ${preRes.message}`)
     }
 
-    log.info('Quark pre-upload response:', JSON.stringify(preRes, null, 2))
+    options?.signal?.throwIfAborted()
 
     const preData = preRes.data
     const taskId = preData?.task_id
@@ -796,9 +852,9 @@ export class QuarkAdapter implements DriveAdapter {
     const partSize = preRes.metadata?.part_size || 4 * 1024 * 1024
 
     // 如果预上传直接返回 finish（秒传）
-    if (preData?.finish) {
+    if (preData?.finish === true) {
       log.info(`Quark: rapid upload success (pre finish) for ${fileName}`)
-      return { success: true, fileId: preData.fid || taskId, fileName, fileSize }
+      return completedUpload(preData.fid)
     }
 
     if (!taskId) {
@@ -808,20 +864,24 @@ export class QuarkAdapter implements DriveAdapter {
     // 2. Hash 检查（alist upHash）
     const hashRes = await quarkRequest<any>(
       'https://drive-pc.quark.cn/1/clouddrive/file/update/hash',
-      cookies,
+      account,
       {
         method: 'POST',
         body: { md5: md5Hash, sha1: sha1Hash, task_id: taskId },
       },
     )
 
-    if (hashRes.code === 0 && hashRes.data?.finish) {
+    options?.signal?.throwIfAborted()
+    if (hashRes.code !== 0) throw new Error(`上传哈希检查失败: ${hashRes.message}`)
+    if (hashRes.data?.finish === true) {
       log.info(`Quark: rapid upload success (hash finish) for ${fileName}`)
-      return { success: true, fileId: hashRes.data?.fid || taskId, fileName, fileSize }
+      return completedUpload(hashRes.data?.fid || preData.fid)
     }
 
     // 3. 分片上传（alist upPart + upCommit + upFinish）
     const totalParts = Math.ceil(fileSize / partSize)
+    if (!Number.isSafeInteger(partSize) || partSize <= 0 || partSize > 256 * 1024 * 1024 || totalParts > 10000) throw new Error('上传分片大小或数量超出当前支持范围')
+    if ([uploadUrl, bucket, objKey, uploadId, authInfo].some(value => typeof value !== 'string' || !value)) throw new Error('预上传响应缺少有效上传参数')
     let uploadedBytes = 0
     const etags: string[] = []
 
@@ -840,6 +900,7 @@ export class QuarkAdapter implements DriveAdapter {
       const end = Math.min(start + partSize, fileSize)
       const chunkSize = end - start
       const bytesRead = fs.readSync(fd, chunkBuf, 0, chunkSize, start)
+      if (bytesRead !== chunkSize) throw new Error('上传文件在读取过程中发生变化')
       const chunk = chunkBuf.subarray(0, bytesRead)
       const partNumber = i + 1
 
@@ -848,7 +909,7 @@ export class QuarkAdapter implements DriveAdapter {
       const mimeType = 'application/octet-stream'
       const authMeta = [
         'PUT',
-        '',
+        '', // Content-MD5 is empty; this newline is part of the signed bytes.
         mimeType,
         timeStr,
         `x-oss-date:${timeStr}`,
@@ -858,7 +919,7 @@ export class QuarkAdapter implements DriveAdapter {
 
       const partAuthRes = await quarkRequest<any>(
         'https://drive-pc.quark.cn/1/clouddrive/file/upload/auth',
-        cookies,
+        account,
         {
           method: 'POST',
           body: { auth_info: authInfo, auth_meta: authMeta, task_id: taskId },
@@ -870,6 +931,8 @@ export class QuarkAdapter implements DriveAdapter {
       }
 
       const authKey = partAuthRes.data?.auth_key
+      options?.signal?.throwIfAborted()
+      if (typeof authKey !== 'string' || !authKey) throw new Error('分片授权响应缺少有效 auth_key')
 
       // alist: SetQueryParams + SetBody(bytes).Put(u)
       const ossUrl = `${ossBaseUrl}?partNumber=${partNumber}&uploadId=${uploadId}`
@@ -892,13 +955,14 @@ export class QuarkAdapter implements DriveAdapter {
       }
 
       const etag = ossRes.headers.get('etag') || ''
+      if (!etag) throw new Error('上传分片响应缺少 ETag，无法确认分片完成')
       etags.push(etag)
       uploadedBytes += chunk.length
 
       options?.onProgress?.({
         loaded: uploadedBytes,
         total: fileSize,
-        percent: fileSize > 0 ? Math.round((uploadedBytes / fileSize) * 100) : 100,
+        percent: fileSize > 0 ? Math.min(99, Math.round((uploadedBytes / fileSize) * 100)) : 0,
         speed: 0,
       })
     }
@@ -930,7 +994,7 @@ export class QuarkAdapter implements DriveAdapter {
 
     const commitAuthRes = await quarkRequest<any>(
       'https://drive-pc.quark.cn/1/clouddrive/file/upload/auth',
-      cookies,
+      account,
       {
         method: 'POST',
         body: { auth_info: authInfo, auth_meta: commitAuthMeta, task_id: taskId },
@@ -942,6 +1006,7 @@ export class QuarkAdapter implements DriveAdapter {
     }
 
     const commitUrl = `${ossBaseUrl}?uploadId=${uploadId}`
+    options?.signal?.throwIfAborted()
     const commitRes = await fetch(commitUrl, {
       signal: options?.signal,
       method: 'POST',
@@ -964,10 +1029,11 @@ export class QuarkAdapter implements DriveAdapter {
 
     // 5. 完成上传（alist upFinish）
     await new Promise(resolve => setTimeout(resolve, 1000))
+    options?.signal?.throwIfAborted()
 
     const finishRes = await quarkRequest<any>(
       'https://drive-pc.quark.cn/1/clouddrive/file/upload/finish',
-      cookies,
+      account,
       {
         method: 'POST',
         body: { obj_key: objKey, task_id: taskId },
@@ -980,48 +1046,44 @@ export class QuarkAdapter implements DriveAdapter {
 
     log.info(`Quark: upload success for ${fileName}`)
 
-    return {
-      success: true,
-      fileId: finishRes.data?.fid || taskId,
-      fileName,
-      fileSize,
-    }
+    return completedUpload(finishRes.data?.fid || preData.fid)
   }
 
   /**
-   * 获取下载链接（alist Link 逻辑：先尝试下载链接，失败后尝试转码链接）
+   * 获取原文件下载链接。转码播放流不能用于文件下载或迁移。
    */
-  async getDownloadUrl(account: DriveAccount, fileId: string): Promise<string> {
+  async getDownloadSource(account: DriveAccount, fileId: string): Promise<DriveDownloadSource> {
+    let cookies = account.credential.cookies || ''
+    const url = await this.getDownloadUrl(account, fileId, value => { cookies = value })
+    return {
+      url,
+      headers: { Cookie: cookies, Referer: 'https://pan.quark.cn/', 'User-Agent': QUARK_UA },
+    }
+  }
+
+  async getDownloadUrl(account: DriveAccount, fileId: string, onResponseCookies?: (cookies: string) => void): Promise<string> {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
 
-    // 1. 尝试常规下载（alist getDownloadLink）
-    let downloadRes: any
+    let downloadRes: { code: number; message?: string; data?: Array<{ download_url?: string }> }
     try {
-      downloadRes = await quarkRequest<any>(
+      downloadRes = await quarkRequest<typeof downloadRes>(
         'https://drive-pc.quark.cn/1/clouddrive/file/download',
-        cookies,
+        account,
         {
           method: 'POST',
           body: { fids: [fileId] },
+          onResponseCookies,
         },
       )
-
-      if (downloadRes.code === 0 && downloadRes.data?.[0]?.download_url) {
-        return downloadRes.data[0].download_url
-      }
-    } catch (err: any) {
-      downloadRes = { code: -1, message: err.message }
+    } catch (error) {
+      throw new Error(`获取原文件下载链接失败: ${error instanceof Error ? error.message : String(error)}`)
     }
 
-    // 2. 下载链接失败，尝试转码链接（alist: UseTransCodingAddress → getTranscodingLink）
-    log.info(`Quark: download link failed (code=${downloadRes.code}), trying transcoding link...`)
-    try {
-      return await this.getTranscodingLink(account, fileId)
-    } catch (transcodeErr: any) {
-      // 3. 转码也失败（如 plf_invalid），抛出原始下载错误
-      throw new Error(`获取下载链接失败: code=${downloadRes.code}, message=${downloadRes.message || 'unknown'}`)
+    if (downloadRes.code === 0 && downloadRes.data?.[0]?.download_url) {
+      return downloadRes.data[0].download_url
     }
+    throw new Error(`获取原文件下载链接失败: code=${downloadRes.code}, message=${downloadRes.message || '平台未返回原文件下载地址'}`)
   }
 
   /**
@@ -1033,7 +1095,7 @@ export class QuarkAdapter implements DriveAdapter {
 
     const res = await quarkRequest<any>(
       'https://drive-pc.quark.cn/1/clouddrive/file/v2/play/project',
-      cookies,
+      account,
       {
         method: 'POST',
         body: {
@@ -1059,7 +1121,7 @@ export class QuarkAdapter implements DriveAdapter {
   }
 
   /**
-   * 下载文件到本地（alist Link 逻辑：先尝试下载链接，失败后尝试转码链接）
+   * 下载原文件到本地；无法获取原文件地址时明确失败。
    */
   async download(
     account: DriveAccount,
@@ -1067,8 +1129,6 @@ export class QuarkAdapter implements DriveAdapter {
     localDirPath: string,
     options?: DownloadOptions,
   ): Promise<DownloadResult> {
-    const fs = require('fs')
-    const path = require('path')
     options?.signal?.throwIfAborted()
 
     const cookies = account.credential.cookies
@@ -1078,13 +1138,14 @@ export class QuarkAdapter implements DriveAdapter {
     const localPath = resolvePathInside(localDirPath, sanitizeFileName(fileName))
 
     // 获取下载链接
-    const downloadUrl = await this.getDownloadUrl(account, fileId)
+    let downloadCookies = cookies
+    const downloadUrl = await this.getDownloadUrl(account, fileId, value => { downloadCookies = value })
 
     // 下载文件（alist: 带 Cookie/Referer/User-Agent）
     const response = await fetch(downloadUrl, {
       signal: options?.signal,
       headers: {
-        'Cookie': cookies,
+        'Cookie': downloadCookies,
         'Referer': 'https://pan.quark.cn/',
         'User-Agent': QUARK_UA,
       },
@@ -1094,104 +1155,20 @@ export class QuarkAdapter implements DriveAdapter {
     }
 
     // 从 Content-Length 获取文件大小
-    const contentLength = response.headers.get('Content-Length')
-    const fileSize = contentLength ? parseInt(contentLength, 10) : 0
-
-    const writer = fs.createWriteStream(localPath)
-    const reader = response.body?.getReader()
-    if (!reader) {
-      throw new Error('无法读取响应流')
-    }
-
-    let loaded = 0
-    const startTime = Date.now()
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        writer.write(Buffer.from(value))
-        loaded += value.length
-
-        // 报告进度
-        const elapsed = (Date.now() - startTime) / 1000
-        const speed = elapsed > 0 ? loaded / elapsed : 0
-
-        options?.onProgress?.({
-          loaded,
-          total: fileSize || loaded,
-          percent: fileSize > 0 ? Math.round((loaded / fileSize) * 100) : 0,
-          speed,
-        })
-      }
-
-      writer.end()
-
-      // 等待写入完成
-      await new Promise<void>((resolve, reject) => {
-        writer.on('finish', resolve)
-        writer.on('error', reject)
-      })
-
-      return {
-        success: true,
-        localPath,
-        fileName,
-        fileSize: loaded, // 使用实际下载的字节数
-      }
-    } catch (err) {
-      reader.cancel().catch(() => {})
-      writer.destroy()
-      try { fs.unlinkSync(localPath) } catch {}
-      throw err
-    }
+    const loaded = await writeDownloadResponse(response, localPath, options)
+    return { success: true, localPath, fileName, fileSize: loaded }
   }
 
   async getQuota(account: DriveAccount): Promise<{ used: number; total: number }> {
     const cookies = account.credential.cookies || ''
     if (!cookies) throw new Error('未登录')
 
-    // 尝试多个端点
-    const endpoints = [
-      'https://drive-pc.quark.cn/1/clouddrive/capacity?pr=ucpro&fr=pc',
-      'https://drive-pc.quark.cn/1/clouddrive/account/capacity?pr=ucpro&fr=pc',
-      'https://drive-pc.quark.cn/1/clouddrive/member?pr=ucpro&fr=pc',
-    ]
-
-    for (const url of endpoints) {
-      try {
-        const data = await new Promise<any>((resolve, reject) => {
-          const request = net.request({ method: 'GET', url })
-          request.setHeader('User-Agent', QUARK_UA)
-          request.setHeader('Cookie', cookies)
-          request.setHeader('Accept', 'application/json')
-          request.setHeader('Referer', 'https://pan.quark.cn/')
-          request.setHeader('Origin', 'https://pan.quark.cn')
-
-          let responseData = ''
-          request.on('response', (response) => {
-            response.on('data', (chunk) => { responseData += chunk.toString() })
-            response.on('end', () => {
-              try { resolve(JSON.parse(responseData)) } catch { reject(new Error('parse error')) }
-            })
-            response.on('error', (err) => reject(err))
-          })
-          request.on('error', (err) => reject(err))
-          request.end()
-        })
-
-        log.info(`[Quota] Quark ${url.split('?')[0]}:`, JSON.stringify(data).substring(0, 300))
-
-        // 检查各种可能的数据结构
-        const d = data.data || data
-        const used = d.use_capacity || d.used_capacity || d.used || 0
-        const total = d.total_capacity || d.capacity || d.total || 0
-        if (total > 0) return { used, total }
-      } catch {}
-    }
-
-    throw new Error('夸克网盘暂不支持容量查询')
+    const data = await quarkRequest<any>('https://drive-pc.quark.cn/1/clouddrive/member', account)
+    const quota = data.data || data
+    const used = Number(quota.use_capacity ?? quota.secret_use_capacity ?? quota.used_capacity ?? quota.used ?? 0)
+    const total = Number(quota.total_capacity ?? quota.secret_total_capacity ?? quota.capacity ?? quota.total ?? 0)
+    if (!Number.isFinite(total) || total <= 0) throw new Error('夸克网盘容量数据不可用')
+    return { used: Number.isFinite(used) ? used : 0, total }
   }
 
   async getMembership(account: DriveAccount) {
@@ -1199,7 +1176,7 @@ export class QuarkAdapter implements DriveAdapter {
     if (!cookies) throw new Error('未登录')
     const data = await quarkRequest<any>(
       'https://drive-pc.quark.cn/1/clouddrive/member',
-      cookies,
+      account,
       { params: { pr: 'ucpro', fr: 'pc' } },
     )
     return normalizeMembership(data, '夸克')

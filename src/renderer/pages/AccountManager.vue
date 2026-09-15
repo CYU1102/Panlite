@@ -175,7 +175,7 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 function platformIcon(platform: string) {
-  return platform === 'quark' ? markRaw(Cloud) : markRaw(HardDrive)
+  return platform === 'quark' || platform === 'aliyun' ? markRaw(Cloud) : markRaw(HardDrive)
 }
 
 function statusIcon(status: string) {
@@ -274,9 +274,9 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
   padding: 20px 24px;
-  background: #ffffff;
+  background: var(--pl-surface);
   border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 }
 
 .header-info {
@@ -299,13 +299,13 @@ onMounted(async () => {
 .header-info h2 {
   font-size: 16px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--pl-text);
   margin-bottom: 2px;
 }
 
 .header-info p {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 /* ── Account list ── */
@@ -320,14 +320,14 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
   border-radius: 12px;
   transition: all 0.15s;
 }
 
 .account-card:hover {
-  border-color: #d1d5db;
+  border-color: var(--pl-border);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
@@ -366,7 +366,7 @@ onMounted(async () => {
 .account-name {
   font-size: 14px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--pl-text);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -377,7 +377,7 @@ onMounted(async () => {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 500;
 }
 
@@ -402,7 +402,7 @@ onMounted(async () => {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .account-right {
@@ -428,7 +428,7 @@ onMounted(async () => {
 }
 
 .status-badge.expired {
-  background: #fffbeb;
+  background: var(--pl-surface);
   color: #f59e0b;
 }
 
@@ -450,18 +450,18 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
+  border: 1px solid var(--pl-border);
+  background: var(--pl-surface);
   border-radius: 8px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .action-btn:hover:not(:disabled) {
-  background: #f9fafb;
-  border-color: #d1d5db;
-  color: #374151;
+  background: var(--pl-surface-subtle);
+  border-color: var(--pl-border);
+  color: var(--pl-text);
 }
 
 .action-btn:disabled {
@@ -498,24 +498,24 @@ onMounted(async () => {
 .empty-icon {
   width: 80px;
   height: 80px;
-  background: #f3f4f6;
+  background: var(--pl-hover);
   border-radius: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #d1d5db;
+  color: var(--pl-border);
   margin-bottom: 4px;
 }
 
 .empty-state h3 {
   font-size: 16px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 .empty-state p {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   margin-bottom: 8px;
 }
 
@@ -527,7 +527,7 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .loading-spinner {
@@ -540,9 +540,9 @@ onMounted(async () => {
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 8px;
-  border: 1px solid #f3f4f6;
+  border: 1px solid var(--pl-hover);
 }
 
 .stat-chip {
@@ -550,7 +550,7 @@ onMounted(async () => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 .stat-chip.warn {
@@ -727,14 +727,14 @@ onMounted(async () => {
   gap: 4px;
   padding: 2px 7px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 700;
   white-space: nowrap;
 }
 
 .membership-tag.is-active {
   color: #9a6700;
-  background: #fff7d6;
+  background: var(--pl-surface);
   border: 1px solid #f6dc83;
 }
 
@@ -775,7 +775,7 @@ onMounted(async () => {
 .status-badge.error { background: var(--pl-danger-soft); color: var(--pl-danger); }
 
 .status-hint {
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   color: var(--pl-text-muted);
   white-space: nowrap;
 }

@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="transfer-records">
     <div class="page-header">
       <div class="header-info">
@@ -260,27 +260,25 @@ function onSelectionChange(rows: TransferRecordRow[]) {
 }
 
 async function onBatchDelete() {
-  if (selectedRows.value.length === 0) return
+  const selected = [...selectedRows.value]
+  if (!selected.length) return
   try {
     await ElMessageBox.confirm(
-      `确定要删除选中的 ${selectedRows.value.length} 条记录吗？`,
-      '批量删除',
+      `确定要删除选中的 ${selected.length} 条记录吗？`, '批量删除',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
   } catch { return }
-
-  let deletedCount = 0
-  for (const row of selectedRows.value) {
-    const result = await electronApi.transferDelete(row.id)
-    if (result.success) deletedCount++
+  const deletedIds = new Set<string>()
+  for (const row of selected) {
+    try {
+      const result = await electronApi.transferDelete(row.id)
+      if (result.success) deletedIds.add(row.id)
+    } catch { /* Keep unsuccessful records available for retry. */ }
   }
-
-  if (deletedCount > 0) {
-    const ids = new Set(selectedRows.value.map(r => r.id))
-    records.value = records.value.filter(r => !ids.has(r.id))
-    selectedRows.value = []
-    ElMessage.success(`已删除 ${deletedCount} 条记录`)
-  }
+  records.value = records.value.filter(row => !deletedIds.has(row.id))
+  selectedRows.value = selectedRows.value.filter(row => !deletedIds.has(row.id))
+  if (deletedIds.size) ElMessage.success(`已删除 ${deletedIds.size} 条记录`)
+  if (deletedIds.size < selected.length) ElMessage.error(`${selected.length - deletedIds.size} 条记录删除失败，请重试`)
 }
 
 const filters = reactive({
@@ -295,6 +293,9 @@ const platformFilters = [
   { value: '', label: '全部' },
   { value: 'quark', label: '夸克' },
   { value: 'baidu', label: '百度' },
+  { value: 'uc', label: 'UC' },
+  { value: 'xunlei', label: '迅雷' },
+  { value: 'aliyun_web', label: '阿里网页版' },
 ]
 
 const statusFilters = [
@@ -510,30 +511,30 @@ onMounted(() => loadData())
 .table-card {
   flex: 1;
   overflow: auto;
-  background: #ffffff;
+  background: var(--pl-surface);
   border-radius: var(--pl-radius-card);
   border: 1px solid var(--pl-border);
   box-shadow: var(--pl-shadow-card);
 }
 
 :deep(.el-table) {
-  --el-table-border-color: #f3f4f6;
-  --el-table-row-hover-bg-color: #f9fafb;
+  --el-table-border-color: var(--pl-hover);
+  --el-table-row-hover-bg-color: var(--pl-surface-subtle);
 }
 
 :deep(.el-table th.el-table__cell) {
-  background: #f9fafb !important;
+  background: var(--pl-surface-subtle) !important;
 }
 
 :deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--pl-hover);
 }
 
 .platform-badge {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 500;
 }
 
@@ -549,13 +550,13 @@ onMounted(() => loadData())
 
 .cell-link {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   word-break: break-all;
 }
 
 .cell-muted {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .cell-error {
@@ -572,7 +573,7 @@ onMounted(() => loadData())
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 500;
 }
 
@@ -587,13 +588,13 @@ onMounted(() => loadData())
 }
 
 .status-badge.running {
-  background: #fffbeb;
+  background: var(--pl-surface);
   color: #f59e0b;
 }
 
 .status-badge.pending {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
 }
 
 .action-btns {
@@ -612,14 +613,14 @@ onMounted(() => loadData())
   border: none;
   background: transparent;
   border-radius: 6px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .action-btn:hover {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
 }
 
 .action-btn.danger:hover {
@@ -632,13 +633,18 @@ onMounted(() => loadData())
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 48px 0;
-  color: #d1d5db;
+  width: 100%;
+  max-width: 560px;
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--pl-border);
 }
 
 .table-empty p {
+  margin: 0;
   font-size: 13px;
-  color: #9ca3af;
+  line-height: 1.7;
+  color: var(--pl-text-muted, var(--pl-text-muted));
 }
 
 /* ── Batch bar ── */
@@ -677,9 +683,9 @@ onMounted(() => loadData())
   align-items: center;
   gap: 16px;
   padding: 10px 16px;
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 8px;
-  border: 1px solid #f3f4f6;
+  border: 1px solid var(--pl-hover);
 }
 
 .stat-chip {
@@ -687,7 +693,7 @@ onMounted(() => loadData())
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 .error-detail {
@@ -695,7 +701,7 @@ onMounted(() => loadData())
   background: #fef2f2;
   border-radius: 8px;
   font-size: 13px;
-  color: #374151;
+  color: var(--pl-text);
   word-break: break-all;
   white-space: pre-wrap;
 }
@@ -735,7 +741,7 @@ onMounted(() => loadData())
 .filter-label {
   flex-shrink: 0;
   color: var(--pl-text-muted);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
 }
 
@@ -786,7 +792,7 @@ onMounted(() => loadData())
   align-items: flex-end;
   gap: 2px;
   color: var(--pl-text-muted);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
 }
 
 .clear-filter {
@@ -797,7 +803,7 @@ onMounted(() => loadData())
   border: 0;
   background: transparent;
   color: var(--pl-primary);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   cursor: pointer;
 }
 
@@ -874,7 +880,7 @@ onMounted(() => loadData())
   border-radius: 999px;
   background: var(--pl-primary-soft);
   color: var(--pl-primary);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 700;
 }
 
@@ -929,7 +935,7 @@ onMounted(() => loadData())
   background: transparent;
   color: var(--pl-text-secondary);
   border-radius: var(--pl-radius-sm);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
 }
 

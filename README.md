@@ -1,13 +1,21 @@
 # PanLite
 
-> 面向 Windows 的多网盘桌面管理器：统一管理百度网盘、夸克网盘、UC 网盘和迅雷网盘，并提供跨网盘迁移、资源搜索、安全归档和独立 AI 知识工作台。
+> 面向 Windows 的多网盘桌面管理器：统一管理百度网盘、夸克网盘、UC 网盘、迅雷网盘、阿里云盘、123 云盘和 WebDAV，并提供跨网盘迁移、资源搜索、安全归档和独立 AI 知识工作台。
 
 [![License](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
-[![Electron](https://img.shields.io/badge/Electron-33-47848f.svg)](https://www.electronjs.org/)
+[![Electron](https://img.shields.io/badge/Electron-44-47848f.svg)](https://www.electronjs.org/)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 
-PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨平台迁移集中到一个浅色桌面界面中。AI 工作台是独立栏目，只有用户主动导入的文件才会参与解析，不介入分享、转存或迁移过程。
+PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨平台迁移集中到一个桌面界面中。AI 工作台是独立栏目，只有用户主动选择或导入的文件才会参与解析，不介入分享、转存或迁移过程。
+
+## 0.2.2 更新
+
+- 增加网盘文件在线预览：文本、图片、PDF、Office 文档、压缩包及音视频可以直接在文件管理器中打开。
+- 增加网盘视频流式播放，支持 Range 请求、拖动跳转、倍速播放、中断和重新打开，不需要先下载完整视频。
+- 文件理解优先使用本地文本层、Office 结构解析、Tesseract、FFmpeg、字幕和 Whisper；只有本地能力不足且用户配置了服务商时才调用模型。
+- 改进 PDF 版面、Office 表格、OCR 页面与键值结构识别，并保留页码、工作表、幻灯片等来源定位。
+- 增加 WebDAV、阿里云盘开放平台、阿里云盘网页版和 123 云盘适配器，并完善大文件断点下载、任务恢复、备份版本、自动化规则及安全检查。
 
 ## 主要能力
 
@@ -66,6 +74,10 @@ PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨
 | 夸克网盘 | 网页自动登录、手动 Cookie | ✅ | ✅ | ✅ | ✅ |
 | UC 网盘 | 网页自动登录、手动 Cookie | ✅ | ✅ | ✅ | ✅ |
 | 迅雷网盘 | 官方网页登录授权、Refresh Token | ✅ | ✅ | ✅ | ✅ |
+| WebDAV | 服务器地址、用户名和应用密码 | ✅ | ✅ | — | ✅ |
+| 阿里云盘开放平台 | OAuth 授权码 | ✅ | ✅ | — | ✅ |
+| 阿里云盘网页版 | 网页登录、Refresh Token | ✅ | 下载 ✅ / 上传暂不可用 | ✅ | ✅ |
+| 123 云盘 | 开放平台 Client ID / Secret | ✅ | ✅ | — | ✅ |
 
 > 网盘接口和登录页面可能随平台更新而变化。PanLite 会尽量给出明确错误并保留可重试任务，但不能保证第三方平台接口长期不变。
 
@@ -73,19 +85,23 @@ PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨
 
 ### 下载安装包
 
-前往 [GitHub Releases](https://github.com/CYU1102/Panlite/releases/latest) 下载适合当前设备的安装包：
+前往 [GitHub Releases](https://github.com/CYU1102/PanLite/releases/latest) 下载最新版本：
 
-- Windows 10/11 x64：`PanLite-Setup-*.exe`
-- Apple Silicon Mac：`PanLite-*-mac-arm64.dmg`
-- Intel Mac：`PanLite-*-mac-x64.dmg`
+- Windows 10/11 x64：`PanLite-Setup-0.2.2.exe`
+- 校验文件：`SHA256SUMS.txt`
 
-当前安装包尚未配置 Windows 或 Apple Developer 代码签名。首次运行时系统可能显示安全提示，请确认文件来自本仓库后继续；macOS 用户可以在“系统设置 → 隐私与安全性”中允许打开。
+0.2.2 安装包按开源软件方式提供，未使用 Windows 代码签名。首次运行时系统可能显示“未知发布者”，请确认文件来自本仓库，并使用 `SHA256SUMS.txt` 核对安装包。
+
+0.2.2 安装包 SHA-256：
+
+```text
+810297db7e0bbe788e1fffe3f48e40be2d583c2b8f45bc860cd0a180575f41bc  PanLite-Setup-0.2.2.exe
+```
 
 ### 环境要求
 
 - Windows 10/11 x64
-- macOS（Apple Silicon arm64 或 Intel x64）
-- Node.js 20 或更高版本
+- Node.js 22.13.x，或 Node.js 24 及更高版本
 - npm 10 或更高版本
 
 ### 从源码运行
@@ -100,7 +116,7 @@ npm run dev
 ### 检查与测试
 
 ```bash
-# ESLint、类型检查、主进程构建和 Vitest
+# ESLint、类型检查、渲染端和主进程构建、Vitest
 npm run check
 
 # 分别运行
@@ -115,7 +131,15 @@ npm test
 npm run pack
 ```
 
-输出位于 `release/`。当前构建配置采用最高压缩等级，仅保留简体中文和英文回退语言，并排除原生依赖的编译源码与无关平台文件。参考构建中安装包约 74 MB，解压目录约 244 MB；实际大小会随 Electron 和依赖版本变化。
+正式发布构建也可以运行：
+
+```bash
+npm run pack:release
+```
+
+输出位于 `release/`。当前构建配置采用最高压缩等级，仅保留简体中文和英文回退语言，并排除原生依赖的编译源码与无关平台文件。0.2.2 安装包约 108 MB，解压目录约 360 MB；实际大小会随 Electron 和依赖版本变化。
+
+0.2.2 发布前在 Electron 和独立 Node 运行时各通过 147 个测试文件、1480 项测试；安装、从 0.2.1 升级、数据保留、卸载、成品启动和生产依赖审计均通过。夸克只读实测覆盖真实 PDF、图片、Office、文本、字幕、压缩包和 47.6 MB 视频的流式播放，测试期间没有云端写入或模型调用。
 
 查看打包体积明细：
 
@@ -174,7 +198,7 @@ Panlite/
 
 - PanLite 没有自建的账号中转服务器，网盘请求直接发送到对应平台。
 - 账号凭据和任务数据保存在本机 Electron 用户数据目录中。
-- AI 工作台不会自动读取网盘文件；只有主动导入的本地文件才会建立索引。
+- AI 工作台不会自动读取网盘文件；只有主动选择或导入的本地、网盘文件才会建立索引。
 - 图片、扫描 PDF、音视频或文本是否发送到云端，取决于选择的解析链和 AI Provider。
 - 内置资源站属于外部网站，PanLite 不存储、不背书其内容，使用时请遵守当地法律和站点规则。
 

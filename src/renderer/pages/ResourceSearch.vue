@@ -39,7 +39,10 @@
           >
             <div class="site-avatar">{{ site.name.slice(0, 1).toUpperCase() }}</div>
             <div class="site-copy">
-              <span class="site-name">{{ site.name }}</span>
+              <span class="site-name">
+                {{ site.name }}
+                <small v-if="site.riskLevel === 'high'" class="risk-badge">高风险来源</small>
+              </span>
               <span class="site-platform">{{ site.capabilities.slice(0, 2).join(' · ') || site.platform || '资源网站' }}</span>
             </div>
             <ChevronRight class="site-arrow" :size="15" />
@@ -103,11 +106,18 @@
           class="webview"
           @did-start-loading="onStartLoading"
           @did-stop-loading="onStopLoading"
+          @did-fail-load="onFailLoad"
           @did-navigate="onNavigate"
           @did-navigate-in-page="onNavigateInPage"
           @dom-ready="onDomReady"
           @ipc-message="onIpcMessage"
         />
+        <div v-if="activeSite && loadError" class="load-error">
+          <AlertTriangle :size="32" />
+          <strong>网页加载失败</strong>
+          <span>{{ loadError }}</span>
+          <el-button size="small" type="primary" @click="openLink(currentUrl || activeSite.url)">用系统浏览器打开</el-button>
+        </div>
         <div v-else class="welcome">
           <div class="welcome-icon"><Globe :size="38" :stroke-width="1.3" /></div>
           <span class="welcome-kicker">内置资源浏览器</span>
@@ -171,7 +181,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
-import { RefreshCw, ArrowLeft, ArrowRight, Globe, Link, ExternalLink, Copy, PanelLeftClose, PanelLeftOpen, FolderDown, Search, ChevronRight, Settings2, Layers3, MousePointerClick, Sparkles } from 'lucide-vue-next'
+import { RefreshCw, ArrowLeft, ArrowRight, Globe, Link, ExternalLink, Copy, PanelLeftClose, PanelLeftOpen, FolderDown, Search, ChevronRight, Settings2, Layers3, MousePointerClick, Sparkles, AlertTriangle } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
 import { useAppStore } from '../stores/app'
 import TransferDialog from '../components/TransferDialog.vue'
@@ -211,6 +221,7 @@ const siteGroups = computed(() => {
 const activeSite = ref<Site | null>(null)
 const currentUrl = ref('')
 const loading = ref(false)
+const loadError = ref('')
 const extracting = ref(false)
 const canGoBack = ref(false)
 const canGoForward = ref(false)
@@ -260,15 +271,23 @@ function parseCapabilities(value: unknown): string[] {
 function selectSite(site: Site) {
   activeSite.value = site
   currentUrl.value = site.url
+  loadError.value = ''
 }
 
 function onStartLoading() {
   loading.value = true
+  loadError.value = ''
 }
 
 function onStopLoading() {
   loading.value = false
   updateNavState()
+}
+
+function onFailLoad(event: { errorCode?: number; errorDescription?: string; isMainFrame?: boolean }) {
+  if (event.errorCode === -3 || event.isMainFrame === false) return
+  loading.value = false
+  loadError.value = event.errorDescription || '站点拒绝连接或暂时不可用'
 }
 
 function onNavigate(event: any) {
@@ -410,7 +429,7 @@ onMounted(() => {
   display: block;
   margin-bottom: 3px;
   color: var(--pl-text-muted);
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   font-weight: 650;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -437,7 +456,7 @@ onMounted(() => {
   border-radius: 10px;
   color: var(--pl-primary-hover);
   background: var(--pl-primary-soft);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 700;
 }
 
@@ -471,7 +490,7 @@ onMounted(() => {
   justify-content: space-between;
   padding: 5px 7px 6px;
   color: var(--pl-text-muted);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
 }
@@ -481,7 +500,7 @@ onMounted(() => {
   border-radius: 9px;
   color: var(--pl-primary-hover);
   background: var(--pl-primary-soft);
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   text-align: center;
 }
 
@@ -532,7 +551,8 @@ onMounted(() => {
 }
 .site-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .site-name { font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.site-platform { font-size: 10px; color: var(--pl-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.risk-badge { margin-left: 4px; color: var(--el-color-danger); font-size: 10px; font-weight: 650; }
+.site-platform { font-size: var(--pl-font-xs); color: var(--pl-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .site-arrow { flex-shrink: 0; color: #c0c8d4; transition: transform 0.16s ease, color 0.16s ease; }
 .site-item:hover .site-arrow,
 .site-item.active .site-arrow { transform: translateX(2px); color: var(--pl-primary); }
@@ -572,7 +592,7 @@ onMounted(() => {
   color: var(--pl-primary);
   background: var(--pl-primary-soft);
 }
-.context-kicker { display: block; font-size: 10px; color: var(--pl-text-muted); font-weight: 650; letter-spacing: 0.06em; }
+.context-kicker { display: block; font-size: var(--pl-font-xs); color: var(--pl-text-muted); font-weight: 650; letter-spacing: 0.06em; }
 .context-title { display: block; margin-top: 2px; font-size: 15px; font-weight: 700; color: var(--pl-text); }
 .context-site {
   display: inline-flex;
@@ -584,9 +604,23 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   border-radius: 8px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   color: var(--pl-text-secondary);
   background: #f3f6fa;
+}
+.load-error {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--pl-text-secondary);
+  background: var(--pl-surface);
 }
 .online-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--pl-success); box-shadow: 0 0 0 3px rgba(22, 160, 133, 0.12); }
 
@@ -609,17 +643,17 @@ onMounted(() => {
 
 .welcome { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 10px; padding: 32px; color: var(--pl-primary); text-align: center; }
 .welcome-icon { display: flex; align-items: center; justify-content: center; width: 78px; height: 78px; margin-bottom: 4px; border-radius: 24px; background: linear-gradient(145deg, #e7f0ff, #f4f8ff); box-shadow: inset 0 0 0 1px #dbe7fb; }
-.welcome-kicker { color: var(--pl-primary); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
+.welcome-kicker { color: var(--pl-primary); font-size: var(--pl-font-xs); font-weight: 700; letter-spacing: 0.08em; }
 .welcome h2 { font-size: 20px; color: var(--pl-text); margin: 0; }
 .welcome p { max-width: 420px; font-size: 13px; color: var(--pl-text-secondary); margin: 0; line-height: 1.65; }
 .welcome-features { gap: 8px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
-.welcome-features span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--pl-border); border-radius: 8px; color: var(--pl-text-secondary); background: var(--pl-surface); font-size: 11px; }
+.welcome-features span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--pl-border); border-radius: 8px; color: var(--pl-text-secondary); background: var(--pl-surface); font-size: var(--pl-font-xs); }
 
 .no-links { padding: 44px 24px; text-align: center; color: var(--pl-text-muted); }
 .links-list { max-height: 400px; overflow-y: auto; padding-right: 2px; }
 .link-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px; border: 1px solid var(--pl-border); border-radius: 11px; margin-bottom: 8px; background: var(--pl-surface-subtle); transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease; }
 .link-item:hover { transform: translateY(-1px); border-color: #bed0f4; background: var(--pl-surface); box-shadow: 0 7px 18px rgba(31, 41, 55, 0.07); }
-.link-index { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; color: var(--pl-primary); background: var(--pl-primary-soft); font-size: 11px; font-weight: 700; }
+.link-index { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; color: var(--pl-primary); background: var(--pl-primary-soft); font-size: var(--pl-font-xs); font-weight: 700; }
 .link-info { flex: 1; min-width: 0; }
 .link-title { display: block; font-size: 14px; font-weight: 600; color: var(--pl-text); margin-bottom: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .link-url { display: block; font-size: 12px; color: var(--pl-text-secondary); margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

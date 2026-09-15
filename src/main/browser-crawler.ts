@@ -1,6 +1,9 @@
 import { BrowserWindow } from 'electron'
 import type { SearchResultItem } from '../shared/types'
 import log from 'electron-log'
+import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
+import { getSearchSignal } from './search-runtime'
 
 /**
  * 浏览器爬虫引擎
@@ -118,8 +121,14 @@ async function crawlSite(
   timeoutMs: number = 30000
 ): Promise<BrowserCrawlResult> {
   let win: BrowserWindow | null = null
+  const controller = new AbortController()
+  const parentSignal = getSearchSignal()
+  const signal = AbortSignal.any([controller.signal, ...(parentSignal ? [parentSignal] : [])])
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let abort: (() => void) | undefined
 
   try {
+    signal.throwIfAborted()
     win = new BrowserWindow({
       show: false,
       width: 1280,
@@ -129,22 +138,27 @@ async function crawlSite(
         images: false,
         nodeIntegration: false,
         contextIsolation: true,
+        partition: `panlite-crawler-${randomUUID()}`,
       },
     })
 
     // 捕获 XHR 响应体
     const capturedBodies: string[] = []
+    const capturedUrls = new Set<string>()
 
     win.webContents.session.webRequest.onCompleted(
       { urls: ['*://*/*'] },
       async (details) => {
-        if (details.resourceType === 'xhr' && details.statusCode >= 200 && details.statusCode < 400) {
+        if (!signal.aborted && !win?.isDestroyed() && details.resourceType === 'xhr' && details.statusCode >= 200 && details.statusCode < 400 && !capturedUrls.has(details.url)) {
+          // Replaying an XHR also triggers onCompleted. Capture a URL once to
+          // prevent an unbounded replay loop, in an isolated browser session.
+          capturedUrls.add(details.url)
           try {
             const body = await win!.webContents.executeJavaScript(`
               (function() {
                 return new Promise((resolve) => {
                   const xhr = new XMLHttpRequest();
-                  xhr.open('GET', '${details.url}', true);
+                  xhr.open('GET', ${JSON.stringify(details.url)}, true);
                   xhr.onload = function() { resolve(xhr.responseText || '') };
                   xhr.onerror = function() { resolve('') };
                   xhr.send();
@@ -158,7 +172,9 @@ async function crawlSite(
     )
 
     const timeoutPromise = new Promise<BrowserCrawlResult>((_, reject) => {
-      setTimeout(() => reject(new Error('Timeout')), timeoutMs)
+      abort = () => reject(signal.reason || new Error('Search cancelled'))
+      signal.addEventListener('abort', abort, { once: true })
+      timer = setTimeout(() => controller.abort(new Error('Timeout')), timeoutMs)
     })
 
     const crawlPromise = new Promise<BrowserCrawlResult>(async (resolve) => {
@@ -180,7 +196,7 @@ async function crawlSite(
         })
 
         // 等待页面加载完成
-        await new Promise(r => setTimeout(r, 3000))
+        await delay(3000, undefined, { signal })
 
         // 从DOM提取结果
         let results: SearchResultItem[] = []
@@ -253,7 +269,11 @@ async function crawlSite(
   } catch (err) {
     return { url: baseUrl, success: false, results: [], error: String(err) }
   } finally {
+    if (timer) clearTimeout(timer)
+    if (abort) signal.removeEventListener('abort', abort)
+    controller.abort()
     if (win && !win.isDestroyed()) {
+      win.webContents.session.webRequest.onCompleted(null)
       win.destroy()
     }
   }

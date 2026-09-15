@@ -192,7 +192,7 @@ watch(() => props.modelValue, (open) => {
     }
     loadFolders('0')
   }
-})
+}, { immediate: true })
 </script>
 
 <style scoped>
@@ -213,9 +213,9 @@ watch(() => props.modelValue, (open) => {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 12px;
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 8px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 }
 
 .folder-breadcrumb {
@@ -229,16 +229,16 @@ watch(() => props.modelValue, (open) => {
 
 .crumb {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
   white-space: nowrap;
 }
-.crumb:hover { background: #e5e7eb; color: #3b82f6; }
-.crumb.active { color: #1f2937; font-weight: 600; cursor: default; }
+.crumb:hover { background: var(--pl-border); color: #3b82f6; }
+.crumb.active { color: var(--pl-text); font-weight: 600; cursor: default; }
 .crumb.active:hover { background: transparent; }
-.crumb-sep { color: #d1d5db; flex-shrink: 0; }
+.crumb-sep { color: var(--pl-border); flex-shrink: 0; }
 
 .nav-btn {
   width: 28px;
@@ -247,20 +247,20 @@ watch(() => props.modelValue, (open) => {
   align-items: center;
   justify-content: center;
   border: none;
-  background: #e5e7eb;
+  background: var(--pl-border);
   border-radius: 6px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   cursor: pointer;
   flex-shrink: 0;
 }
-.nav-btn:hover:not(:disabled) { background: #d1d5db; color: #374151; }
+.nav-btn:hover:not(:disabled) { background: var(--pl-border); color: var(--pl-text); }
 .nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .folder-list {
   min-height: 200px;
   max-height: 300px;
   overflow-y: auto;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
   border-radius: 8px;
 }
 
@@ -270,9 +270,9 @@ watch(() => props.modelValue, (open) => {
   align-items: center;
   gap: 6px;
   padding: 40px 0;
-  color: #d1d5db;
+  color: var(--pl-border);
 }
-.folder-empty span { font-size: 13px; color: #9ca3af; }
+.folder-empty span { font-size: 13px; color: var(--pl-text-muted); }
 
 .folder-item {
   display: flex;
@@ -280,21 +280,21 @@ watch(() => props.modelValue, (open) => {
   gap: 10px;
   padding: 10px 14px;
   cursor: pointer;
-  color: #374151;
-  border-bottom: 1px solid #f3f4f6;
+  color: var(--pl-text);
+  border-bottom: 1px solid var(--pl-hover);
   transition: background 0.1s;
 }
 .folder-item:last-child { border-bottom: none; }
-.folder-item:hover { background: #f9fafb; }
+.folder-item:hover { background: var(--pl-surface-subtle); }
 .folder-item.disabled { opacity: 0.4; cursor: not-allowed; }
 .folder-item.disabled:hover { background: transparent; }
 
 .folder-name { flex: 1; font-size: 13px; }
-.folder-arrow { color: #d1d5db; flex-shrink: 0; }
+.folder-arrow { color: var(--pl-border); flex-shrink: 0; }
 
 .target-info {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   padding: 4px 0;
 }
 .move-content { gap: 11px; }

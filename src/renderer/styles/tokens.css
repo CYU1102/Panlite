@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --pl-page-bg: #f6f8fc;
   --pl-surface: #ffffff;
   --pl-surface-subtle: #fbfcfe;
@@ -28,6 +29,15 @@
   --pl-space-4: 16px;
   --pl-space-5: 20px;
   --pl-space-6: 24px;
+  --pl-font-xs: 12px;
+  --pl-font-sm: 13px;
+  --pl-font-md: 14px;
+  --pl-font-lg: 16px;
+  --pl-font-xl: 20px;
+  --pl-font-2xl: 24px;
+  --pl-line-tight: 1.4;
+  --pl-line-normal: 1.6;
+  --pl-hover: #f1f5fb;
 }
 
 .pl-undo-message{display:flex;align-items:center;gap:12px}.pl-undo-button{padding:3px 9px;border:1px solid #b9cef0;border-radius:7px;color:#3566bb;background:#eef4ff;cursor:pointer;font-weight:700}
@@ -82,7 +92,7 @@ body,
 .el-dialog__header {
   margin-right: 0;
   padding: 20px 22px 14px;
-  border-bottom: 1px solid #eef1f5;
+  border-bottom: 1px solid var(--pl-border);
 }
 
 .el-dialog__title {
@@ -98,7 +108,7 @@ body,
 
 .el-dialog__footer {
   padding: 14px 22px 18px;
-  border-top: 1px solid #eef1f5;
+  border-top: 1px solid var(--pl-border);
   background: var(--pl-surface-subtle);
 }
 
@@ -152,4 +162,96 @@ a:focus-visible {
 .el-message-box__message,
 .el-notification__content {
   color: var(--pl-text-secondary);
+}
+
+/* ── Dark theme（石墨黑 Linear 风：中性灰黑 + 单一蓝色强调） ── */
+html.dark {
+  color-scheme: dark;
+  --pl-page-bg: #0a0a0b;
+  --pl-surface: #161618;
+  --pl-surface-subtle: #131316;
+  --pl-border: #26262a;
+  --pl-border-strong: #3a3a40;
+  --pl-text: #ededed;
+  --pl-text-secondary: #a1a1aa;
+  --pl-text-muted: #71717a;
+  --pl-primary: #4d8dff;
+  --pl-primary-hover: #6ba0ff;
+  --pl-primary-soft: #151c29;
+  --pl-success: #34b39a;
+  --pl-success-soft: #122019;
+  --pl-warning: #e0a63f;
+  --pl-warning-soft: #241e12;
+  --pl-danger: #e5697f;
+  --pl-danger-soft: #26161a;
+  --pl-info-soft: #17181c;
+  --pl-hover: #1e1e22;
+  --pl-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --pl-shadow-float: 0 8px 28px rgba(0, 0, 0, 0.55);
+
+  /* Element Plus 暗色变量统一到石墨色调，避免组件自带灰蓝与页面色相冲突 */
+  --el-bg-color: #161618;
+  --el-bg-color-overlay: #1c1c1f;
+  --el-bg-color-page: #0a0a0b;
+  --el-border-color: #2e2e33;
+  --el-border-color-light: #26262a;
+  --el-border-color-lighter: #202024;
+  --el-border-color-extra-light: #1b1b1f;
+  --el-fill-color: #1e1e22;
+  --el-fill-color-light: #1a1a1e;
+  --el-fill-color-lighter: #17171a;
+  --el-fill-color-blank: #161618;
+  --el-fill-color-dark: #232327;
+  --el-fill-color-darker: #2a2a2f;
+  --el-text-color-primary: #ededed;
+  --el-text-color-regular: #c9c9d1;
+  --el-text-color-secondary: #a1a1aa;
+  --el-text-color-placeholder: #62626b;
+  --el-text-color-disabled: #52525b;
+  --el-color-primary: #4d8dff;
+  --el-color-primary-dark-2: #6ba0ff;
+  --el-color-primary-light-3: #3f6fb3;
+  --el-color-primary-light-5: #2f5387;
+  --el-color-primary-light-7: #1f375b;
+  --el-color-primary-light-8: #172b47;
+  --el-color-primary-light-9: #101c30;
+  --el-color-success: #34b39a;
+  --el-color-success-light-3: #278672;
+  --el-color-success-light-5: #1d6254;
+  --el-color-success-light-7: #133e36;
+  --el-color-success-light-8: #0e2f29;
+  --el-color-success-light-9: #0a211d;
+  --el-color-warning: #e0a63f;
+  --el-color-warning-light-3: #a87d2f;
+  --el-color-warning-light-5: #7d5c23;
+  --el-color-warning-light-7: #523b17;
+  --el-color-warning-light-8: #3e2d11;
+  --el-color-warning-light-9: #291f0c;
+  --el-color-danger: #e5697f;
+  --el-color-danger-light-3: #ab4f60;
+  --el-color-danger-light-5: #803b48;
+  --el-color-danger-light-7: #562730;
+  --el-color-danger-light-8: #401d24;
+  --el-color-danger-light-9: #2b1418;
+  --el-color-info: #909098;
+  --el-color-info-light-3: #6b6b72;
+  --el-color-info-light-5: #505055;
+  --el-color-info-light-7: #353539;
+  --el-color-info-light-8: #28282b;
+  --el-color-info-light-9: #1b1b1e;
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: #3a3a40;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #4a4a52;
+}
+
+/* Chrome 组件里少量硬编码颜色的深色修正 */
+html.dark .nav-item:hover {
+  background: #1e1e22;
+}
+html.dark .nav-item.active {
+  background: linear-gradient(90deg, var(--pl-primary-soft) 0%, #17171a 100%);
 }

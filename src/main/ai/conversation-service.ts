@@ -100,6 +100,10 @@ function normalizeCitations(value: unknown): AiCitation[] | undefined {
     return {
       documentId: requireId(citation.documentId, '引用文档 ID'),
       documentName: String(citation.documentName || '').trim().slice(0, 500),
+      chunkId: citation.chunkId == null ? undefined : requireId(citation.chunkId, '引用片段 ID'),
+      sourceSha256: citation.sourceSha256 && /^[a-f0-9]{64}$/i.test(citation.sourceSha256) ? citation.sourceSha256 : undefined,
+      startSeconds: Number.isFinite(citation.startSeconds) && citation.startSeconds! >= 0 ? citation.startSeconds : undefined,
+      endSeconds: Number.isFinite(citation.endSeconds) && citation.endSeconds! >= (citation.startSeconds || 0) ? citation.endSeconds : undefined,
       pageNumber: citation.pageNumber,
       section: citation.section == null ? undefined : String(citation.section).slice(0, 500),
       quote,

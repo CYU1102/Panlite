@@ -9,7 +9,7 @@
         <Upload :size="14" style="margin-right: 4px" />
         上传
       </el-button>
-      <el-button @click="showQuickSearch = true">
+      <el-button @click="$router.push('/resource-search')">
         <Radar :size="14" style="margin-right: 4px" />
         搜资源
       </el-button>
@@ -23,10 +23,12 @@
           class="platform-select"
           @change="onPlatformChange"
         >
-          <el-option label="夸克网盘" value="quark" />
-          <el-option label="百度网盘" value="baidu" />
-          <el-option label="UC网盘" value="uc" />
-          <el-option label="迅雷网盘" value="xunlei" />
+          <el-option
+            v-for="platformOption in platformOptions"
+            :key="platformOption.value"
+            :label="platformOption.label"
+            :value="platformOption.value"
+          />
         </el-select>
       </div>
       <div class="account-select select-group">
@@ -52,6 +54,10 @@
     </div>
 
     <div class="topbar-right">
+      <button class="theme-toggle" :title="appStore.theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'" @click="appStore.toggleTheme()">
+        <Sun v-if="appStore.theme === 'dark'" :size="16" />
+        <Moon v-else :size="16" />
+      </button>
       <div class="search-box">
         <el-autocomplete
           v-model="searchInput"
@@ -78,46 +84,41 @@
       <el-button @click="onRefresh" :icon="RefreshCw" circle />
     </div>
 
-    <AddAccountDialog v-model="showAddAccount" @success="onAccountAdded" />
+    <AddAccountDialog v-if="showAddAccount" v-model="showAddAccount" @success="onAccountAdded" />
     <UploadDialog
-      v-model="showUpload"
+      v-if="showUpload" v-model="showUpload"
       :account="appStore.currentAccount"
       :target-dir-id="appStore.currentPath"
       :target-dir-name="appStore.currentPathName"
       @success="onUploadCreated"
     />
-    <QuickSearchDialog v-model="showQuickSearch" @transfer="onTransfer" />
-    <TransferDialog
-      v-model="showTransfer"
-      :initial-links="transferLinks"
-      :initial-target-dir-id="appStore.currentPath"
-      :initial-target-name="appStore.currentPathName"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
-import { RefreshCw, Plus, Search, Upload, Radar } from 'lucide-vue-next'
+import { defineAsyncComponent, ref, computed, onMounted, watch } from 'vue'
+import { RefreshCw, Plus, Search, Upload, Radar, Sun, Moon } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { useAppStore } from '../stores/app'
 import { useAccountStore } from '../stores/account'
 import type { Platform } from '@shared/types'
-import AddAccountDialog from './AddAccountDialog.vue'
-import UploadDialog from './UploadDialog.vue'
-import QuickSearchDialog from './QuickSearchDialog.vue'
-import TransferDialog from './TransferDialog.vue'
-import type { TransferLinkInput } from '@shared/types'
+import { PLATFORM_CAPABILITIES } from '@shared/capabilities'
+import { PLATFORM_LABELS } from '@shared/constants'
+const AddAccountDialog = defineAsyncComponent(() => import('./AddAccountDialog.vue'))
+const UploadDialog = defineAsyncComponent(() => import('./UploadDialog.vue'))
 import { electronApi } from '../api/ipc'
 
 const appStore = useAppStore()
+
+// 平台选项跟随能力注册表，新增平台自动出现
+const platformOptions = (Object.keys(PLATFORM_CAPABILITIES) as Platform[]).map((value) => ({
+  value,
+  label: (PLATFORM_LABELS as Record<string, string>)[value] || value,
+}))
 const accountStore = useAccountStore()
 
 const showAddAccount = ref(false)
 const showUpload = ref(false)
-const showQuickSearch = ref(false)
-const showTransfer = ref(false)
-const transferLinks = ref<TransferLinkInput[]>([])
 const searchInput = ref('')
 const selectedAccountId = ref('')
 const searchHistory = ref<Array<{ value: string; resultCount: number }>>([])
@@ -199,11 +200,6 @@ function onUploadCreated() {
   appStore.refreshKey++
 }
 
-function onTransfer(item: TransferLinkInput) {
-  transferLinks.value = [{ url: item.url, password: item.password }]
-  showTransfer.value = true
-}
-
 onMounted(() => {
   accountStore.fetchAccounts()
 })
@@ -232,7 +228,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 14px;
-  flex: 1;
+  flex: 0 0 auto;
   justify-content: center;
 }
 
@@ -244,7 +240,7 @@ onMounted(() => {
 
 .select-label {
   color: var(--pl-text-muted);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   white-space: nowrap;
 }
 
@@ -264,11 +260,19 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  flex: 1 1 200px;
+  min-width: 150px;
+  max-width: 330px;
+  margin-left: auto;
 }
 
 .search-box {
-  width: 236px;
+  flex: 1;
+  min-width: 0;
+}
+
+.search-box :deep(.el-autocomplete) {
+  width: 100%;
 }
 
 .history-option {
@@ -294,7 +298,7 @@ onMounted(() => {
 :deep(.el-segmented) {
   --el-segmented-item-selected-bg-color: #3b82f6;
   --el-segmented-item-selected-color: #ffffff;
-  --el-segmented-bg-color: #f3f4f6;
+  --el-segmented-bg-color: var(--pl-hover);
   border-radius: 8px;
 }
 :deep(.el-segmented__item) {
@@ -304,7 +308,7 @@ onMounted(() => {
 
 :deep(.el-select .el-input__wrapper) {
   min-height: 36px;
-  background: #fbfcfe;
+  background: var(--pl-surface-subtle);
 }
 
 @media (max-width: 1100px) {
@@ -352,4 +356,5 @@ onMounted(() => {
     width: 150px;
   }
 }
+.theme-toggle{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--pl-border);border-radius:8px;color:var(--pl-text-secondary);background:var(--pl-surface);cursor:pointer}.theme-toggle:hover{color:var(--pl-primary);border-color:var(--pl-primary)}
 </style>

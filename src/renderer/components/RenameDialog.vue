@@ -232,7 +232,7 @@ watch(() => props.modelValue, (open) => {
 .preview { padding: 12px; background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: 12px; }
 .preview-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .preview-title span { color: var(--pl-text); font-size: 12px; font-weight: 650; }
-.preview-title small { color: var(--pl-text-muted); font-size: 10px; }
+.preview-title small { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .preview-item { min-height: 34px; padding: 5px 7px; background: var(--pl-surface-subtle); border-radius: 8px; }
 .preview-item.invalid { background: var(--pl-danger-soft); }
 .old-name, .new-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -240,5 +240,5 @@ watch(() => props.modelValue, (open) => {
 .new-name { color: var(--pl-primary-hover); font-weight: 600; }
 .preview-arrow { width: 23px; height: 23px; display: grid; place-items: center; flex: 0 0 auto; color: var(--pl-primary); background: var(--pl-primary-soft); border-radius: 7px; }
 .more { color: var(--pl-text-muted); }
-.validation-errors { display: grid; gap: 4px; margin-top: 9px; padding: 8px 10px; color: var(--pl-danger); background: var(--pl-danger-soft); border-radius: 8px; font-size: 11px; }
+.validation-errors { display: grid; gap: 4px; margin-top: 9px; padding: 8px 10px; color: var(--pl-danger); background: var(--pl-danger-soft); border-radius: 8px; font-size: var(--pl-font-xs); }
 </style>

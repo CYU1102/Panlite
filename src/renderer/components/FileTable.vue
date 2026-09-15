@@ -56,7 +56,7 @@
       <el-table-column label="操作" width="236" align="center" fixed="right">
         <template #default="{ row }">
           <div class="action-btns">
-            <button v-if="!row.isDir" class="action-btn" title="预览" aria-label="预览" @click.stop="onPreview(row)">
+            <button v-if="!row.isDir" class="action-btn" :title="previewTitle(row)" :aria-label="previewTitle(row)" :disabled="!canPreview(row)" @click.stop="onPreview(row)">
               <Eye :size="14" />
             </button>
             <button
@@ -131,6 +131,7 @@ import { FolderOpen, File, PenSquare, Trash2, Copy, Archive, FolderArchive, Eye 
 import { ref } from 'vue'
 import type { FileItem } from '@shared/types'
 import type { PlatformCapabilities } from '@shared/capabilities'
+import { detectFilePreviewType } from '@shared/file-preview'
 import { formatFileSize, formatTimestamp } from '@shared/utils'
 
 // 支持的压缩包格式
@@ -172,12 +173,12 @@ const emit = defineEmits<{
 
 const headerStyle = {
   background: '#f7f9fc',
-  color: '#667085',
+  color: 'var(--pl-text-secondary)',
   fontWeight: '600',
   fontSize: '12px',
   textTransform: 'uppercase',
   letterSpacing: '0.5px',
-  borderBottom: '1px solid #e5e7eb',
+  borderBottom: '1px solid var(--pl-border)',
   height: '44px',
 }
 
@@ -200,6 +201,17 @@ function compressTitle(file: FileItem): string {
 
 function onRowDblClick(row: FileItem) {
   if (row.isDir) emit('enter', row)
+  else onPreview(row)
+}
+
+function canPreview(row: FileItem): boolean {
+  return !row.isDir && props.capabilities.downloadFile && detectFilePreviewType(row.name).supported
+}
+
+function previewTitle(row: FileItem): string {
+  if (!props.capabilities.downloadFile) return '当前网盘暂不支持文件预览'
+  if (!detectFilePreviewType(row.name).supported) return '暂不支持此文件格式的预览'
+  return ['video', 'audio'].includes(detectFilePreviewType(row.name).kind) ? '在线播放' : '在线预览'
 }
 
 function onRename(row: FileItem) { emit('rename', row) }
@@ -207,7 +219,7 @@ function onDelete(row: FileItem) { emit('delete', row) }
 function onCopy(row: FileItem) { emit('copy', row) }
 function onArchive(row: FileItem) { emit('archive', row) }
 function onCompress(row: FileItem) { emit('compress', row) }
-function onPreview(row: FileItem) { emit('preview', row) }
+function onPreview(row: FileItem) { if (canPreview(row)) emit('preview', row) }
 function onSelectionChange(rows: FileItem[]) {
   selectedIds.value = new Set(rows.map(row => row.id))
   // 转为纯对象，避免 Vue 响应式包装导致 IPC 克隆失败
@@ -254,7 +266,7 @@ function rowClassName({ row }: { row: FileItem }): string {
 }
 
 :deep(.el-table .el-table__cell.gutter) {
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
 }
 
 /* ── File name cell ── */
@@ -316,7 +328,7 @@ function rowClassName({ row }: { row: FileItem }): string {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 500;
 }
 

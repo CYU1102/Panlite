@@ -159,7 +159,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { Bookmark, BookmarkPlus, File, Folder, History, Search, SearchX, Trash2 } from 'lucide-vue-next'
@@ -181,7 +181,7 @@ const SAVED_KEY = 'panlite:saved-global-searches:v1'
 const HISTORY_LIMIT = 30
 const MB = 1024 * 1024
 
-const platformOptions: Platform[] = ['quark', 'baidu', 'uc', 'xunlei']
+const platformOptions: Platform[] = ['quark', 'baidu', 'uc', 'xunlei', 'webdav', 'aliyun', 'pan123', 'aliyun_web']
 const fileTypeOptions = [
   { label: '文件夹', value: 'folder' },
   { label: '视频', value: 'video' },
@@ -206,6 +206,8 @@ const failures = ref<GlobalSearchFailure[]>([])
 const searchedAccountCount = ref(0)
 const history = ref<GlobalSearchHistoryEntry[]>(readStoredArray(HISTORY_KEY))
 const savedSearches = ref<SavedGlobalSearch[]>(readStoredArray(SAVED_KEY))
+let searchVersion = 0
+onUnmounted(() => { searchVersion++ })
 
 const availableAccounts = computed(() => accountStore.accounts.filter((account) => (
   selectedPlatforms.value.length === 0 || selectedPlatforms.value.includes(account.platform)
@@ -286,6 +288,7 @@ async function runSearch(queryOverride?: GlobalSearchQuery): Promise<void> {
   }
 
   searching.value = true
+  const version = ++searchVersion
   failures.value = []
   try {
     const settled = await Promise.all(targetAccounts.map(async (account) => {
@@ -315,6 +318,7 @@ async function runSearch(queryOverride?: GlobalSearchQuery): Promise<void> {
       }
     }))
 
+    if (version !== searchVersion) return
     results.value = settled.flatMap((item) => item.files)
       .sort((left, right) => right.updatedAt - left.updatedAt)
     failures.value = settled.flatMap((item) => item.failure ? [item.failure] : [])
@@ -331,7 +335,7 @@ async function runSearch(queryOverride?: GlobalSearchQuery): Promise<void> {
     history.value = [entry, ...history.value.filter((item) => JSON.stringify(item.query) !== queryKey)].slice(0, HISTORY_LIMIT)
     persistCollections()
   } finally {
-    searching.value = false
+    if (version === searchVersion) searching.value = false
   }
 }
 
@@ -408,10 +412,10 @@ onMounted(async () => {
 .search-panel { display: grid; gap: var(--pl-space-4); padding: var(--pl-space-5); background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: var(--pl-radius-card); box-shadow: var(--pl-shadow-card); }
 .keyword-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--pl-space-3); }
 .filter-grid { display: grid; grid-template-columns: .8fr 1.2fr 1fr 1.2fr 1.45fr; gap: var(--pl-space-3); align-items: end; }
-.filter-field { min-width: 0; display: grid; gap: 6px; color: var(--pl-text-secondary); font-size: 11px; font-weight: 600; }
+.filter-field { min-width: 0; display: grid; gap: 6px; color: var(--pl-text-secondary); font-size: var(--pl-font-xs); font-weight: 600; }
 .filter-field :deep(.el-select), .filter-field :deep(.el-date-editor) { width: 100%; }
 .size-inputs { min-width: 0; display: flex; align-items: center; gap: 5px; color: var(--pl-text-muted); }
-.size-inputs :deep(.el-input-number) { min-width: 0; width: 50%; }
+.size-inputs :deep(.el-input-number) { flex: 1; min-width: 0; width: auto; }
 .content-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: 245px minmax(0, 1fr); gap: var(--pl-space-4); }
 .collections-panel, .results-panel { min-height: 0; background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: var(--pl-radius-card); box-shadow: var(--pl-shadow-card); }
 .collections-panel { overflow-y: auto; padding: var(--pl-space-3); }
@@ -419,21 +423,21 @@ onMounted(async () => {
 .history-section { margin-top: var(--pl-space-4); padding-top: var(--pl-space-4); border-top: 1px solid var(--pl-border); }
 .section-title { min-height: 28px; display: flex; align-items: center; justify-content: space-between; padding: 0 5px; color: var(--pl-text); font-size: 12px; font-weight: 700; }
 .section-title span { display: flex; align-items: center; gap: 6px; }
-.section-title button { color: var(--pl-text-muted); background: transparent; border: 0; cursor: pointer; font-size: 11px; }
+.section-title button { color: var(--pl-text-muted); background: transparent; border: 0; cursor: pointer; font-size: var(--pl-font-xs); }
 .collection-item { width: 100%; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 9px 10px; color: var(--pl-text); background: transparent; border: 0; border-radius: var(--pl-radius-control); text-align: left; cursor: pointer; }
 .collection-item:hover { background: var(--pl-primary-soft); }
 .collection-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .collection-copy strong, .collection-copy small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .collection-copy strong { font-size: 12px; font-weight: 600; }
-.collection-copy small { color: var(--pl-text-muted); font-size: 10px; }
+.collection-copy small { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .remove-button { width: 24px; height: 24px; display: grid; flex: 0 0 auto; place-items: center; color: var(--pl-text-muted); border-radius: 7px; }
 .remove-button:hover { color: var(--pl-danger); background: var(--pl-danger-soft); }
-.collection-empty { padding: 14px 8px; color: var(--pl-text-muted); font-size: 11px; text-align: center; }
+.collection-empty { padding: 14px 8px; color: var(--pl-text-muted); font-size: var(--pl-font-xs); text-align: center; }
 .results-panel { overflow: hidden; display: flex; flex-direction: column; }
 .results-header { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 var(--pl-space-5); border-bottom: 1px solid var(--pl-border); }
 .results-header > div { display: flex; align-items: baseline; gap: 9px; }
 .results-header strong { color: var(--pl-text); font-size: 13px; }
-.results-header span { color: var(--pl-text-muted); font-size: 11px; }
+.results-header span { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .failure-alert { margin: 10px 12px 0; width: auto; }
 .results-panel :deep(.el-table) { flex: 1; }
 .file-cell { min-width: 0; display: flex; align-items: center; gap: 8px; }
@@ -443,7 +447,7 @@ onMounted(async () => {
 .platform-tag { margin-left: 7px; }
 .empty-results { min-height: 260px; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--pl-text-muted); }
 .empty-results strong { color: var(--pl-text-secondary); font-size: 13px; }
-.empty-results span { font-size: 11px; }
+.empty-results span { font-size: var(--pl-font-xs); }
 @media (max-width: 1100px) {
   .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .date-field { grid-column: span 2; }

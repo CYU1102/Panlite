@@ -12,28 +12,17 @@ import {
 } from 'fs'
 import os from 'os'
 import path from 'path'
-import { pathToFileURL } from 'url'
+import { createReadStream } from 'fs'
+import { Readable } from 'stream'
 import { randomUUID } from 'crypto'
-import type { ArchiveMeta } from '../shared/types'
-import { isArchiveFile, isSupportedArchive, listArchiveFiles } from './archive'
+import { detectFilePreviewType } from '../shared/file-preview'
+import type { FilePreviewRequest, FilePreviewSessionDto, FilePreviewIpcResult } from '../shared/file-preview'
+export { detectFilePreviewType } from '../shared/file-preview'
+export type { FilePreviewKind, FilePreviewType, FilePreviewRequest, FilePreviewSessionDto, FilePreviewIpcResult } from '../shared/file-preview'
+import { previewError, streamPreviewSource, validPreviewRange, type PreviewSource } from './preview-stream'
+import { listArchiveFiles } from './archive'
 import { sanitizeFileName } from './file-transfer'
-
-export type FilePreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'markdown' | 'archive' | 'unsupported'
-
-export interface FilePreviewType {
-  kind: FilePreviewKind
-  mimeType: string
-  extension: string
-  supported: boolean
-}
-
-export interface FilePreviewRequest {
-  accountId: string
-  fileId: string
-  fileName: string
-  fileSize?: number
-  password?: string
-}
+import { parseAiDocument } from './ai/document-parser'
 
 export interface FilePreviewDownloadContext {
   directory: string
@@ -52,18 +41,7 @@ export type FilePreviewDownloader = (
   context: FilePreviewDownloadContext,
 ) => Promise<FilePreviewDownloadResult>
 
-export interface FilePreviewSessionDto {
-  sessionId: string
-  fileName: string
-  kind: Exclude<FilePreviewKind, 'unsupported'>
-  mimeType: string
-  size: number
-  assetUrl?: string
-  content?: string
-  truncated?: boolean
-  archive?: ArchiveMeta
-  expiresAt: number
-}
+export type FilePreviewSourceResolver = (request: FilePreviewRequest) => Promise<PreviewSource | undefined>
 
 export interface FilePreviewServiceOptions {
   tempRoot?: string
@@ -74,16 +52,13 @@ export interface FilePreviewServiceOptions {
 }
 
 interface StoredPreviewSession {
-  directory: string
-  filePath: string
+  directory?: string
+  filePath?: string
+  source?: PreviewSource
+  active: Set<AbortController>
+  pendingReads: Set<AbortController>
+  expiryTimer?: ReturnType<typeof setTimeout>
   dto: FilePreviewSessionDto
-}
-
-export interface FilePreviewIpcResult {
-  success: boolean
-  preview?: FilePreviewSessionDto
-  cleaned?: boolean
-  error?: string
 }
 
 export interface FilePreviewIpcHandlers {
@@ -105,102 +80,6 @@ export const FILE_PREVIEW_DEFAULTS = Object.freeze({
   maxDownloadBytes: 4 * 1024 * 1024 * 1024,
   sessionTtlMs: 30 * 60 * 1000,
 })
-
-const IMAGE_MIME = new Map([
-  ['.jpg', 'image/jpeg'],
-  ['.jpeg', 'image/jpeg'],
-  ['.png', 'image/png'],
-  ['.gif', 'image/gif'],
-  ['.webp', 'image/webp'],
-  ['.bmp', 'image/bmp'],
-  ['.ico', 'image/x-icon'],
-  ['.avif', 'image/avif'],
-])
-
-const VIDEO_MIME = new Map([
-  ['.mp4', 'video/mp4'],
-  ['.webm', 'video/webm'],
-  ['.mov', 'video/quicktime'],
-  ['.m4v', 'video/x-m4v'],
-  ['.avi', 'video/x-msvideo'],
-  ['.mkv', 'video/x-matroska'],
-  ['.flv', 'video/x-flv'],
-  ['.wmv', 'video/x-ms-wmv'],
-])
-
-const AUDIO_MIME = new Map([
-  ['.mp3', 'audio/mpeg'],
-  ['.wav', 'audio/wav'],
-  ['.ogg', 'audio/ogg'],
-  ['.m4a', 'audio/mp4'],
-  ['.aac', 'audio/aac'],
-  ['.flac', 'audio/flac'],
-  ['.opus', 'audio/opus'],
-])
-
-const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd'])
-const TEXT_EXTENSIONS = new Set([
-  '.txt', '.text', '.log', '.csv', '.tsv', '.json', '.jsonl', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg',
-  '.conf', '.properties', '.env', '.sql', '.html', '.htm', '.css', '.scss', '.less', '.js', '.jsx', '.ts', '.tsx',
-  '.vue', '.py', '.java', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.go', '.rs', '.php', '.rb', '.sh', '.ps1',
-  '.bat', '.cmd', '.dockerfile', '.gitignore', '.editorconfig',
-])
-
-function normalizedExtension(fileName: string): string {
-  const lower = String(fileName || '').trim().toLowerCase()
-  if (lower.endsWith('.tar.gz')) return '.tar.gz'
-  return path.extname(lower)
-}
-
-/** Pure extension-based classification. SVG is treated as text so active content is never embedded as an image. */
-export function detectFilePreviewType(fileName: string): FilePreviewType {
-  const extension = normalizedExtension(fileName)
-  const imageMime = IMAGE_MIME.get(extension)
-  if (imageMime) return { kind: 'image', mimeType: imageMime, extension, supported: true }
-
-  const videoMime = VIDEO_MIME.get(extension)
-  if (videoMime) return { kind: 'video', mimeType: videoMime, extension, supported: true }
-
-  const audioMime = AUDIO_MIME.get(extension)
-  if (audioMime) return { kind: 'audio', mimeType: audioMime, extension, supported: true }
-
-  if (extension === '.pdf') return { kind: 'pdf', mimeType: 'application/pdf', extension, supported: true }
-  if (MARKDOWN_EXTENSIONS.has(extension)) return { kind: 'markdown', mimeType: 'text/markdown; charset=utf-8', extension, supported: true }
-  if (extension === '.svg') return { kind: 'text', mimeType: 'text/plain; charset=utf-8', extension, supported: true }
-
-  if (isArchiveFile(fileName)) {
-    return {
-      kind: 'archive',
-      mimeType: archiveMimeType(extension),
-      extension,
-      supported: isSupportedArchive(fileName),
-    }
-  }
-
-  if (TEXT_EXTENSIONS.has(extension) || isSpecialTextName(fileName)) {
-    return { kind: 'text', mimeType: 'text/plain; charset=utf-8', extension, supported: true }
-  }
-
-  return { kind: 'unsupported', mimeType: 'application/octet-stream', extension, supported: false }
-}
-
-function archiveMimeType(extension: string): string {
-  switch (extension) {
-    case '.zip': return 'application/zip'
-    case '.rar': return 'application/vnd.rar'
-    case '.7z': return 'application/x-7z-compressed'
-    case '.tar': return 'application/x-tar'
-    case '.tar.gz':
-    case '.tgz':
-    case '.gz': return 'application/gzip'
-    default: return 'application/octet-stream'
-  }
-}
-
-function isSpecialTextName(fileName: string): boolean {
-  const base = path.basename(String(fileName || '')).toLowerCase()
-  return ['dockerfile', 'makefile', 'license', 'readme', 'changelog'].includes(base)
-}
 
 /** Resolve a candidate below root without trusting string prefixes. */
 export function assertPathInside(root: string, candidate: string): string {
@@ -228,26 +107,23 @@ export function readTextPreview(filePath: string, maxBytes: number): { content: 
 
   const truncated = size > maxBytes
   const visible = buffer.subarray(0, Math.min(bytesRead, maxBytes))
-  const content = decodeText(visible)
+  const content = decodeText(visible, truncated)
   const nulCount = content.split('\0').length - 1
   if (content.length > 0 && nulCount / content.length > 0.01) throw new Error('文件内容不是可安全预览的文本')
   return { content, truncated }
 }
 
-function decodeText(buffer: Buffer): string {
-  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
-    return new TextDecoder('utf-16le').decode(buffer.subarray(2))
+function decodeText(buffer: Buffer, truncated: boolean): string {
+  let encoding = 'utf-8'
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) encoding = 'utf-16le'
+  else if (buffer[0] === 0xfe && buffer[1] === 0xff) encoding = 'utf-16be'
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(buffer, { stream: truncated })
+  } catch {
+    if (encoding !== 'utf-8') throw new Error('文本编码损坏，请另存为 UTF-8 后重试')
+    try { return new TextDecoder('gb18030', { fatal: true }).decode(buffer, { stream: truncated }) }
+    catch { throw new Error('无法识别文本编码，请另存为 UTF-8 后重试') }
   }
-  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
-    const swapped = Buffer.alloc(buffer.length - 2)
-    for (let index = 2; index + 1 < buffer.length; index += 2) {
-      swapped[index - 2] = buffer[index + 1]
-      swapped[index - 1] = buffer[index]
-    }
-    return new TextDecoder('utf-16le').decode(swapped)
-  }
-  const start = buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf ? 3 : 0
-  return new TextDecoder('utf-8').decode(buffer.subarray(start))
 }
 
 export class FilePreviewService {
@@ -258,6 +134,7 @@ export class FilePreviewService {
 
   private readonly sessions = new Map<string, StoredPreviewSession>()
   private readonly now: () => number
+  private cleanupGeneration = 0
 
   constructor(options: FilePreviewServiceOptions = {}) {
     this.tempRoot = path.resolve(options.tempRoot || path.join(os.tmpdir(), 'panlite-file-preview'))
@@ -268,12 +145,33 @@ export class FilePreviewService {
     mkdirSync(this.tempRoot, { recursive: true, mode: 0o700 })
   }
 
-  async createSession(request: FilePreviewRequest, downloader: FilePreviewDownloader): Promise<FilePreviewSessionDto> {
+  async createSession(request: FilePreviewRequest, downloader: FilePreviewDownloader, resolveSource?: FilePreviewSourceResolver): Promise<FilePreviewSessionDto> {
+    const generation = this.cleanupGeneration
+    const assertActive = () => {
+      if (generation !== this.cleanupGeneration) throw new Error('预览已取消')
+    }
     this.cleanupExpiredSessions()
     validateRequest(request)
     const previewType = detectFilePreviewType(request.fileName)
     if (previewType.kind === 'unsupported') throw new Error('暂不支持预览此文件类型')
     if (!previewType.supported) throw new Error('已识别此压缩包格式，但当前解压引擎暂不支持读取')
+    if (resolveSource && ['image', 'audio', 'video', 'pdf'].includes(previewType.kind)) {
+      const source = await resolveSource(request)
+      assertActive()
+      if (source) {
+        const url = new URL(source.url)
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('网盘预览地址无效')
+        const sessionId = randomUUID()
+        const dto: FilePreviewSessionDto = {
+          sessionId, fileName: sanitizeFileName(request.fileName), kind: previewType.kind,
+          mimeType: previewType.mimeType, size: request.fileSize || 0,
+          delivery: 'stream', assetUrl: `panlite-preview://session/${sessionId}`,
+          expiresAt: this.now() + this.sessionTtlMs,
+        }
+        this.storeSession({ source, dto })
+        return dto
+      }
+    }
     if (request.fileSize !== undefined && request.fileSize > this.maxDownloadBytes) {
       throw new Error('文件超过预览下载大小限制')
     }
@@ -286,6 +184,7 @@ export class FilePreviewService {
         fileName: safeName,
         maxBytes: this.maxDownloadBytes,
       })
+      assertActive()
       if (!downloadResult.success || !downloadResult.localPath) {
         throw new Error(downloadResult.error || '预览文件下载失败')
       }
@@ -303,20 +202,37 @@ export class FilePreviewService {
         mimeType: previewType.mimeType,
         size,
         expiresAt,
+        delivery: 'download',
       } as const
 
       let dto: FilePreviewSessionDto
       if (previewType.kind === 'text' || previewType.kind === 'markdown') {
         const text = readTextPreview(filePath, this.maxTextBytes)
         dto = { ...common, kind: previewType.kind, content: text.content, truncated: text.truncated }
+      } else if (previewType.kind === 'office') {
+        const parsed = await parseAiDocument(filePath, previewType.extension.slice(1))
+        if (parsed.status !== 'ready' || !parsed.sections?.length) {
+          throw new Error(parsed.message || 'Office 文档未提取到可预览内容')
+        }
+        const fullContent = parsed.sections.map((section) => {
+          const heading = section.section || (section.pageNumber ? `第 ${section.pageNumber} 页` : '正文')
+          return `【${heading}】\n${section.content}`
+        }).join('\n\n')
+        const contentBuffer = Buffer.from(fullContent, 'utf8')
+        const truncated = contentBuffer.length > this.maxTextBytes
+        const content = truncated
+          ? contentBuffer.subarray(0, this.maxTextBytes).toString('utf8').replace(/�$/, '')
+          : fullContent
+        dto = { ...common, kind: 'office', content, truncated, notice: parsed.message }
       } else if (previewType.kind === 'archive') {
         const archive = await listArchiveFiles(filePath, request.password)
         dto = { ...common, kind: 'archive', archive }
       } else {
-        dto = { ...common, kind: previewType.kind, assetUrl: pathToFileURL(filePath).href }
+        dto = { ...common, kind: previewType.kind, assetUrl: `panlite-preview://session/${sessionId}` }
       }
 
-      this.sessions.set(sessionId, { directory, filePath, dto })
+      assertActive()
+      this.storeSession({ directory, filePath, dto })
       return dto
     } catch (error) {
       this.removeManagedDirectory(directory)
@@ -333,7 +249,7 @@ export class FilePreviewService {
   getSessionFilePath(sessionId: string): string {
     this.cleanupExpiredSessions()
     const session = this.sessions.get(String(sessionId || ''))
-    if (!session) throw new Error('预览会话不存在或已过期')
+    if (!session?.directory || !session.filePath) throw new Error('预览会话不存在或已过期，或使用在线流')
     return this.validateDownloadedFile(session.directory, session.filePath)
   }
 
@@ -342,7 +258,11 @@ export class FilePreviewService {
     const session = this.sessions.get(key)
     if (!session) return false
     this.sessions.delete(key)
-    this.removeManagedDirectory(session.directory)
+    clearTimeout(session.expiryTimer)
+    for (const controller of session.active) controller.abort()
+    session.active.clear()
+    session.pendingReads.clear()
+    if (session.directory) this.removeManagedDirectory(session.directory)
     return true
   }
 
@@ -350,17 +270,98 @@ export class FilePreviewService {
     const now = this.now()
     let count = 0
     for (const [sessionId, session] of this.sessions) {
-      if (session.dto.expiresAt <= now && this.cleanupSession(sessionId)) count++
+      if (!session.pendingReads.size && session.dto.expiresAt <= now && this.cleanupSession(sessionId)) count++
     }
     return count
   }
 
   cleanupAll(): number {
+    this.cleanupGeneration++
     let count = 0
     for (const sessionId of [...this.sessions.keys()]) {
       if (this.cleanupSession(sessionId)) count++
     }
     return count
+  }
+
+  private storeSession(session: Omit<StoredPreviewSession, 'active' | 'pendingReads' | 'expiryTimer'>): void {
+    const stored = { ...session, active: new Set<AbortController>(), pendingReads: new Set<AbortController>() }
+    this.sessions.set(session.dto.sessionId, stored)
+    this.touchSession(stored)
+  }
+
+  private touchSession(session: StoredPreviewSession): void {
+    if (this.sessions.get(session.dto.sessionId) !== session) return
+    session.dto.expiresAt = this.now() + this.sessionTtlMs
+    this.scheduleExpiry(session, this.sessionTtlMs)
+  }
+
+  private scheduleExpiry(session: StoredPreviewSession, delay: number): void {
+    clearTimeout(session.expiryTimer)
+    session.expiryTimer = setTimeout(() => {
+      if (this.sessions.get(session.dto.sessionId) !== session) return
+      // A pending network read has its own 30-second timeout. Paused consumers have
+      // no pending read, so a forgotten/paused stream cannot hold a session forever.
+      if (session.pendingReads.size) this.scheduleExpiry(session, Math.min(this.sessionTtlMs, 30_000))
+      else if (session.dto.expiresAt <= this.now()) this.cleanupSession(session.dto.sessionId)
+      else this.scheduleExpiry(session, session.dto.expiresAt - this.now())
+    }, Math.max(1, delay))
+    session.expiryTimer.unref?.()
+  }
+
+  /** Called only by the registered custom protocol. The URL contains an opaque session id. */
+  async handleRequest(request: Request): Promise<Response> {
+    this.cleanupExpiredSessions()
+    let id: string
+    try {
+      const url = new URL(request.url)
+      if (url.protocol !== 'panlite-preview:' || url.host !== 'session' || url.search || url.hash || url.username || url.password || !/^\/[0-9a-f-]{36}$/.test(url.pathname)) {
+        return previewError(404, '预览会话不存在')
+      }
+      id = url.pathname.slice(1)
+    } catch { return previewError(400, '预览地址无效') }
+    const session = this.sessions.get(id)
+    if (!session) return previewError(404, '预览会话不存在或已过期')
+    if (!['GET', 'HEAD'].includes(request.method)) return previewError(405, '请求方法不受支持')
+    const range = request.headers.get('range')
+    if (range && !validPreviewRange(range)) return previewError(416, '请求范围无效')
+    const controller = new AbortController()
+    session.active.add(controller)
+    this.touchSession(session)
+    const activity = (pending: boolean) => {
+      if (!session.active.has(controller)) return
+      if (pending) session.pendingReads.add(controller)
+      else session.pendingReads.delete(controller)
+      this.touchSession(session)
+    }
+    const finish = () => {
+      session.active.delete(controller)
+      session.pendingReads.delete(controller)
+      this.touchSession(session)
+    }
+    if (session.source) return streamPreviewSource(session.source, request, session.dto.mimeType, controller, finish, activity)
+    // Reuse the same guarded streaming bridge for downloaded local previews.
+    try {
+      const filePath = this.getSessionFilePath(id)
+      return await streamPreviewSource({
+        url: 'http://local-preview.invalid/',
+        fetch: async (_url, init) => {
+          const size = statSync(filePath).size
+          let start = 0
+          let end = size - 1
+          if (range) {
+            const [left, right] = range.slice(6).split('-')
+            start = left ? Number(left) : Math.max(0, size - Number(right))
+            end = left && right ? Math.min(Number(right), size - 1) : size - 1
+            if (start >= size || start > end) return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${size}` } })
+          }
+          const headers: Record<string, string> = { 'Content-Length': String(Math.max(0, end - start + 1)), 'Accept-Ranges': 'bytes' }
+          if (range) headers['Content-Range'] = `bytes ${start}-${end}/${size}`
+          const body = init.method === 'HEAD' || size === 0 ? null : Readable.toWeb(createReadStream(filePath, { start, end, signal: init.signal || undefined })) as ReadableStream<Uint8Array>
+          return new Response(body, { status: range ? 206 : 200, headers })
+        },
+      }, request, session.dto.mimeType, controller, finish, activity)
+    } catch { finish(); return previewError(404, '预览文件不存在') }
   }
 
   private validateDownloadedFile(directory: string, candidate: string): string {
@@ -400,11 +401,12 @@ function validateRequest(request: FilePreviewRequest): void {
 export function createFilePreviewIpcHandlers(
   service: FilePreviewService,
   downloader: FilePreviewDownloader,
+  resolveSource?: FilePreviewSourceResolver,
 ): FilePreviewIpcHandlers {
   return {
     async create(request) {
       try {
-        const preview = await service.createSession(request, downloader)
+        const preview = await service.createSession(request, downloader, resolveSource)
         return { success: true, preview }
       } catch (error) {
         return { success: false, error: error instanceof Error ? error.message : String(error) }
@@ -424,8 +426,9 @@ export function registerFilePreviewIpc(
   ipcMain: IpcHandlerRegistrar,
   service: FilePreviewService,
   downloader: FilePreviewDownloader,
+  resolveSource?: FilePreviewSourceResolver,
 ): FilePreviewIpcHandlers {
-  const handlers = createFilePreviewIpcHandlers(service, downloader)
+  const handlers = createFilePreviewIpcHandlers(service, downloader, resolveSource)
   ipcMain.handle(FILE_PREVIEW_IPC_CHANNELS.create, (_event, request: FilePreviewRequest) => handlers.create(request))
   ipcMain.handle(FILE_PREVIEW_IPC_CHANNELS.cleanup, (_event, sessionId: string) => handlers.cleanup(sessionId))
   return handlers

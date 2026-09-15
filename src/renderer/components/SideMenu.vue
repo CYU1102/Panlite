@@ -23,8 +23,11 @@ import { computed, markRaw } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   FolderOpen,
+  Library,
+  ArchiveRestore,
   Download,
   ClipboardList,
+  ClipboardCheck,
   Users,
   Settings,
   Share2,
@@ -33,6 +36,7 @@ import {
   BarChart3,
   ArrowRightLeft,
   Sparkles,
+  Workflow,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -45,6 +49,9 @@ const menuGroups = [
     label: '文件',
     items: [
       { path: '/files', label: '文件管理', icon: markRaw(FolderOpen) },
+      { path: '/file-catalog', label: '统一文件目录', icon: markRaw(Library) },
+      { path: '/file-backups', label: '文件版本备份', icon: markRaw(ArchiveRestore) },
+      { path: '/storage-analysis', label: '空间分析', icon: markRaw(BarChart3) },
     ],
   },
   {
@@ -55,6 +62,8 @@ const menuGroups = [
       { path: '/batch-share', label: '批量分享', icon: markRaw(Share2) },
       { path: '/batch-transfer', label: '批量转存', icon: markRaw(ArrowDownToLine) },
       { path: '/cloud-transfer', label: '云端迁移', icon: markRaw(ArrowRightLeft) },
+      { path: '/transfer-plans', label: '迁移计划', icon: markRaw(ClipboardCheck) },
+      { path: '/automation-rules', label: '自动化规则', icon: markRaw(Workflow) },
       { path: '/share-links', label: '分享链接', icon: markRaw(Share2) },
       { path: '/transfer-records', label: '转存记录', icon: markRaw(ArrowDownToLine) },
       { path: '/tasks', label: '任务日志', icon: markRaw(ClipboardList) },
@@ -96,7 +105,7 @@ function onSelect(path: string) {
 
 .nav-group-label {
   padding: 10px 22px 7px;
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
   color: var(--pl-text-muted);
   text-transform: uppercase;
@@ -118,7 +127,7 @@ function onSelect(path: string) {
 }
 
 .nav-item:hover {
-  background: #f1f5fb;
+  background: var(--pl-hover);
   color: var(--pl-text);
 }
 

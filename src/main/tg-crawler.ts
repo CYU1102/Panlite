@@ -1,5 +1,4 @@
 import type { SearchResultItem } from '../shared/types'
-import { PAN_PATTERNS } from '../shared/constants'
 import { fetchHtml, stripHtml, decodeHtmlEntities } from './crawler-utils'
 import log from 'electron-log'
 import * as cheerio from 'cheerio'

@@ -67,15 +67,15 @@ onUnmounted(() => clearInterval(timer))
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  color: #8a96a8;
+  font-size: var(--pl-font-xs);
+  color: var(--pl-text-secondary);
   padding: 3px 8px;
-  background: #f3f6fa;
+  background: var(--pl-hover);
   border-radius: 6px;
 }
 
 .status-chip.active {
-  background: #eff6ff;
-  color: #3b82f6;
+  background: var(--pl-primary-soft);
+  color: var(--pl-primary);
 }
 </style>

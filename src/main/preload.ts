@@ -1,29 +1,75 @@
 ﻿import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
 import { webUtils } from 'electron'
+import { createCatalogClient } from '../shared/catalog-client'
+import { createTransferPlansClient } from '../shared/transfer-plan-client'
+import { createStorageAnalysisClient } from '../shared/storage-analysis-client'
+import { createAiWorkflowClient } from '../shared/ai-workflow'
+import { createFileBackupsClient } from '../shared/file-backup-client'
+import { createAppSnapshotsClient } from '../shared/app-snapshots-client'
+import { createAutomationRulesClient } from '../shared/automation-rules-client'
 
 const electronAPI = {
+  getAppUpdateState: () => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATE_STATUS),
+  checkAppUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATE_CHECK),
+  downloadAppUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATE_DOWNLOAD),
+  installAppUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATE_INSTALL),
+  onAppUpdateChanged: (callback: (state: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on(IPC_CHANNELS.APP_UPDATE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.APP_UPDATE_CHANGED, handler)
+  },
   // ---- System ----
   openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
+  getClipboardMonitor: () => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_MONITOR_GET),
+  setClipboardMonitor: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_MONITOR_SET, enabled),
+  onClipboardShareDetected: (callback: (payload: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) => callback(args[0])
+    ipcRenderer.on(IPC_CHANNELS.CLIPBOARD_SHARE_DETECTED, handler)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.CLIPBOARD_SHARE_DETECTED, handler) }
+  },
+  aliyunExchangeCode: (code: string) => ipcRenderer.invoke(IPC_CHANNELS.ALIYUN_EXCHANGE_CODE, code),
+  pan123FetchToken: (input: { clientId: string; clientSecret: string }) => ipcRenderer.invoke(IPC_CHANNELS.PAN123_FETCH_TOKEN, input),
+  getGlobalShortcuts: () => ipcRenderer.invoke(IPC_CHANNELS.SHORTCUTS_GET),
+  setGlobalShortcuts: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.SHORTCUTS_SET, enabled),
 
   // ---- Independent AI workspace ----
   aiSelectFiles: () => ipcRenderer.invoke(IPC_CHANNELS.AI_SELECT_FILES),
   aiImportFiles: (inputs: Array<{ localPath: string; fileName?: string }>) =>
     ipcRenderer.invoke(IPC_CHANNELS.AI_IMPORT_FILES, inputs),
+  aiImportCloudFiles: (requests: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_IMPORT_CLOUD_FILE, requests),
+  subscriptionList: () => ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_LIST),
+  subscriptionAdd: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_ADD, input),
+  subscriptionRemove: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_REMOVE, id),
+  subscriptionToggle: (input: { id: string; active: boolean }) => ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_TOGGLE, input),
+  subscriptionRunNow: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_RUN_NOW, id),
   aiDocumentList: () => ipcRenderer.invoke(IPC_CHANNELS.AI_DOCUMENT_LIST),
   aiDocumentDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.AI_DOCUMENT_DELETE, id),
   aiDocumentReindex: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.AI_DOCUMENT_REINDEX, id),
   aiTaskList: () => ipcRenderer.invoke(IPC_CHANNELS.AI_TASK_LIST),
+  aiCitationPreview: (input: import('../shared/ai-citation-preview').AiCitationPreviewInput) => ipcRenderer.invoke('ai:citation-preview', input),
+  aiCitationPreviewCleanup: (sessionId: string) => ipcRenderer.invoke('ai:citation-preview-cleanup', sessionId),
   aiProviderGet: () => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_GET),
   aiProviderSave: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_SAVE, input),
   aiProviderTest: () => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_TEST),
+  aiProviderTestConfig: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_TEST_CONFIG, input),
+  aiProviderListModels: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_LIST_MODELS, input),
+  aiProviderQueryBalance: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_QUERY_BALANCE, input),
   aiProviderList: () => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_LIST),
   aiProviderActivate: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_ACTIVATE, id),
   aiProviderDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_DELETE, id),
+  aiProviderDuplicate: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_DUPLICATE, id),
+  onAiProviderChanged: (callback: (config: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, config: unknown): void => callback(config)
+    ipcRenderer.on(IPC_CHANNELS.AI_PROVIDER_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.AI_PROVIDER_CHANGED, handler)
+  },
   aiProviderUsage: () => ipcRenderer.invoke(IPC_CHANNELS.AI_PROVIDER_USAGE),
   aiLocalToolsGet: () => ipcRenderer.invoke(IPC_CHANNELS.AI_LOCAL_TOOLS_GET),
   aiLocalToolsSave: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_LOCAL_TOOLS_SAVE, input),
   aiLocalToolsSelect: (key: string) => ipcRenderer.invoke(IPC_CHANNELS.AI_LOCAL_TOOLS_SELECT, key),
+  aiProcessingPolicyGet: () => ipcRenderer.invoke(IPC_CHANNELS.AI_PROCESSING_POLICY_GET),
+  aiProcessingPolicySave: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_PROCESSING_POLICY_SAVE, input),
   aiAsk: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_ASK, input),
   aiAskStreamStart: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.AI_ASK_STREAM_START, input),
   aiAskStreamCancel: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.AI_ASK_STREAM_CANCEL, requestId),
@@ -118,6 +164,8 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.SHARE_BATCH_CREATE, accountId, items, options),
   shareList: (filters?: { accountId?: string; platform?: string; status?: string; keyword?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.SHARE_LIST, filters),
+  shareCancel: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SHARE_CANCEL, id),
   shareDelete: (id: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.SHARE_DELETE, id),
   shareExportCsv: (filters?: { accountId?: string; platform?: string; status?: string }) =>
@@ -163,6 +211,7 @@ const electronAPI = {
 
   // ---- Task ----
   listTasks: () => ipcRenderer.invoke(IPC_CHANNELS.TASK_LIST),
+  setTaskSchedule: (taskId: string, schedule: import('../shared/task-scheduling').TaskSchedule) => ipcRenderer.invoke('task:schedule', taskId, schedule),
   retryTask: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.TASK_RETRY, taskId),
   cancelTask: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.TASK_CANCEL, taskId),
   pauseTask: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.TASK_PAUSE, taskId),
@@ -261,5 +310,12 @@ const electronAPI = {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
+contextBridge.exposeInMainWorld('catalogAPI', createCatalogClient((channel, ...args) => ipcRenderer.invoke(channel, ...args)))
+contextBridge.exposeInMainWorld('storageAnalysisAPI', createStorageAnalysisClient((channel, ...args) => ipcRenderer.invoke(channel, ...args)))
+contextBridge.exposeInMainWorld('aiWorkflowAPI', createAiWorkflowClient((channel, ...args) => ipcRenderer.invoke(channel, ...args)))
+contextBridge.exposeInMainWorld('transferPlansAPI', createTransferPlansClient((channel, ...args) => ipcRenderer.invoke(channel, ...args)))
+contextBridge.exposeInMainWorld('fileBackupsAPI', createFileBackupsClient((channel, ...args) => ipcRenderer.invoke(channel, ...args)))
+contextBridge.exposeInMainWorld('appSnapshotsAPI', createAppSnapshotsClient((channel, ...args) => ipcRenderer.invoke(channel, ...args)))
+contextBridge.exposeInMainWorld('automationRulesAPI', createAutomationRulesClient((channel, ...args) => ipcRenderer.invoke(channel, ...args)))
 
 export type ElectronAPI = typeof electronAPI

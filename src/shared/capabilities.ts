@@ -3,8 +3,8 @@ import type { Platform } from './types'
 /**
  * 平台功能能力的单一事实来源。
  *
- * 这里描述的是 PanLite 当前已经接通并验证过的能力，而不是各网盘官网
- * 理论上提供的所有能力。界面应以此表决定功能入口是否可用。
+ * 这里描述 PanLite 当前代码已接入的能力，界面以此决定功能入口是否可用。
+ * 实际账号的端到端验收另见 docs/FUNCTIONAL_AUDIT.md；此表不代表云端验收通过。
  */
 export interface PlatformCapabilities {
   readonly list: boolean
@@ -44,15 +44,30 @@ const STANDARD_CAPABILITIES = {
   extractArchive: true,
   // PanLite 在本地下载、压缩后再上传，不依赖网盘原生压缩能力。
   createArchive: true,
-  // 当前压缩 IPC 只会直接下载文件，尚未接入目录递归下载流程。
-  createArchiveFromFolder: false,
+  createArchiveFromFolder: true,
 } as const satisfies PlatformCapabilities
 
 export const PLATFORM_CAPABILITIES: Readonly<Record<Platform, PlatformCapabilities>> = {
-  quark: STANDARD_CAPABILITIES,
+  quark: { ...STANDARD_CAPABILITIES, copy: true },
   baidu: { ...STANDARD_CAPABILITIES, copy: true },
-  uc: STANDARD_CAPABILITIES,
+  uc: { ...STANDARD_CAPABILITIES, copy: true },
   xunlei: STANDARD_CAPABILITIES,
+  // WebDAV 无分享/转存协议能力；其余文件操作走标准 DAV 方法
+  webdav: { ...STANDARD_CAPABILITIES, share: false, transfer: false },
+  // 开放平台未开放分享接口；转存输入分享链接因此也不可用
+  aliyun: { ...STANDARD_CAPABILITIES, copy: true, share: false, transfer: false },
+  // 123 开放平台同样未开放分享协议能力
+  pan123: { ...STANDARD_CAPABILITIES, share: false, transfer: false },
+  // 阿里云盘·网页版（逆向 web 接口）：支持分享/转存；上传需要 proof code，暂不开放
+  aliyun_web: {
+    ...STANDARD_CAPABILITIES,
+    share: true,
+    transfer: true,
+    uploadFile: false,
+    uploadFolder: false,
+    createArchive: false,
+    createArchiveFromFolder: false,
+  },
 }
 
 const NO_CAPABILITIES: PlatformCapabilities = {

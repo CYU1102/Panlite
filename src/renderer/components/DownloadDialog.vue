@@ -230,17 +230,17 @@ function onClose() {
 .file-list-header { margin-bottom: 9px; color: var(--pl-text-secondary); }
 .file-list-header > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .file-list-header strong { color: var(--pl-text); font-size: 13px; }
-.file-list-header span { color: var(--pl-text-muted); font-size: 11px; }
+.file-list-header span { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .file-item { padding: 9px 4px; border-bottom-color: var(--pl-border); }
 .file-icon { width: 30px; height: 30px; display: grid; place-items: center; color: var(--pl-primary); background: var(--pl-primary-soft); border-radius: 9px; }
 .file-info { gap: 2px; }
 .file-name { color: var(--pl-text); font-size: 12px; }
-.file-size { color: var(--pl-text-muted); font-size: 11px; }
+.file-size { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .dir-select, .conflict-select { gap: 14px; padding: 12px; background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); border-radius: 12px; }
 .conflict-select { margin-top: 10px; }
 .dir-label { display: flex; min-width: 88px; flex-direction: column; gap: 2px; }
 .dir-label strong { color: var(--pl-text); font-size: 12px; font-weight: 600; }
-.dir-label span { color: var(--pl-text-muted); font-size: 11px; }
+.dir-label span { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .dir-input :deep(.el-input-group__append) { padding: 0 5px; background: var(--pl-surface); border-color: var(--pl-border); }
 .dir-input :deep(.el-button) { height: 30px; color: var(--pl-primary); }
 </style>

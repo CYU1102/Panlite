@@ -33,23 +33,46 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElNotification } from 'element-plus'
 import TopBar from './components/TopBar.vue'
 import SideMenu from './components/SideMenu.vue'
 import StatusBar from './components/StatusBar.vue'
 import AppLockOverlay from './components/AppLockOverlay.vue'
 import { electronApi } from './api/ipc'
+import { useAppStore } from './stores/app'
 
 const router = useRouter()
+const appStore = useAppStore()
 const showTopBar = computed(() => router.currentRoute.value.path === '/files')
 let unsubscribeNavigate: (() => void) | undefined
+let unsubscribeClipboard: (() => void) | undefined
 
 onMounted(() => {
+  void appStore.loadTheme()
   unsubscribeNavigate = electronApi.onAppNavigate((path) => {
     if (typeof path === 'string' && path.startsWith('/')) void router.push(path)
   })
+  unsubscribeClipboard = electronApi.onClipboardShareDetected((payload) => {
+    if (!payload?.links?.length) return
+    const first = payload.links[0]
+    const extra = payload.links.length > 1 ? ` 等 ${payload.links.length} 条链接` : ''
+    ElNotification({
+      title: '检测到网盘分享链接',
+      message: `${first.url}${extra}，点击前往批量转存`,
+      type: 'info',
+      duration: 8000,
+      onClick: () => {
+        ElNotification.closeAll()
+        void router.push({ path: '/batch-transfer', query: { share: payload.text } })
+      },
+    })
+  })
 })
 
-onBeforeUnmount(() => unsubscribeNavigate?.())
+onBeforeUnmount(() => {
+  unsubscribeNavigate?.()
+  unsubscribeClipboard?.()
+})
 </script>
 
 <style>
@@ -82,11 +105,11 @@ html, body, #app {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
+  background: var(--pl-border);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
+  background: var(--pl-text-muted);
 }
 
 /* ── Element Plus overrides ── */
@@ -153,7 +176,7 @@ html, body, #app {
 .logo-icon {
   width: 34px;
   height: 34px;
-  background: linear-gradient(145deg, #3478f6, #5865e9);
+  background: linear-gradient(145deg, var(--pl-primary), #5865e9);
   border-radius: 11px;
   display: flex;
   align-items: center;
@@ -167,7 +190,7 @@ html, body, #app {
 .logo-text {
   font-size: 17px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--pl-text);
   letter-spacing: 0.5px;
 }
 
@@ -183,9 +206,9 @@ html, body, #app {
 .topbar-wrapper {
   height: 72px;
   min-height: 72px;
-  background: rgba(255, 255, 255, 0.98);
+  background: var(--pl-surface);
   border-bottom: 1px solid var(--pl-border);
-  box-shadow: 0 2px 10px rgba(31, 41, 55, 0.035);
+  box-shadow: var(--pl-shadow-card);
   display: flex;
   align-items: center;
   padding: 0 26px;

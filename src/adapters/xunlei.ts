@@ -1,5 +1,10 @@
+import { writeDownloadResponse } from './download-response'
 import { BrowserWindow, net, session } from 'electron'
-import type { DriveAdapter } from './base'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
+import { Readable } from 'node:stream'
+import type { DriveAdapter, DriveDownloadSource } from './base'
 import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, TransferLinkInput, TransferResult, UploadOptions, UploadResult, DownloadOptions, DownloadResult } from '../shared/types'
 import log from 'electron-log'
 import { resolvePathInside, sanitizeFileName } from '../main/file-transfer'
@@ -72,6 +77,38 @@ interface XunleiFileInfo {
 
 // ── 网络请求层 ──
 
+async function xunleiFetchData(response: Response): Promise<any> {
+  if (response.status === 204) return undefined
+  let data: any
+  try { data = await response.json() } catch { throw new Error(`迅雷接口响应无效 (HTTP ${response.status})`) }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('迅雷接口响应无效')
+  if (response.status >= 400 || data.error || (data.error_code && String(data.error_code) !== '0')) {
+    throw new Error(`迅雷接口请求失败 (HTTP ${response.status}): ${data.error_description || data.message || data.error || ''}`)
+  }
+  return data
+}
+
+// Thunder's resumable credentials are AWS S3 credentials (Alist's
+// thunder_browser driver uses region "xunlei"), not Aliyun OSS credentials.
+function signXunleiS3Put(url: URL, payloadHash: string, params: Record<string, string>): Record<string, string> {
+  const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '')
+  const date = timestamp.slice(0, 8)
+  const headers: Record<string, string> = {
+    'content-type': 'application/octet-stream', host: url.host,
+    'x-amz-content-sha256': payloadHash, 'x-amz-date': timestamp,
+    'x-amz-security-token': params.security_token,
+  }
+  const names = Object.keys(headers).sort()
+  const canonical = ['PUT', url.pathname, '', names.map(name => `${name}:${headers[name].trim()}\n`).join(''), names.join(';'), payloadHash].join('\n')
+  const scope = `${date}/xunlei/s3/aws4_request`
+  const stringToSign = ['AWS4-HMAC-SHA256', timestamp, scope, crypto.createHash('sha256').update(canonical).digest('hex')].join('\n')
+  let signingKey: Buffer = Buffer.from(`AWS4${params.access_key_secret}`)
+  for (const value of [date, 'xunlei', 's3', 'aws4_request']) signingKey = crypto.createHmac('sha256', signingKey).update(value).digest()
+  headers.Authorization = `AWS4-HMAC-SHA256 Credential=${params.access_key_id}/${scope}, SignedHeaders=${names.join(';')}, Signature=${crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex')}`
+  delete headers.host // Chromium supplies Host from the URL.
+  return headers
+}
+
 function xunleiRequest<T>(
   url: string,
   method: string,
@@ -107,18 +144,33 @@ function xunleiRequest<T>(
     request.on('response', (response) => {
       response.on('data', (chunk) => { responseData += chunk.toString() })
       response.on('end', () => {
-        try {
-          const parsed = JSON.parse(responseData) as T
-          // 检查错误响应
-          const errResp = parsed as any
-          if (errResp.error && errResp.error_code) {
-            reject(new Error(`${errResp.error}: ${errResp.error_description || ''}`))
-          } else {
-            resolve(parsed)
-          }
-        } catch {
-          reject(new Error(`Failed to parse response: ${responseData.substring(0, 200)}`))
+        const statusCode = response.statusCode || 0
+        if (statusCode === 204 && !responseData.trim()) {
+          resolve(undefined as T)
+          return
         }
+        let parsed: T
+        try {
+          parsed = JSON.parse(responseData) as T
+        } catch {
+          reject(new Error(statusCode >= 400
+            ? `迅雷接口请求失败 (HTTP ${statusCode})`
+            : `Failed to parse response: ${responseData.substring(0, 200)}`))
+          return
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          reject(new Error('迅雷接口响应无效'))
+          return
+        }
+        const errResp = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+        const hasErrorCode = Boolean(errResp.error_code) && String(errResp.error_code) !== '0'
+        if (statusCode >= 400 || errResp.error || hasErrorCode) {
+          const detail = errResp.error_description || errResp.message || ''
+          const status = statusCode >= 400 ? ` (HTTP ${statusCode})` : ''
+          reject(new Error(`${errResp.error || '迅雷接口请求失败'}${status}${detail ? `: ${detail}` : ''}`))
+          return
+        }
+        resolve(parsed)
       })
       response.on('error', (err) => reject(err))
     })
@@ -609,18 +661,27 @@ export class XunleiAdapter implements DriveAdapter {
 
   async searchFiles(account: DriveAccount, keyword: string): Promise<FileItem[]> {
     const { accessToken, captchaToken, clientId, driveApi } = await ensureTokens(account, this._onCredentialRefreshed)
-    const qs = new URLSearchParams({ keyword }).toString()
-    const res = await xunleiRequest<any>(`${driveApi}/files?${qs}`, 'GET', accessToken, captchaToken, clientId)
-    return (res.files || []).map((f: XunleiFileInfo) => mapXunleiFile(f, account.id))
+    const files: FileItem[] = []
+    const seen = new Set<string>()
+    let pageToken = ''
+    for (let page = 0; page < 100; page++) {
+      const qs = new URLSearchParams({ keyword, page_token: pageToken }).toString()
+      const res = await xunleiRequest<any>(`${driveApi}/files?${qs}`, 'GET', accessToken, captchaToken, clientId)
+      if (!Array.isArray(res.files)) throw new Error('迅雷搜索列表响应无效')
+      files.push(...res.files.map((f: XunleiFileInfo) => mapXunleiFile(f, account.id)))
+      if (!res.next_page_token) return files
+      if (typeof res.next_page_token !== 'string' || seen.has(res.next_page_token)) throw new Error('迅雷搜索分页游标无效或重复')
+      seen.add(res.next_page_token)
+      pageToken = res.next_page_token
+    }
+    throw new Error('迅雷搜索达到分页上限，结果不完整')
   }
 
   async listFiles(account: DriveAccount, parentId: string): Promise<FileListResult> {
-    const { accessToken, captchaToken, clientId } = await ensureTokens(account, this._onCredentialRefreshed)
+    const { accessToken, captchaToken, clientId, driveApi } = await ensureTokens(account, this._onCredentialRefreshed)
     const allFiles: FileItem[] = []
     let pageToken = ''
-
-    // 浏览器客户端不使用 space 参数
-    const driveApi = ALIST_DRIVE_API
+    const seen = new Set<string>()
 
     for (let page = 0; page < 100; page++) {
       const params: Record<string, string> = {
@@ -638,7 +699,8 @@ export class XunleiAdapter implements DriveAdapter {
 
       try {
         const res = await xunleiRequest<any>(url, 'GET', accessToken, captchaToken, clientId)
-        const items = res.files || []
+        const items = res.files
+        if (!Array.isArray(items)) throw new Error('迅雷文件列表响应无效')
         // 记录第一个文件的完整结构用于调试
         if (items.length > 0 && page === 0) {
           log.info(`Xunlei listFiles: first file: ${JSON.stringify(items[0]).substring(0, 300)}`)
@@ -646,7 +708,9 @@ export class XunleiAdapter implements DriveAdapter {
         allFiles.push(...items.map((f: XunleiFileInfo) => mapXunleiFile(f, account.id)))
         log.info(`Xunlei listFiles: got ${items.length} files, total=${allFiles.length}`)
 
-        if (!res.next_page_token) break
+        if (!res.next_page_token) return { files: allFiles, parentId, hasMore: false }
+        if (typeof res.next_page_token !== 'string' || seen.has(res.next_page_token)) throw new Error('迅雷列表分页游标无效或重复')
+        seen.add(res.next_page_token)
         pageToken = res.next_page_token
       } catch (err) {
         log.error(`Xunlei listFiles error:`, String(err))
@@ -654,7 +718,7 @@ export class XunleiAdapter implements DriveAdapter {
       }
     }
 
-    return { files: allFiles, parentId, hasMore: false }
+    throw new Error('迅雷文件列表达到分页上限，结果不完整')
   }
 
   async getQuota(account: DriveAccount): Promise<{ used: number; total: number }> {
@@ -709,7 +773,7 @@ export class XunleiAdapter implements DriveAdapter {
       title: options?.title || '云盘资源分享',
       file_ids: items.map(i => i.fileId),
       share_to: 'copy',
-      expiration_days: '-1',  // 永久有效
+      expiration_days: options?.expireDays && options.expireDays > 0 ? String(options.expireDays) : '-1',
       restore_limit: '-1',    // 不限转存次数
       params: {
         subscribe_push: 'false',
@@ -756,7 +820,24 @@ export class XunleiAdapter implements DriveAdapter {
       shareUrl,
       password: passCode,
       createdAt: Date.now(),
+      expiredAt: options?.expireDays && options.expireDays > 0
+        ? Date.now() + options.expireDays * 24 * 60 * 60 * 1000
+        : undefined,
     }
+  }
+
+  async cancelShare(account: DriveAccount, shareId: string): Promise<void> {
+    if (!shareId || !/^[a-zA-Z0-9_-]+$/.test(shareId)) throw new Error('取消分享失败：分享 ID 无效')
+    const { accessToken, captchaToken, clientId, driveApi } = await ensureTokens(account, this._onCredentialRefreshed)
+    await xunleiRequest(
+      `${driveApi}/share/delete`,
+      'POST',
+      accessToken,
+      captchaToken,
+      clientId,
+      { space: '', share_id: shareId },
+    )
+    log.info(`Xunlei cancelShare success: shareId=${shareId}`)
   }
 
   async getShareDetail(account: DriveAccount, input: TransferLinkInput): Promise<ShareDetail> {
@@ -798,9 +879,8 @@ export class XunleiAdapter implements DriveAdapter {
         },
         body: JSON.stringify(body),
       })
-      const text = await res.text()
-      log.info(`Xunlei mkdir response (status=${res.status}): ${text.substring(0, 300)}`)
-      const data = JSON.parse(text)
+      const data = await xunleiFetchData(res)
+      if (typeof data?.id !== 'string' || !data.id) throw new Error('迅雷新建文件夹响应缺少 ID')
       return mapXunleiFile(data, account.id)
     } catch (err) {
       log.error(`Xunlei mkdir error:`, String(err))
@@ -824,6 +904,7 @@ export class XunleiAdapter implements DriveAdapter {
       body: JSON.stringify({ name: newName }),
     })
     log.info(`Xunlei rename response (status=${res.status})`)
+    await xunleiFetchData(res)
   }
 
   async move(account: DriveAccount, fileIds: string[], targetDirId: string): Promise<void> {
@@ -839,9 +920,10 @@ export class XunleiAdapter implements DriveAdapter {
         'Authorization': `Bearer ${accessToken}`,
         'X-Captcha-Token': captchaToken,
       },
-      body: JSON.stringify({ ids: fileIds, to: { parent_id: targetDirId } }),
+      body: JSON.stringify({ ids: fileIds, to: { parent_id: targetDirId === '0' ? '' : targetDirId } }),
     })
     log.info(`Xunlei move response (status=${res.status})`)
+    await xunleiFetchData(res)
   }
 
   async delete(account: DriveAccount, fileIds: string[]): Promise<void> {
@@ -860,11 +942,18 @@ export class XunleiAdapter implements DriveAdapter {
         },
         body: JSON.stringify({ ids: fileIds }),
       })
-      const text = await res.text()
-      log.info(`Xunlei delete response (status=${res.status}): ${text.substring(0, 300)}`)
+      await xunleiFetchData(res)
     } catch (err) {
       log.error(`Xunlei delete error:`, String(err))
       throw err
+    }
+  }
+
+  async getDownloadSource(account: DriveAccount, fileId: string): Promise<DriveDownloadSource> {
+    return {
+      url: await this.getDownloadUrl!(account, fileId),
+      headers: { 'User-Agent': 'AndroidDownloadManager/13 (Linux; U; Android 13; M2004J7AC Build/SP1A.210812.016)' },
+      fetch: (url, init) => session.fromPartition('persist:xunlei').fetch(url, init),
     }
   }
 
@@ -888,7 +977,10 @@ export class XunleiAdapter implements DriveAdapter {
     const snapshot = await loadXunleiSharePage(input, shareId)
     const files = snapshot.files || []
     const passCodeToken = snapshot.passCodeToken || ''
-    const fileIds = snapshot.allFileIds?.length ? snapshot.allFileIds : files.map(file => file.fileId)
+    const allFileIds = snapshot.allFileIds?.length ? snapshot.allFileIds : files.map(file => file.fileId)
+    const fileIds = input.fileIds?.length
+      ? allFileIds.filter(fileId => input.fileIds!.includes(fileId))
+      : allFileIds
     if (fileIds.length === 0) throw new Error('转存失败：迅雷分享中没有可转存文件')
 
     log.info(`Xunlei saveSharedFiles: found ${fileIds.length} files: ${fileIds.join(',')}`)
@@ -1028,152 +1120,95 @@ export class XunleiAdapter implements DriveAdapter {
       success: true,
       savedCount: fileIds.length,
       targetDirId,
-      savedFileIds: fileIds,
-      savedFileNames: files.map(f => f.name),
+      // Restore completion does not provide a verified mapping to destination
+      // IDs. Source share IDs must never be used for deletion or auto-sharing.
       raw: data,
     }
   }
 
   async upload(account: DriveAccount, localFilePath: string, targetDirId: string, options?: UploadOptions): Promise<UploadResult> {
-    const fs = require('fs')
-    const path = require('path')
-    const crypto = require('crypto')
     options?.signal?.throwIfAborted()
-
-    const fileName = options?.fileName || path.basename(localFilePath)
-    const fileSize = fs.statSync(localFilePath).size
-
-    // 一次性读取文件并计算所有哈希（迅雷 S3 上传需要完整 Buffer 作为 body）
-    const fileBuffer = fs.readFileSync(localFilePath)
-    const gcid = this.calculateGcid(fileBuffer)
-    const md5Etag = crypto.createHash('md5').update(fileBuffer).digest('hex')
-
-    const { accessToken, captchaToken, clientId, driveApi } = await ensureTokens(account, this._onCredentialRefreshed)
-
-    // 1. 预上传 - 请求上传凭证
-    const preBody = {
-      kind: 'drive#file',
-      parent_id: targetDirId === '0' ? '' : targetDirId,
-      name: fileName,
-      size: fileSize,
-      hash: gcid,
-      upload_type: 'UPLOAD_TYPE_RESUMABLE',
+    const handle = await fs.promises.open(localFilePath, 'r')
+    try {
+      const stat = await handle.stat()
+      if (!stat.isFile()) throw new Error('上传路径不是普通文件')
+      // This adapter implements the existing single-PUT flow. Larger objects
+      // require a separate S3 multipart implementation, not a pretend success.
+      if (stat.size > 5 * 1024 ** 3) throw new Error('迅雷当前单次上传仅支持不超过 5 GiB 的文件')
+      const fileName = options?.fileName || path.basename(localFilePath)
+      const fileSize = stat.size
+      const blockSize = this.calcBlockSize(fileSize)
+      const chunk = Buffer.alloc(blockSize)
+      const gcidHash = crypto.createHash('sha1')
+      const payloadHash = crypto.createHash('sha256')
+      for (let offset = 0; offset < fileSize; offset += blockSize) {
+        options?.signal?.throwIfAborted()
+        const length = Math.min(blockSize, fileSize - offset)
+        const { bytesRead } = await handle.read(chunk, 0, length, offset)
+        if (bytesRead !== length) throw new Error('上传文件在读取过程中发生变化')
+        const data = chunk.subarray(0, length)
+        gcidHash.update(crypto.createHash('sha1').update(data).digest())
+        payloadHash.update(data)
+      }
+      const { accessToken, captchaToken, clientId, driveApi } = await ensureTokens(account, this._onCredentialRefreshed)
+      options?.signal?.throwIfAborted()
+      const ses = session.fromPartition('persist:xunlei')
+      const preResponse = await ses.fetch(`${driveApi}/files`, {
+        signal: options?.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-client-id': clientId, 'x-device-id': DEVICE_ID, Authorization: `Bearer ${accessToken}`, 'X-Captcha-Token': captchaToken },
+        body: JSON.stringify({ kind: 'drive#file', parent_id: targetDirId === '0' ? '' : targetDirId, name: fileName, size: fileSize, hash: gcidHash.digest('hex'), upload_type: 'UPLOAD_TYPE_RESUMABLE' }),
+      })
+      const preData = await xunleiFetchData(preResponse)
+      options?.signal?.throwIfAborted()
+      const fileId = preData?.file?.id
+      if (typeof fileId !== 'string' || !fileId) throw new Error('迅雷上传响应缺少文件 ID')
+      if (preData.upload_type !== 'UPLOAD_TYPE_RESUMABLE') {
+        if (preData.file.phase !== 'PHASE_TYPE_COMPLETE') throw new Error('迅雷未确认秒传完成，请核对远端结果')
+        options?.onProgress?.({ loaded: fileSize, total: fileSize, percent: 100, speed: 0 })
+        return { success: true, fileId, fileName, fileSize }
+      }
+      const params = preData.resumable?.params
+      if (!params || ['bucket', 'key', 'endpoint', 'access_key_id', 'access_key_secret', 'security_token'].some(name => typeof params[name] !== 'string' || !params[name])) {
+        throw new Error('迅雷上传响应缺少有效的 S3 上传凭证')
+      }
+      const endpoint = new URL(/^https?:\/\//i.test(params.endpoint) ? params.endpoint : `https://${params.endpoint}`)
+      if (endpoint.protocol !== 'https:' || endpoint.search || endpoint.hash || endpoint.pathname !== '/') throw new Error('迅雷 S3 上传地址无效')
+      if (!endpoint.hostname.startsWith(`${params.bucket}.`)) endpoint.hostname = `${params.bucket}.${endpoint.hostname}`
+      const encodedKey = params.key.split('/').map((segment: string) => encodeURIComponent(segment).replace(/[!'()*]/g, value => `%${value.charCodeAt(0).toString(16).toUpperCase()}`)).join('/')
+      endpoint.pathname = `/${encodedKey}`
+      const headers = signXunleiS3Put(endpoint, payloadHash.digest('hex'), params)
+      const signal = options?.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10 * 60_000)]) : AbortSignal.timeout(10 * 60_000)
+      const source = Readable.from((async function* () {
+        for (let offset = 0; offset < fileSize; offset += blockSize) {
+          signal.throwIfAborted()
+          const length = Math.min(blockSize, fileSize - offset)
+          // Own each yielded buffer until the network has consumed it.
+          const data = Buffer.alloc(length)
+          const { bytesRead } = await handle.read(data, 0, length, offset)
+          if (bytesRead !== length) throw new Error('上传文件在读取过程中发生变化')
+          yield data
+          options?.onProgress?.({ loaded: offset + length, total: fileSize, percent: Math.min(99, Math.round((offset + length) / fileSize * 100)), speed: 0 })
+        }
+      })())
+      try {
+        const response = await ses.fetch(endpoint.toString(), {
+          method: 'PUT', signal, headers: { ...headers, 'Content-Length': String(fileSize) },
+          body: Readable.toWeb(source) as unknown as BodyInit,
+        })
+        signal.throwIfAborted()
+        if (!response.ok) throw new Error(`迅雷 S3 上传失败 (HTTP ${response.status})`)
+        // A successful S3 PutObject stores the object. The reference driver
+        // needs no extra /files/upload/finish endpoint.
+        options?.onProgress?.({ loaded: fileSize, total: fileSize, percent: 100, speed: 0 })
+        return { success: true, fileId, fileName, fileSize }
+      } finally {
+        source.destroy()
+      }
+    } finally {
+      await handle.close()
     }
-
-    log.info(`Xunlei upload pre: ${JSON.stringify({ ...preBody, hash: gcid.substring(0, 20) + '...' })}`)
-
-    const ses = session.fromPartition('persist:xunlei')
-    const preRes = await ses.fetch(`${driveApi}/files`, {
-      signal: options?.signal,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-client-id': clientId,
-        'x-device-id': DEVICE_ID,
-        'Authorization': `Bearer ${accessToken}`,
-        'X-Captcha-Token': captchaToken,
-      },
-      body: JSON.stringify(preBody),
-    })
-    const preText = await preRes.text()
-    log.info(`Xunlei upload pre response (status=${preRes.status}): ${preText.substring(0, 500)}`)
-
-    const preData = JSON.parse(preText)
-
-    // 检查是否秒传成功
-    if (preData.file?.id) {
-      log.info(`Xunlei upload: rapid upload success, fileId=${preData.file.id}`)
-      return { success: true, fileId: preData.file.id, fileName, fileSize }
-    }
-
-    if (preData.upload_type !== 'UPLOAD_TYPE_RESUMABLE' || !preData.resumable?.params) {
-      throw new Error('迅雷上传失败：未获取到上传凭证')
-    }
-
-    // 2. 使用 S3 兼容协议上传
-    const params = preData.resumable.params
-    const bucket = params.bucket
-    const key = params.key
-    const endpoint = params.endpoint
-    const accessKeyId = params.access_key_id
-    const accessKeySecret = params.access_key_secret
-    const securityToken = params.security_token
-
-    // 构建 S3 PUT 请求
-    const s3Url = `https://${bucket}.${endpoint.replace(/^https?:\/\//, '')}/${key}`
-    const date = new Date().toUTCString()
-
-    // 计算签名
-    const stringToPut = `PUT\n\napplication/octet-stream\n${date}\n/${bucket}/${key}`
-    const signature = crypto.createHmac('sha1', accessKeySecret).update(stringToPut).digest('base64')
-
-    log.info(`Xunlei upload: uploading to S3, size=${fileSize}`)
-
-    const s3Res = await ses.fetch(s3Url, {
-      signal: options?.signal,
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Date': date,
-        'Authorization': `OSS ${accessKeyId}:${signature}`,
-        'x-oss-security-token': securityToken,
-        'x-oss-user-agent': 'aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit',
-      },
-      body: fileBuffer,
-    })
-
-    if (!s3Res.ok) {
-      const s3Text = await s3Res.text()
-      throw new Error(`S3上传失败: ${s3Res.status} ${s3Text.substring(0, 200)}`)
-    }
-
-    log.info(`Xunlei upload: S3 upload success`)
-
-    // 3. 完成上传
-    const finishBody = {
-      upload_type: 'UPLOAD_TYPE_RESUMABLE',
-      provider: preData.resumable.provider || 'xiaomi_s3',
-      bucket,
-      key,
-      etag: md5Etag,
-    }
-
-    const finishRes = await ses.fetch(`${driveApi}/files/upload/finish`, {
-      signal: options?.signal,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-client-id': clientId,
-        'x-device-id': DEVICE_ID,
-        'Authorization': `Bearer ${accessToken}`,
-        'X-Captcha-Token': captchaToken,
-      },
-      body: JSON.stringify(finishBody),
-    })
-    const finishText = await finishRes.text()
-    log.info(`Xunlei upload finish response (status=${finishRes.status}): ${finishText.substring(0, 300)}`)
-
-    const finishData = JSON.parse(finishText)
-    const fileId = finishData.file?.id || finishData.id || ''
-
-    return { success: true, fileId, fileName, fileSize }
   }
-
-  private calculateGcid(buffer: Buffer): string {
-    const crypto = require('crypto')
-    // 迅雷 GCID 算法：分块 SHA1 哈希
-    const blockSize = this.calcBlockSize(buffer.length)
-    const hash1 = crypto.createHash('sha1')
-
-    for (let i = 0; i < buffer.length; i += blockSize) {
-      const chunk = buffer.slice(i, Math.min(i + blockSize, buffer.length))
-      const hash2 = crypto.createHash('sha1').update(chunk).digest()
-      hash1.update(hash2)
-    }
-
-    return hash1.digest('hex')
-  }
-
   private calcBlockSize(size: number): number {
     let psize = 0x40000  // 256KB
     while (size / psize > 0x200 && psize < 0x200000) {
@@ -1183,7 +1218,6 @@ export class XunleiAdapter implements DriveAdapter {
   }
 
   async download(account: DriveAccount, fileId: string, localDirPath: string, options?: DownloadOptions): Promise<DownloadResult> {
-    const fs = require('fs')
     options?.signal?.throwIfAborted()
 
     const fileName = options?.fileName || 'download'
@@ -1208,49 +1242,8 @@ export class XunleiAdapter implements DriveAdapter {
       throw new Error(`下载失败: ${response.status} ${response.statusText}`)
     }
 
-    const contentLength = response.headers.get('Content-Length')
-    const fileSize = contentLength ? parseInt(contentLength, 10) : 0
-
-    const writer = fs.createWriteStream(localPath)
-    const reader = response.body?.getReader()
-    if (!reader) throw new Error('无法读取响应流')
-
-    let loaded = 0
-    const startTime = Date.now()
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        writer.write(Buffer.from(value))
-        loaded += value.length
-
-        const elapsed = (Date.now() - startTime) / 1000
-        const speed = elapsed > 0 ? loaded / elapsed : 0
-
-        options?.onProgress?.({
-          loaded,
-          total: fileSize || loaded,
-          percent: fileSize > 0 ? Math.round((loaded / fileSize) * 100) : 0,
-          speed,
-        })
-      }
-
-      writer.end()
-      await new Promise<void>((resolve, reject) => {
-        writer.on('finish', resolve)
-        writer.on('error', reject)
-      })
-
-      log.info(`Xunlei download complete: ${localPath} (${loaded} bytes)`)
-      return { success: true, localPath, fileName, fileSize: loaded }
-    } catch (err) {
-      reader.cancel().catch(() => {})
-      writer.destroy()
-      try { fs.unlinkSync(localPath) } catch {}
-      throw err
-    }
+    const loaded = await writeDownloadResponse(response, localPath, options)
+    return { success: true, localPath, fileName, fileSize: loaded }
   }
 }
 

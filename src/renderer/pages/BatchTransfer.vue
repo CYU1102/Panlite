@@ -1,4 +1,4 @@
-﻿<template>
+<template>
 
  <div class="batch-transfer">
 
@@ -88,6 +88,8 @@
 
  <el-option label="迅雷网盘" value="xunlei" />
 
+ <el-option label="阿里云盘·网页版" value="aliyun_web" />
+
  </el-select>
 
  <el-select
@@ -150,7 +152,7 @@
 
  :rows="10"
 
- placeholder="#10;#10;"
+ placeholder="每行一个链接，例如：&#10;https://pan.quark.cn/s/xxxxx 提取码: abcd"
 
  @paste="onPaste"
 
@@ -391,6 +393,8 @@
 
         size="large"
 
+        style="margin-top: 14px"
+
         @click="onSubmit"
 
         :loading="submitting"
@@ -403,6 +407,14 @@
         开始转存
       </el-button>
 
+      <ShareSubscriptionsPanel
+        :account-id="selectedAccountId"
+        :platform="platform"
+        :links="validLinks.filter(link => link.valid).map(link => ({ url: link.url, password: link.password || undefined }))"
+        :target-dir-id="currentFolder.id"
+        :target-dir-path="'/' + navStack.slice(1).map(item => item.name).join('/')"
+      />
+
     </div>
 
   </div>
@@ -413,7 +425,9 @@
 
 <script setup lang="ts">
 
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
+
+import { useRoute, useRouter } from 'vue-router'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 
@@ -426,8 +440,11 @@ import {
 } from 'lucide-vue-next'
 
 import { electronApi } from '../api/ipc'
+import ShareSubscriptionsPanel from '../components/ShareSubscriptionsPanel.vue'
 
 import { useAccountStore } from '../stores/account'
+
+import { detectShareLinks, formatShareLinkLine } from '@shared/share-link'
 
 import type { FileItem } from '@shared/types'
 
@@ -435,9 +452,13 @@ import type { FileItem } from '@shared/types'
 
 const accountStore = useAccountStore()
 
+const route = useRoute()
+
+const router = useRouter()
 
 
-const platform = ref<'quark' | 'baidu' | 'uc' | 'xunlei'>('quark')
+
+const platform = ref<'quark' | 'baidu' | 'uc' | 'xunlei' | 'aliyun_web'>('quark')
 
 const selectedAccountId = ref('')
 
@@ -450,6 +471,7 @@ const autoShare = ref(false)
 const verifyFirst = ref(false)
 
 const verifying = ref(false)
+const verifiedInvalidUrls = ref<string[]>([])
 
 
 
@@ -497,9 +519,9 @@ watch(platform, () => {
 
 watch(filteredAccounts, (accs) => {
 
-  if (accs.length > 0 && !accs.find((a) => a.id === selectedAccountId.value)) {
+  if (!accs.find((a) => a.id === selectedAccountId.value)) {
 
-    selectedAccountId.value = accs[0].id
+    selectedAccountId.value = accs[0]?.id || ''
 
   }
 
@@ -528,66 +550,8 @@ interface ParsedLink {
 
 
 function cleanPastedText(text: string): string {
-
-  const lines = text.split('\n')
-
-  const cleaned: string[] = []
-
-  // 根据当前选择的平台确定域名匹配规则
-  const platformDomains: Record<string, RegExp> = {
-    quark: /https?:\/\/pan\.quark\.cn\/\S+/,
-    baidu: /https?:\/\/pan\.baidu\.com\/\S+/,
-    uc: /https?:\/\/drive\.uc\.cn\/\S+/,
-    xunlei: /https?:\/\/pan\.xunlei\.com\/\S+/,
-  }
-  const domainRegex = platformDomains[platform.value]
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-
-    // 只提取当前平台的链接
-    const urlMatch = trimmed.match(domainRegex)
-    if (!urlMatch) continue
-
-    let url = urlMatch[0]
-
-    // 升级百度旧链接格式 share/init?surl= → s/1
-    url = url.replace(/share\/init\?surl=/, 's/1')
-
-    // 提取密码
-    let pwd: string | null = null
-
-    // 从 URL 参数提取 pwd
-    const pwdParamMatch = url.match(/[?&]pwd=([a-zA-Z0-9]{4})/)
-    if (pwdParamMatch) pwd = pwdParamMatch[1]
-
-    // 从 URL 后面的文本提取（提取码/密码/pwd）
-    if (!pwd) {
-      const afterUrl = trimmed.substring(trimmed.indexOf(url) + url.length).trim()
-      const pwdTextMatch = afterUrl.match(/(?:提取码|密码|pwd)[:\s：]*([a-zA-Z0-9]{4})/i)
-      if (pwdTextMatch) pwd = pwdTextMatch[1]
-    }
-
-    // 处理空格分隔的提取码（如 "https://... uftv"）
-    if (!pwd) {
-      const afterUrl = trimmed.substring(trimmed.indexOf(url) + url.length).trim()
-      const spacePwdMatch = afterUrl.match(/^([a-zA-Z0-9]{4})$/)
-      if (spacePwdMatch) pwd = spacePwdMatch[1]
-    }
-
-    // URL 已有 pwd 参数时，先去掉再重新拼接（避免重复）
-    let cleanUrl = url.replace(/[?&]pwd=[a-zA-Z0-9]{4}/, '')
-    if (pwd) cleanUrl += '?pwd=' + pwd
-
-    cleaned.push(cleanUrl)
-  }
-
-  return cleaned.join('\n')
-
+  return detectShareLinks(text).filter(hit => hit.platform === platform.value).map(formatShareLinkLine).join('\n')
 }
-
-
 
 function onPaste(e: ClipboardEvent) {
 
@@ -626,78 +590,12 @@ function onPaste(e: ClipboardEvent) {
 
 
 function parseLink(line: string): ParsedLink | null {
-
   const trimmed = line.trim()
-
   if (!trimmed) return null
-
-  let url = ''
-
-  let pwd: string | null = null
-
-  // 简化正则：直接匹配各平台 URL
-  const urlMatch = trimmed.match(/(https?:\/\/pan\.quark\.cn\/\S+)/)
-    || trimmed.match(/(https?:\/\/pan\.baidu\.com\/\S+)/)
-    || trimmed.match(/(https?:\/\/drive\.uc\.cn\/\S+)/)
-    || trimmed.match(/(https?:\/\/pan\.xunlei\.com\/\S+)/)
-
-  if (!urlMatch) return { url: trimmed, password: null, platform: 'unknown', valid: false, isDuplicate: false }
-
-  url = urlMatch[1]
-
-
-
-  // 升级百度旧链接格式
-  url = url.replace(/share\/init\?surl=/, 's/1')
-
-
-
-  // 从 URL 参数提取密码
-  const pwdParamMatch = url.match(/[?&]pwd=([a-zA-Z0-9]{4})/)
-
-  if (pwdParamMatch) pwd = pwdParamMatch[1]
-
-
-
-  // 从 URL 后文本提取密码（提取码/密码/pwd）
-  if (!pwd) {
-
-    const afterUrl = trimmed.substring(trimmed.indexOf(url) + url.length).trim()
-
-    const pwdTextMatch = afterUrl.match(/(?:提取码|密码|pwd)[:\s：]*([a-zA-Z0-9]{4})/i)
-
-    if (pwdTextMatch) pwd = pwdTextMatch[1]
-
-  }
-
-  // 处理空格分隔的提取码（如 "https://... uftv"）
-  if (!pwd) {
-    const afterUrl = trimmed.substring(trimmed.indexOf(url) + url.length).trim()
-    const spacePwdMatch = afterUrl.match(/^([a-zA-Z0-9]{4})$/)
-    if (spacePwdMatch) pwd = spacePwdMatch[1]
-  }
-
-
-
-  let platform = 'unknown'
-
-  if (url.includes('pan.quark.cn')) platform = 'quark'
-
-  else if (url.includes('pan.baidu.com')) platform = 'baidu'
-
-  else if (url.includes('drive.uc.cn')) platform = 'uc'
-
-  else if (url.includes('pan.xunlei.com')) platform = 'xunlei'
-
-
-
-  const valid = platform !== 'unknown'
-
-  return { url, password: pwd, platform, valid, isDuplicate: false }
-
+  const hit = detectShareLinks(trimmed)[0]
+  if (!hit) return { url: trimmed, password: null, platform: 'unknown', valid: false, isDuplicate: false }
+  return { ...hit, password: hit.password || null, valid: !verifiedInvalidUrls.value.includes(hit.url), isDuplicate: false }
 }
-
-
 
 const parsedLinks = computed<ParsedLink[]>(() => {
 
@@ -715,7 +613,7 @@ const parsedLinks = computed<ParsedLink[]>(() => {
 
     if (!parsed) continue
 
-    const key = parsed.url.toLowerCase()
+    const key = parsed.url
 
     if (seen.has(key)) {
 
@@ -784,47 +682,30 @@ const loadingFolders = ref(false)
 const currentFolder = ref<NavItem>({ id: '0', name: 'root' })
 
 const textareaRef = ref()
+watch(bulkText, () => { verifiedInvalidUrls.value = [] })
 
 
 
-async function loadFolders(parentId: string) {
-
-  if (!selectedAccountId.value) return
-
-
-
+let loadFoldersVersion = 0
+async function loadFolders(parentId: string): Promise<void> {
+  const version = ++loadFoldersVersion
+  const accountId = selectedAccountId.value
+  if (!accountId) return
   loadingFolders.value = true
-
+  folders.value = []
   try {
-
-    const result = await electronApi.listFiles(selectedAccountId.value, parentId)
-
-    if (result.success) {
-
-      folders.value = result.files.filter((f: FileItem) => f.isDir)
-
-    } else {
-
-      ElMessage.error('加载目录失败')
-      folders.value = []
-
-    }
-
-  } catch (err) {
-
-    ElMessage.error('加载目录失败: ' + String(err))
-
+    const result = await electronApi.listFiles(accountId, parentId)
+    if (version !== loadFoldersVersion || accountId !== selectedAccountId.value) return
+    if (!result.success) throw new Error(result.error || '加载目录失败')
+    folders.value = result.files.filter((file: FileItem) => file.isDir)
+  } catch (error) {
+    if (version !== loadFoldersVersion || accountId !== selectedAccountId.value) return
     folders.value = []
-
+    ElMessage.error('加载目录失败: ' + String(error))
   } finally {
-
-    loadingFolders.value = false
-
+    if (version === loadFoldersVersion) loadingFolders.value = false
   }
-
 }
-
-
 
 function onFolderClick(folder: FileItem) {
 
@@ -871,6 +752,11 @@ function onGoBack() {
 // Load folders when account changes
 
 watch(selectedAccountId, (id) => {
+  verifiedInvalidUrls.value = []
+  loadFoldersVersion++
+  loadingFolders.value = false
+  navStack.value = [{ id: '0', name: 'root' }]
+  currentFolder.value = { id: '0', name: 'root' }
 
   if (id) {
 
@@ -892,40 +778,31 @@ watch(selectedAccountId, (id) => {
 
 // ---- Verify links ----
 
-async function onVerifyLinks() {
-  if (!selectedAccountId.value) return
-  if (validLinks.value.length === 0) return
+async function verifyLinks(links: { url: string; password?: string }[]) {
+  const result = await electronApi.linkVerify(selectedAccountId.value, links)
+  if (!result.success || !result.results) throw new Error(result.error || '检测失败')
 
-  const links = validLinks.value.map((l) => ({
-    url: l.url,
-    password: l.password || undefined,
+  const invalidUrls = result.results.filter((item) => !item.valid).map((item) => item.url)
+  verifiedInvalidUrls.value = [...new Set([...verifiedInvalidUrls.value, ...invalidUrls])]
+  const validUrls = new Set(result.results.filter((item) => item.valid).map((item) => item.url))
+  return links.filter((item) => validUrls.has(item.url))
+}
+
+async function onVerifyLinks() {
+  if (!selectedAccountId.value || validLinks.value.length === 0) return
+  const links = validLinks.value.map((item) => ({
+    url: item.url,
+    password: item.password || undefined,
   }))
 
   verifying.value = true
   try {
-    const result = await electronApi.linkVerify(selectedAccountId.value, links)
-    if (result.success && result.results) {
-      let validCount = 0
-      let invalidCount = 0
-      for (const r of result.results) {
-        if (r.valid) {
-          validCount++
-        } else {
-          invalidCount++
-          // Mark the link as invalid in parsedLinks
-          const idx = parsedLinks.value.findIndex((l) => l.url === r.url)
-          if (idx !== -1) {
-            parsedLinks.value[idx].valid = false
-          }
-        }
-      }
-      if (invalidCount === 0) {
-        ElMessage.success(`全部 ${validCount} 个链接有效`)
-      } else {
-        ElMessage.warning(`${validCount} 个有效，${invalidCount} 个无效`)
-      }
+    const verified = await verifyLinks(links)
+    const invalidTotal = links.length - verified.length
+    if (invalidTotal === 0) {
+      ElMessage.success('全部 ' + verified.length + ' 个链接有效')
     } else {
-      ElMessage.error(result.error || '检测失败')
+      ElMessage.warning(verified.length + " 个有效，" + invalidTotal + " 个无效")
     }
   } catch (err) {
     ElMessage.error('检测失败: ' + String(err))
@@ -934,11 +811,13 @@ async function onVerifyLinks() {
   }
 }
 
+
 // ---- Submit ----
 
 
 
 async function onSubmit() {
+  if (submitting.value) return
 
   if (!selectedAccountId.value) return
 
@@ -946,7 +825,7 @@ async function onSubmit() {
 
 
 
-  const links = validLinks.value.map((l) => ({
+  let links: { url: string; password?: string }[] = validLinks.value.map((l) => ({
 
     url: l.url,
 
@@ -956,14 +835,28 @@ async function onSubmit() {
 
 
 
+  const accountId = selectedAccountId.value
+  const folder = { ...currentFolder.value }
+  const shareAfterTransfer = autoShare.value
   submitting.value = true
   try {
+    if (verifyFirst.value) {
+      const beforeVerify = links.length
+      links = await verifyLinks(links)
+      const skipped = beforeVerify - links.length
+      if (links.length === 0) {
+        ElMessage.warning('检测后没有可转存的有效链接')
+        return
+      }
+      if (skipped > 0) ElMessage.warning('已跳过 ' + skipped + ' 个无效链接')
+    }
+
     const result = await electronApi.batchTransfer(
-      selectedAccountId.value,
+      accountId,
       links,
-      currentFolder.value.id === '0' ? undefined : currentFolder.value.id,
-      currentFolder.value.id === '0' ? undefined : currentFolder.value.name,
-      autoShare.value ? { autoShare: true } : undefined,
+      folder.id === '0' ? undefined : folder.id,
+      folder.id === '0' ? undefined : folder.name,
+      shareAfterTransfer ? { autoShare: true } : undefined,
     )
 
     if (result.success) {
@@ -996,6 +889,10 @@ onMounted(async () => {
 
   await accountStore.fetchAccounts()
 
+
+  await applyClipboardPrefill()
+  if (selectedAccountId.value) await loadFolders('0')
+
   const accs = accountStore.getAccountsByPlatform(platform.value)
 
   if (accs.length > 0 && !selectedAccountId.value) {
@@ -1008,11 +905,78 @@ onMounted(async () => {
 
 })
 
+// 剪贴板监听转存入口：从 /batch-transfer?share=<原始文本> 预填链接
+async function applyClipboardPrefill() {
+
+  const shared = route.query.share
+
+  if (typeof shared !== 'string' || !shared.trim()) return
+
+  const hits = detectShareLinks(shared)
+
+  if (!hits.length) return
+
+  platform.value = hits[0].platform
+
+  await nextTick()
+
+  bulkText.value = hits.map(formatShareLinkLine).join('\n')
+
+  const preselect = accountStore.getAccountsByPlatform(platform.value)[0]
+
+  if (preselect) selectedAccountId.value = preselect.id
+
+  void router.replace({ path: '/batch-transfer' })
+
+  ElMessage.success(`已从剪贴板填入 ${hits.length} 条${platformLabel(platform.value)}链接`)
+
+}
+
+function platformLabel(value: 'quark' | 'baidu' | 'uc' | 'xunlei' | 'aliyun_web'): string {
+
+  return ({ quark: '夸克', baidu: '百度', uc: 'UC', xunlei: '迅雷', aliyun_web: '阿里云盘·网页版' } as const)[value]
+
+}
+
 </script>
 
 
 
 <style scoped>
+
+.subscription-card {
+
+  margin-top: 18px;
+
+  padding: 14px;
+
+  border: 1px solid var(--pl-border);
+
+  border-radius: var(--pl-radius-card, 12px);
+
+  background: var(--pl-surface-subtle);
+
+}
+
+.subscription-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+
+.subscription-hint { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
+
+.subscription-actions { display: flex; gap: 8px; margin-bottom: 10px; }
+
+.subscription-list { display: flex; flex-direction: column; gap: 6px; }
+
+.subscription-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--pl-border); border-radius: 10px; background: var(--pl-surface); }
+
+.subscription-item-main { display: flex; flex-direction: column; min-width: 0; }
+
+.subscription-item-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+
+.subscription-item-main small { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
+
+.subscription-item-actions { display: flex; align-items: center; flex-shrink: 0; }
+
+.subscription-empty { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 
 .batch-transfer {
 
@@ -1038,11 +1002,11 @@ onMounted(async () => {
 
   padding: 20px 24px;
 
-  background: #ffffff;
+  background: var(--pl-surface);
 
   border-radius: 12px;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
 }
 
@@ -1088,7 +1052,7 @@ onMounted(async () => {
 
   font-weight: 700;
 
-  color: #1f2937;
+  color: var(--pl-text);
 
   margin-bottom: 2px;
 
@@ -1100,7 +1064,7 @@ onMounted(async () => {
 
   font-size: 12px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
 }
 
@@ -1126,11 +1090,11 @@ onMounted(async () => {
 
   flex: 1;
 
-  background: #ffffff;
+  background: var(--pl-surface);
 
   border-radius: 12px;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
   padding: 16px;
 
@@ -1150,7 +1114,7 @@ onMounted(async () => {
 
   font-weight: 600;
 
-  color: #374151;
+  color: var(--pl-text);
 
 }
 
@@ -1264,7 +1228,7 @@ onMounted(async () => {
 
   overflow-y: auto;
 
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
 
   border-radius: 8px;
 
@@ -1290,13 +1254,13 @@ onMounted(async () => {
 
   font-size: 12px;
 
-  color: #374151;
+  color: var(--pl-text);
 
   padding: 4px 8px;
 
   border-radius: 4px;
 
-  background: #ffffff;
+  background: var(--pl-surface);
 
 }
 
@@ -1314,7 +1278,7 @@ onMounted(async () => {
 
 .preview-item.dup {
 
-  background: #fffbeb;
+  background: var(--pl-surface);
 
   color: #92400e;
 
@@ -1330,7 +1294,7 @@ onMounted(async () => {
 
   border-radius: 3px;
 
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
 
   font-weight: 600;
 
@@ -1360,9 +1324,9 @@ onMounted(async () => {
 
 .preview-pwd {
 
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
   flex-shrink: 0;
 
@@ -1378,7 +1342,7 @@ onMounted(async () => {
 
   border-radius: 3px;
 
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
 
   font-weight: 600;
 
@@ -1412,7 +1376,7 @@ onMounted(async () => {
 
   font-size: 12px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
   text-align: center;
 
@@ -1436,7 +1400,7 @@ onMounted(async () => {
 
   gap: 8px;
 
-  color: #d1d5db;
+  color: var(--pl-border);
 
 }
 
@@ -1444,7 +1408,7 @@ onMounted(async () => {
 
   font-size: 13px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
 }
 
@@ -1462,11 +1426,11 @@ onMounted(async () => {
 
   padding: 8px 12px;
 
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
 
   border-radius: 8px;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
 }
 
@@ -1494,7 +1458,7 @@ onMounted(async () => {
 
   font-size: 13px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
   cursor: pointer;
 
@@ -1506,13 +1470,13 @@ onMounted(async () => {
 
 }
 
-.crumb:hover { background: #e5e7eb; color: #3b82f6; }
+.crumb:hover { background: var(--pl-border); color: #3b82f6; }
 
-.crumb.active { color: #1f2937; font-weight: 600; cursor: default; }
+.crumb.active { color: var(--pl-text); font-weight: 600; cursor: default; }
 
 .crumb.active:hover { background: transparent; }
 
-.crumb-sep { color: #d1d5db; flex-shrink: 0; }
+.crumb-sep { color: var(--pl-border); flex-shrink: 0; }
 
 
 
@@ -1530,11 +1494,11 @@ onMounted(async () => {
 
   border: none;
 
-  background: #e5e7eb;
+  background: var(--pl-border);
 
   border-radius: 6px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
   cursor: pointer;
 
@@ -1542,7 +1506,7 @@ onMounted(async () => {
 
 }
 
-.nav-btn:hover:not(:disabled) { background: #d1d5db; color: #374151; }
+.nav-btn:hover:not(:disabled) { background: var(--pl-border); color: var(--pl-text); }
 
 .nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -1556,7 +1520,7 @@ onMounted(async () => {
 
   overflow-y: auto;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
   border-radius: 8px;
 
@@ -1576,11 +1540,11 @@ onMounted(async () => {
 
   padding: 40px 0;
 
-  color: #d1d5db;
+  color: var(--pl-border);
 
 }
 
-.folder-empty span { font-size: 13px; color: #9ca3af; }
+.folder-empty span { font-size: 13px; color: var(--pl-text-muted); }
 
 
 
@@ -1596,9 +1560,9 @@ onMounted(async () => {
 
   cursor: pointer;
 
-  color: #374151;
+  color: var(--pl-text);
 
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--pl-hover);
 
   transition: background 0.1s;
 
@@ -1606,13 +1570,13 @@ onMounted(async () => {
 
 .folder-item:last-child { border-bottom: none; }
 
-.folder-item:hover { background: #f9fafb; }
+.folder-item:hover { background: var(--pl-surface-subtle); }
 
 
 
 .folder-name { flex: 1; font-size: 13px; }
 
-.folder-arrow { color: #d1d5db; flex-shrink: 0; }
+.folder-arrow { color: var(--pl-border); flex-shrink: 0; }
 
 
 
@@ -1620,7 +1584,7 @@ onMounted(async () => {
 
   font-size: 13px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
   padding: 4px 0;
 
@@ -1634,9 +1598,9 @@ onMounted(async () => {
   align-items: center;
   gap: 16px;
   padding: 8px 20px;
-  background: #ffffff;
+  background: var(--pl-surface);
   border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 }
 .options-bar .el-checkbox {
   margin-right: 0;
@@ -1654,11 +1618,11 @@ onMounted(async () => {
 
   padding: 12px 20px;
 
-  background: #ffffff;
+  background: var(--pl-surface);
 
   border-radius: 12px;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
 }
 
@@ -1668,7 +1632,7 @@ onMounted(async () => {
 
   font-size: 13px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
 }
 
@@ -1731,7 +1695,7 @@ onMounted(async () => {
 .workflow-step.complete .step-index { color: var(--pl-success); background: var(--pl-success-soft); border-color: var(--pl-success); }
 .step-copy { display: flex; flex-direction: column; line-height: 1.25; }
 .step-copy strong { color: var(--pl-text); font-size: 12px; font-weight: 650; white-space: nowrap; }
-.step-copy small { margin-top: 2px; font-size: 10px; color: currentColor; white-space: nowrap; }
+.step-copy small { margin-top: 2px; font-size: var(--pl-font-xs); color: currentColor; white-space: nowrap; }
 .step-line { height: 1px; min-width: 24px; background: var(--pl-border); transition: background 180ms ease; }
 .step-line.complete { background: var(--pl-success); }
 
@@ -1739,10 +1703,10 @@ onMounted(async () => {
 .panel:hover { border-color: var(--pl-border-strong); box-shadow: var(--pl-shadow-float); }
 .panel-heading { display: flex; align-items: center; gap: var(--pl-space-3); min-height: 36px; }
 .panel-heading > div:nth-child(2) { min-width: 0; }
-.panel-step { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--pl-radius-sm); color: var(--pl-primary); background: var(--pl-primary-soft); font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+.panel-step { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--pl-radius-sm); color: var(--pl-primary); background: var(--pl-primary-soft); font-size: var(--pl-font-xs); font-weight: 750; letter-spacing: .04em; }
 .panel-title { font-size: 14px; font-weight: 700; }
-.panel-hint { margin-top: 2px; color: var(--pl-text-muted); font-size: 11px; line-height: 1.35; }
-.selection-count { margin-left: auto; padding: 4px 9px; border-radius: 999px; background: var(--pl-success-soft); color: var(--pl-success); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.panel-hint { margin-top: 2px; color: var(--pl-text-muted); font-size: var(--pl-font-xs); line-height: 1.35; }
+.selection-count { margin-left: auto; padding: 4px 9px; border-radius: 999px; background: var(--pl-success-soft); color: var(--pl-success); font-size: var(--pl-font-xs); font-weight: 650; white-space: nowrap; }
 
 .account-bar { padding: var(--pl-space-2); border-radius: var(--pl-radius-control); background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); }
 .textarea-wrap :deep(.el-textarea__inner) { padding: 14px; line-height: 1.7; transition: background 150ms ease, box-shadow 150ms ease; }
@@ -1761,19 +1725,19 @@ onMounted(async () => {
 .folder-arrow { transition: color 150ms ease, transform 150ms ease; }
 .target-info { display: flex; align-items: center; gap: var(--pl-space-2); padding: var(--pl-space-2) var(--pl-space-3); border-radius: var(--pl-radius-control); background: var(--pl-success-soft); }
 .target-info strong { color: var(--pl-success); }
-.target-ready { margin-left: auto; padding: 2px 7px; border-radius: 999px; color: var(--pl-success); background: var(--pl-surface); font-size: 10px; font-weight: 650; }
+.target-ready { margin-left: auto; padding: 2px 7px; border-radius: 999px; color: var(--pl-success); background: var(--pl-surface); font-size: var(--pl-font-xs); font-weight: 650; }
 
 .options-bar { gap: var(--pl-space-3); }
 .options-heading { display: flex; align-items: center; gap: var(--pl-space-3); margin-right: var(--pl-space-1); min-width: 170px; }
 .options-heading > div { display: flex; flex-direction: column; }
 .options-heading strong { color: var(--pl-text); font-size: 13px; }
-.options-heading small { color: var(--pl-text-muted); font-size: 10px; }
+.options-heading small { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .option-card { display: flex; align-items: center; gap: var(--pl-space-2); flex: 1; min-width: 180px; padding: 8px 10px; border: 1px solid var(--pl-border); border-radius: var(--pl-radius-control); background: var(--pl-surface-subtle); cursor: pointer; transition: border-color 150ms ease, background 150ms ease, transform 150ms ease; }
 .option-card:hover { border-color: var(--pl-primary); transform: translateY(-1px); }
 .option-card.selected { border-color: var(--pl-primary); background: var(--pl-primary-soft); }
 .option-card > span { display: flex; flex-direction: column; min-width: 0; }
-.option-card strong { color: var(--pl-text); font-size: 11px; font-weight: 650; }
-.option-card small { color: var(--pl-text-muted); font-size: 10px; white-space: nowrap; }
+.option-card strong { color: var(--pl-text); font-size: var(--pl-font-xs); font-weight: 650; }
+.option-card small { color: var(--pl-text-muted); font-size: var(--pl-font-xs); white-space: nowrap; }
 .verify-button { margin-left: auto; flex: 0 0 auto; }
 
 .submit-bar { min-height: 64px; border-color: var(--pl-border-strong); box-shadow: var(--pl-shadow-float); }
@@ -1799,7 +1763,7 @@ onMounted(async () => {
 
 @media (max-width: 560px) {
   .workflow-steps { padding: var(--pl-space-3); }
-  .step-copy strong { font-size: 11px; }
+  .step-copy strong { font-size: var(--pl-font-xs); }
   .panel-heading { align-items: flex-start; }
   .panel-hint { display: none; }
   .selection-count { align-self: center; }

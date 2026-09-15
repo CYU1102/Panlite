@@ -67,11 +67,13 @@ export function isPermanentError(err: unknown): boolean {
     const msg = err.message.toLowerCase()
     // 永久性错误
     if (msg.includes('登录已失效') || msg.includes('未登录')) return true
-    if (msg.includes('链接已失效') || msg.includes('分享已取消')) return true
-    if (msg.includes('提取码错误')) return true
+    if (msg.includes('链接已失效') || msg.includes('分享已取消') || msg.includes('分享已失效')) return true
+    if (msg.includes('提取码错误') || msg.includes('提取码不匹配')) return true
     if (msg.includes('容量不足')) return true
-    if (msg.includes('文件违规')) return true
+    if (msg.includes('文件违规') || msg.includes('没有可分享的文件')) return true
     if (msg.includes('链接访问次数过多')) return true
+    if (msg.includes('分享中没有文件')) return true
+    if (msg.includes('目标目录不存在')) return true
   }
   return false
 }

@@ -111,7 +111,7 @@ interface SearchResult {
   source: string
 }
 
-const props = defineProps<{
+defineProps<{
   modelValue: boolean
 }>()
 

@@ -145,6 +145,7 @@ import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { CheckCircle2, AlertTriangle, XCircle, FolderCheck } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
+import { detectShareLinks } from '@shared/share-link'
 import { useAppStore } from '../stores/app'
 import { useAccountStore } from '../stores/account'
 import type { FileItem, TransferLinkInput } from '@shared/types'
@@ -191,6 +192,7 @@ const platformNames: Record<string, string> = {
   baidu: '百度',
   uc: 'UC',
   xunlei: '迅雷',
+  aliyun_web: '阿里云盘·网页版',
 }
 
 interface DirectoryNode {
@@ -223,6 +225,8 @@ watch(() => props.modelValue, async (visible) => {
   targetDirName.value = props.initialTargetName || '根目录'
   showDirectoryTree.value = false
 
+  bulkText.value = ''
+  unifiedPassword.value = ''
   if (props.initialLinks?.length) {
     bulkText.value = props.initialLinks
       .map((link) => `${link.url}${link.password ? ` 提取码: ${link.password}` : ''}`)
@@ -238,9 +242,10 @@ function onTargetAccountChange(accountId: string) {
 }
 
 async function loadDirectoryNode(
-  node: { data: DirectoryNode },
+  node: { level?: number; data: DirectoryNode },
   resolve: (data: DirectoryNode[]) => void,
 ) {
+  if (node.level === 0) { resolve(directoryTreeData); return }
   if (!selectedAccountId.value) {
     resolve([])
     return
@@ -284,48 +289,9 @@ interface ParsedLink {
 function parseLink(line: string): ParsedLink | null {
   const trimmed = line.trim()
   if (!trimmed) return null
-
-  // Try to extract URL and password from the line
-  let url = ''
-  let pwd: string | null = null
-
-  // Match URL — 支持所有5个平台
-  const urlMatch = trimmed.match(/(https?:\/\/pan\.quark\.cn\/\S+)/)
-    || trimmed.match(/(https?:\/\/pan\.baidu\.com\/\S+)/)
-    || trimmed.match(/(https?:\/\/drive\.uc\.cn\/\S+)/)
-    || trimmed.match(/(https?:\/\/pan\.xunlei\.com\/\S+)/)
-  if (!urlMatch) return { url: trimmed, password: null, platform: 'unknown', valid: false, isDuplicate: false }
-  url = urlMatch[1]
-
-  // 升级百度旧链接格式 share/init?surl= → s/1
-  url = url.replace(/share\/init\?surl=/, 's/1')
-
-  // Extract pwd from URL query param
-  const pwdParamMatch = url.match(/[?&]pwd=([a-zA-Z0-9]{4})/)
-  if (pwdParamMatch) pwd = pwdParamMatch[1]
-
-  // Extract pwd from text after URL (e.g., "提取码: abcd" or "密码: abcd")
-  if (!pwd) {
-    const afterUrl = trimmed.substring(trimmed.indexOf(url) + url.length).trim()
-    const pwdTextMatch = afterUrl.match(/(?:提取码|密码|pwd)[:\s：]*([a-zA-Z0-9]{4})/i)
-    if (pwdTextMatch) pwd = pwdTextMatch[1]
-  }
-  // 处理空格分隔的提取码（如 "https://... uftv"）
-  if (!pwd) {
-    const afterUrl = trimmed.substring(trimmed.indexOf(url) + url.length).trim()
-    const spacePwdMatch = afterUrl.match(/^([a-zA-Z0-9]{4})$/)
-    if (spacePwdMatch) pwd = spacePwdMatch[1]
-  }
-
-  // Detect platform
-  let platform = 'unknown'
-  if (url.includes('pan.quark.cn')) platform = 'quark'
-  else if (url.includes('pan.baidu.com')) platform = 'baidu'
-  else if (url.includes('drive.uc.cn')) platform = 'uc'
-  else if (url.includes('pan.xunlei.com')) platform = 'xunlei'
-
-  const valid = platform !== 'unknown'
-  return { url, password: pwd, platform, valid, isDuplicate: false }
+  const hit = detectShareLinks(trimmed)[0]
+  if (!hit) return { url: trimmed, password: null, platform: 'unknown', valid: false, isDuplicate: false }
+  return { ...hit, password: hit.password || null, valid: true, isDuplicate: false }
 }
 
 const parsedLinks = computed<ParsedLink[]>(() => {
@@ -336,7 +302,7 @@ const parsedLinks = computed<ParsedLink[]>(() => {
   for (const line of lines) {
     const parsed = parseLink(line)
     if (!parsed) continue
-    const key = parsed.url.toLowerCase()
+    const key = parsed.url
     if (seen.has(key)) {
       parsed.isDuplicate = true
     } else {
@@ -364,6 +330,7 @@ function onBulkInput() {
 }
 
 async function onConfirm() {
+  if (loading.value) return
   if (!selectedAccountId.value) {
     ElMessage.warning('请先选择目标账号')
     return
@@ -379,17 +346,37 @@ async function onConfirm() {
     return
   }
 
+  const accountId = selectedAccountId.value
+  const directoryId = targetDirId.value
+  const directoryPath = targetPath.value.trim() || undefined
+  const shareAfterTransfer = autoShare.value
   loading.value = true
   try {
+    let linksToTransfer = links
+    if (verifyFirst.value) {
+      const verifyResult = await electronApi.linkVerify(accountId, links)
+      if (!verifyResult.success || !verifyResult.results) {
+        throw new Error(verifyResult.error || '检测失败')
+      }
+      const validUrls = new Set(verifyResult.results.filter((item) => item.valid).map((item) => item.url))
+      linksToTransfer = links.filter((item) => validUrls.has(item.url))
+      const skipped = links.length - linksToTransfer.length
+      if (linksToTransfer.length === 0) {
+        ElMessage.warning('所有链接均已失效，未创建转存任务')
+        return
+      }
+      if (skipped > 0) ElMessage.warning('已跳过 ' + skipped + ' 个无效链接')
+    }
+
     const result = await electronApi.batchTransfer(
-      selectedAccountId.value,
-      links,
-      targetDirId.value,
-      targetPath.value.trim() || undefined,
-      { autoShare: autoShare.value },
+      accountId,
+      linksToTransfer,
+      directoryId,
+      directoryPath,
+      { autoShare: shareAfterTransfer },
     )
     if (result.success) {
-      ElMessage.success(`已创建转存任务（${links.length} 个链接），请在任务日志中查看进度`)
+      ElMessage.success(`已创建转存任务（${linksToTransfer.length} 个链接），请在任务日志中查看进度`)
       emit('update:modelValue', false)
       emit('success')
       bulkText.value = ''
@@ -450,8 +437,8 @@ async function onConfirm() {
 }
 
 .hint {
-  font-size: 11px;
-  color: #9ca3af;
+  font-size: var(--pl-font-xs);
+  color: var(--pl-text-muted);
   margin-top: 4px;
 }
 
@@ -471,12 +458,12 @@ async function onConfirm() {
   overflow-y: auto;
   margin-top: 8px;
   padding: 8px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
   border-radius: 8px;
 }
 
 .preview-list {
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 8px;
   padding: 12px;
   display: flex;
@@ -489,10 +476,10 @@ async function onConfirm() {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #374151;
+  color: var(--pl-text);
   padding: 4px 8px;
   border-radius: 4px;
-  background: #ffffff;
+  background: var(--pl-surface);
 }
 
 .preview-item.invalid {
@@ -501,7 +488,7 @@ async function onConfirm() {
 }
 
 .preview-item.dup {
-  background: #fffbeb;
+  background: var(--pl-surface);
   color: #92400e;
 }
 
@@ -509,7 +496,7 @@ async function onConfirm() {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
   background: #eff6ff;
   color: #3b82f6;
@@ -524,8 +511,8 @@ async function onConfirm() {
 }
 
 .preview-pwd {
-  font-size: 11px;
-  color: #6b7280;
+  font-size: var(--pl-font-xs);
+  color: var(--pl-text-secondary);
   flex-shrink: 0;
 }
 
@@ -533,7 +520,7 @@ async function onConfirm() {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -550,7 +537,7 @@ async function onConfirm() {
 
 .preview-more {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   text-align: center;
 }
 .workflow-strip {
@@ -562,8 +549,8 @@ async function onConfirm() {
   border: 1px solid var(--pl-border);
   border-radius: 12px;
 }
-.workflow-step { display: flex; align-items: center; gap: 7px; color: var(--pl-text-muted); font-size: 11px; }
-.workflow-step > span { width: 23px; height: 23px; display: grid; place-items: center; flex: 0 0 auto; background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: 8px; font-size: 10px; }
+.workflow-step { display: flex; align-items: center; gap: 7px; color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
+.workflow-step > span { width: 23px; height: 23px; display: grid; place-items: center; flex: 0 0 auto; background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: 8px; font-size: var(--pl-font-xs); }
 .workflow-step strong { font-weight: 600; }
 .workflow-step.active { color: var(--pl-primary-hover); }
 .workflow-step.active > span { color: #fff; background: var(--pl-primary); border-color: var(--pl-primary); box-shadow: 0 3px 8px rgba(52, 120, 246, .2); }

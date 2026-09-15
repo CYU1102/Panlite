@@ -1,13 +1,14 @@
 import type { MembershipInfo } from './membership'
+import type { TaskScheduleInfo } from './task-scheduling'
 
 export type Platform =
-  | 'quark' | 'baidu' | 'uc' | 'xunlei'
+  | 'quark' | 'baidu' | 'uc' | 'xunlei' | 'webdav' | 'aliyun' | 'pan123' | 'aliyun_web'
 
 export type AccountStatus = 'active' | 'expired' | 'error'
 
 export type LoginType = 'cookie' | 'oauth' | 'token' | 'password' | 'sms' | 'authorization' | 'api_key'
 
-export type TaskType = 'rename' | 'move' | 'delete' | 'mkdir' | 'share' | 'batch_share' | 'transfer' | 'batch_transfer' | 'cloud_transfer' | 'upload' | 'download' | 'archive_extract' | 'archive_compress'
+export type TaskType = 'rename' | 'move' | 'delete' | 'mkdir' | 'share' | 'batch_share' | 'transfer' | 'batch_transfer' | 'cloud_transfer' | 'upload' | 'download' | 'archive_extract' | 'archive_compress' | 'planned_transfer' | 'subscription_sync' | 'file_backup' | 'file_restore' | 'file_backup_prune'
 
 export type TaskStatus = 'pending' | 'running' | 'success' | 'partial_success' | 'failed' | 'paused' | 'cancelled'
 
@@ -24,6 +25,8 @@ export interface DriveCredential {
   username?: string
   password?: string
   userId?: string
+  /** WebDAV 服务器地址（如 https://dav.example.com/dav） */
+  serverUrl?: string
   raw?: Record<string, unknown>
 }
 
@@ -65,6 +68,7 @@ export interface Task {
   status: TaskStatus
   progress: number
   retryCount: number
+  schedule?: TaskScheduleInfo
   errorMessage?: string
   createdAt: number
   updatedAt: number
@@ -147,6 +151,8 @@ export interface ParsedShareLink {
 export interface TransferLinkInput {
   url: string
   password?: string
+  /** Optional subset of shared file IDs (used by subscriptions for delta sync). */
+  fileIds?: string[]
 }
 
 export interface TransferTaskPayload {
@@ -160,6 +166,12 @@ export interface TransferTaskPayload {
   autoShare?: boolean
   /** 自动分享选项 */
   shareOptions?: ShareOptions
+  /** Commit subscription state only after the queued transfer succeeds. */
+  subscriptionSync?: {
+    subscriptionId: string
+    signature: string
+    seenFileIds: string[]
+  }
 }
 
 export interface TransferResult {
@@ -172,9 +184,9 @@ export interface TransferResult {
   targetPath?: string
   error?: string
   raw?: unknown
-  /** 转存后的文件 ID 列表，用于后续自动分享（夸克: fid, 百度: fs_id） */
+  /** 接收账号中本次保存的已确认目标文件 ID；不得回退为分享源 ID，无法确认时省略。 */
   savedFileIds?: string[]
-  /** 转存后的文件名列表，用于广告过滤 */
+  /** 与 savedFileIds 按索引对应的目标文件名；无法确认对应关系时省略。 */
   savedFileNames?: string[]
   /** 转存后的文件路径列表，用于广告过滤后的删除操作（百度专用） */
   savedFilePaths?: string[]
@@ -343,6 +355,8 @@ export interface CloudTransferFileInfo {
   fileSize: number
   isDir: boolean
   path?: string
+  /** 源端内容哈希（平台元数据），用于迁移后内容校验 */
+  hash?: { algorithm: 'md5' | 'sha1'; value: string }
 }
 
 export interface CloudTransferTaskPayload {
@@ -414,6 +428,8 @@ export interface ArchiveCompressFileInfo {
   downloadId: string
   fileName: string
   fileSize: number
+  /** Path retained inside the generated archive. */
+  relativePath?: string
 }
 
 export interface ArchiveCompressOptions {

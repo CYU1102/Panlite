@@ -1,6 +1,10 @@
-import { session, net } from 'electron'
-import type { DriveAdapter } from './base'
+import { writeDownloadResponse } from './download-response'
+import { parseQuarkUcResponse } from './quark-uc-response'
+import { session } from 'electron'
+import type { DriveAdapter, DriveDownloadSource } from './base'
 import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult, UploadOptions, UploadResult, DownloadOptions, DownloadResult } from '../shared/types'
+import type { SharedDirectoryOptions, SharedDirectoryResult, SharedSaveOptions } from '../shared/subscription-types'
+import { SharedDirectoryPages, sharedEntry } from './shared-directory'
 import { sleep, randomInt } from '../shared/utils'
 import log from 'electron-log'
 import { resolvePathInside, sanitizeFileName } from '../main/file-transfer'
@@ -38,6 +42,7 @@ interface UcFileListData {
 }
 
 interface UcFileItem {
+  file?: boolean
   fid: string
   pdir_fid: string
   file_name: string
@@ -107,7 +112,7 @@ async function ucRequest<T>(
   }
 
   const finalUrl = urlObj.toString()
-  log.info(`UC ${method} ${finalUrl}`)
+  log.info(`UC ${method} ${urlObj.pathname}`)
 
   await injectCookies(cookies)
 
@@ -130,14 +135,8 @@ async function ucRequest<T>(
   const ses = session.fromPartition(UC_SESSION)
   const response = await ses.fetch(finalUrl, fetchOptions)
   const text = await response.text()
-
-  log.info(`UC ${method} ${finalUrl} -> status=${response.status}, body=${text.substring(0, 300)}`)
-
-  try {
-    return JSON.parse(text) as UcApiResponse<T>
-  } catch {
-    throw new Error(`Failed to parse UC API response (status=${response.status}): ${text.substring(0, 200)}`)
-  }
+  log.info(`UC ${method} ${urlObj.pathname} -> status=${response.status}`)
+  return parseQuarkUcResponse(text, response.status, urlObj, method, 'uc') as unknown as UcApiResponse<T>
 }
 
 function mapUcFile(f: UcFileItem, accountId: string): FileItem {
@@ -146,7 +145,7 @@ function mapUcFile(f: UcFileItem, accountId: string): FileItem {
     path: f.fid,
     parentId: f.pdir_fid,
     name: f.file_name,
-    isDir: f.file_type === 0,
+    isDir: typeof f.file === 'boolean' ? !f.file : f.file_type === 0,
     size: f.size || 0,
     createdAt: f.created_at,
     updatedAt: f.updated_at,
@@ -165,6 +164,7 @@ const UC_ERROR_CODES: Record<number, string> = {
   [41014]: '分享已失效',
   [41019]: '容量不足',
   [41020]: '请求过于频繁',
+  [41026]: '没有可分享的文件（分享可能已失效、被限制保存或提取码不匹配）',
   [32003]: '容量不足',
 }
 
@@ -231,17 +231,19 @@ export class UcAdapter implements DriveAdapter {
     const { quarkPageSize: pageSize, requestDelayMs } = getRequestSettings()
     const maxPages = 100
     const allFiles: FileItem[] = []
+    let complete = false
 
     for (let page = 1; page <= maxPages; page++) {
       const url = `${UC_API}/file/sort?pdir_fid=${parentId}&_page=${page}&_size=${pageSize}&_sort=file_type:asc,updated_at:desc&_fetch_total=1&_fetch_sub_dirs=1`
       const res = await ucRequest<UcFileListData>(url, cookies)
       if (res.code !== 0) throw new Error(`UC listFiles failed: ${res.message}`)
       const items = res.data?.list
-      if (!Array.isArray(items)) break
+      if (!Array.isArray(items)) throw new Error('UC 文件列表响应无效')
       allFiles.push(...items.map((f) => mapUcFile(f, account.id)))
-      if (items.length < pageSize) break
+      if (items.length < pageSize) { complete = true; break }
       if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
+    if (!complete) throw new Error('UC 文件列表达到分页上限，结果不完整')
     return { files: allFiles, parentId, hasMore: false }
   }
 
@@ -251,6 +253,7 @@ export class UcAdapter implements DriveAdapter {
     const { quarkPageSize: pageSize, requestDelayMs } = getRequestSettings()
     const maxPages = 100
     const allFiles: FileItem[] = []
+    let complete = false
 
     for (let page = 1; page <= maxPages; page++) {
       const res = await ucRequest<UcSearchData>(`${UC_API}/file/search`, cookies, {
@@ -259,11 +262,12 @@ export class UcAdapter implements DriveAdapter {
       })
       if (res.code !== 0) throw new Error(`UC searchFiles failed: ${res.message}`)
       const items = res.data?.list
-      if (!Array.isArray(items)) break
+      if (!Array.isArray(items)) throw new Error('UC 搜索列表响应无效')
       allFiles.push(...items.map((f) => mapUcFile(f, account.id)))
-      if (items.length < pageSize) break
+      if (items.length < pageSize) { complete = true; break }
       if (requestDelayMs > 0) await sleep(requestDelayMs)
     }
+    if (!complete) throw new Error('UC 搜索达到分页上限，结果不完整')
     return allFiles
   }
 
@@ -275,6 +279,7 @@ export class UcAdapter implements DriveAdapter {
       body: { pdir_fid: parentId, file_name: name, dir_path: '', dir_init_lock: false, file_type: 0 },
     })
     if (res.code !== 0) throw new Error(`UC mkdir failed: ${res.message}`)
+    if (typeof res.data?.fid !== 'string' || !res.data.fid) throw new Error('UC 新建文件夹响应缺少 ID')
     return {
       id: res.data.fid, path: res.data.fid, parentId: res.data.pdir_fid, name: res.data.file_name,
       isDir: true, size: 0, createdAt: res.data.created_at, updatedAt: res.data.updated_at,
@@ -285,15 +290,50 @@ export class UcAdapter implements DriveAdapter {
   async rename(account: DriveAccount, fileId: string, newName: string): Promise<void> {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
-    const res = await ucRequest(`${UC_API}/rename`, cookies, { method: 'POST', body: { fid: fileId, file_name: newName } })
+    const res = await ucRequest(`${UC_API}/file/rename`, cookies, { method: 'POST', body: { fid: fileId, file_name: newName } })
     if (res.code !== 0) throw new Error(`UC rename failed: ${res.message}`)
   }
 
   async move(account: DriveAccount, fileIds: string[], targetDirId: string): Promise<void> {
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
-    const res = await ucRequest(`${UC_API}/move`, cookies, { method: 'POST', body: { file_fids: fileIds, to_pdir_fid: targetDirId } })
+    const res = await ucRequest(`${UC_API}/file/move`, cookies, { method: 'POST', body: { action_type: 1, exclude_fids: [], filelist: fileIds, to_pdir_fid: targetDirId } })
     if (res.code !== 0) throw new Error(`UC move failed: ${res.message}`)
+  }
+
+  async cancelShare(account: DriveAccount, shareId: string): Promise<void> {
+    const cookies = account.credential.cookies
+    if (!cookies) throw new Error('No cookies available')
+    const res = await ucRequest<{ task_id?: string }>(`${UC_API}/share/delete`, cookies, {
+      method: 'POST',
+      body: { share_ids: [shareId] },
+    })
+    if (res.code !== 0) throw new Error(getUcErrorMessage(res.code, '取消分享'))
+  }
+
+  async copy(account: DriveAccount, fileIds: string[], targetDirId: string): Promise<void> {
+    const cookies = account.credential.cookies
+    if (!cookies) throw new Error('No cookies available')
+    const res = await ucRequest<{ task_id?: string }>(`${UC_API}/file/copy`, cookies, {
+      method: 'POST',
+      body: {
+        action_type: 1,
+        filelist: fileIds.map((fid) => ({ fid, share_f_id: '' })),
+        to_pdir_fid: targetDirId === '0' ? '0' : targetDirId,
+      },
+    })
+    if (res.code !== 0) throw new Error(getUcErrorMessage(res.code, '复制'))
+    const taskId = res.data?.task_id
+    if (!taskId) return
+    for (let retryIndex = 0; retryIndex < 50; retryIndex++) {
+      await sleep(1000)
+      const taskRes = await ucRequest<{ status: number }>(
+        `${UC_API}/task?task_id=${taskId}&retry_index=${retryIndex}`, cookies,
+      )
+      if (taskRes.code !== 0) throw new Error(getUcErrorMessage(taskRes.code, '复制'))
+      if (taskRes.data?.status === 2) return
+    }
+    throw new Error('复制超时')
   }
 
   async delete(account: DriveAccount, fileIds: string[]): Promise<void> {
@@ -346,12 +386,13 @@ export class UcAdapter implements DriveAdapter {
     if (!taskId) throw new Error('分享失败：未返回任务 ID')
 
     let shareId = ''
+    // Poll task；非 0 业务码即为 UC 侧终态失败，直接抛出而不是空转到超时
     for (let retryIndex = 0; retryIndex < 50; retryIndex++) {
       await sleep(1000)
       const taskRes = await ucRequest<{ status: number; share_id?: string }>(
         `${UC_API}/task?task_id=${taskId}&retry_index=${retryIndex}`, cookies,
       )
-      if (taskRes.code !== 0) continue
+      if (taskRes.code !== 0) throw new Error(getUcErrorMessage(taskRes.code, '分享'))
       if (taskRes.data?.status === 2) {
         shareId = taskRes.data.share_id || ''
         break
@@ -372,7 +413,11 @@ export class UcAdapter implements DriveAdapter {
       id: pwdRes.data?.share_id || shareId, platform: 'uc', accountId: account.id,
       fileIds, title, shareUrl: finalUrl,
       password: sharePwd,
-      createdAt: Date.now(), raw: pwdRes.data,
+      createdAt: Date.now(),
+      expiredAt: options?.expireDays && options.expireDays > 0
+        ? Date.now() + options.expireDays * 86_400_000
+        : undefined,
+      raw: pwdRes.data,
     }
   }
 
@@ -384,6 +429,12 @@ export class UcAdapter implements DriveAdapter {
   }
 
   async getShareDetail(account: DriveAccount, input: TransferLinkInput): Promise<ShareDetail> {
+    const directory = await this.listSharedDirectory(account, input)
+    return { platform: 'uc', shareId: directory.shareId, title: directory.title, files: directory.entries }
+  }
+
+  async listSharedDirectory(account: DriveAccount, input: TransferLinkInput, options: SharedDirectoryOptions = {}): Promise<SharedDirectoryResult> {
+    options.signal?.throwIfAborted()
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
     const parsed = await this.parseShareLink(input.url, input.password)
@@ -400,13 +451,15 @@ export class UcAdapter implements DriveAdapter {
     // Fix: stoken may contain spaces that need to be replaced with +
     stoken = stoken.replace(/ /g, '+')
 
-    const allFiles: ShareDetail['files'] = []
+    const allFiles: SharedDirectoryResult['entries'] = []
     let shareTitle: string | undefined
     let page = 1
     const pageSize = 50
+    const pages = new SharedDirectoryPages()
 
     while (true) {
-      const detailUrl = `${UC_API}/share/sharepage/detail?pwd_id=${encodeURIComponent(parsed.shareId)}&stoken=${encodeURIComponent(stoken)}&pdir_fid=0&force=0&_page=${page}&_size=${pageSize}&_sort=file_type:asc,updated_at:desc`
+      options.signal?.throwIfAborted()
+      const detailUrl = `${UC_API}/share/sharepage/detail?pwd_id=${encodeURIComponent(parsed.shareId)}&stoken=${encodeURIComponent(stoken)}&pdir_fid=${encodeURIComponent(options.parentId || '0')}&force=0&_page=${page}&_size=${pageSize}&_sort=file_type:asc,updated_at:desc`
       const detailRes = await ucRequest<{
         list: Array<{ fid: string; file_name: string; is_dir: number; dir: number; size: number; share_fid_token: string }>
         title?: string
@@ -420,26 +473,20 @@ export class UcAdapter implements DriveAdapter {
         shareTitle = detailRes.data?.title || detailRes.data?.share_name || undefined
       }
 
-      const list = detailRes.data?.list || []
-      for (const f of list) {
-        allFiles.push({
-          fileId: f.fid, name: f.file_name,
-          isDir: f.dir === 1 || f.is_dir === 1, size: f.size, raw: f,
-        })
-      }
+      if (!Array.isArray(detailRes.data?.list)) throw new Error('分享目录列表无效，无法确认完整性')
+      const list = detailRes.data.list
+      options.signal?.throwIfAborted()
+      for (const f of list) allFiles.push(sharedEntry(f, 'pan'))
       const metadata = detailRes.metadata as { _total?: number; _size?: number; _count?: number } | undefined
-      if (metadata) {
-        if ((metadata._total || 0) <= (metadata._size || pageSize) || (metadata._count || list.length) < pageSize) break
-      } else {
-        if (list.length < pageSize) break
-      }
+      if (!pages.accept(list.map(f => String(f.fid || '')), pageSize, metadata)) break
       page++
     }
 
-    return { platform: 'uc', shareId: parsed.shareId, title: shareTitle || '', files: allFiles }
+    return { shareId: parsed.shareId, title: shareTitle || '', entries: allFiles, complete: true }
   }
 
-  async saveSharedFiles(account: DriveAccount, input: TransferLinkInput, targetDirId: string): Promise<TransferResult> {
+  async saveSharedFiles(account: DriveAccount, input: TransferLinkInput, targetDirId: string, options: SharedSaveOptions = {}): Promise<TransferResult> {
+    options.signal?.throwIfAborted()
     const cookies = account.credential.cookies
     if (!cookies) throw new Error('No cookies available')
     const parsed = await this.parseShareLink(input.url, input.password)
@@ -461,9 +508,11 @@ export class UcAdapter implements DriveAdapter {
     let isOwner = 0
     let page = 1
     const pageSize = 50
+    const pages = new SharedDirectoryPages()
 
     while (true) {
-      const detailUrl = `${UC_API}/share/sharepage/detail?pwd_id=${encodeURIComponent(parsed.shareId)}&stoken=${encodeURIComponent(stoken)}&pdir_fid=0&force=0&_page=${page}&_size=${pageSize}&_sort=file_type:asc,updated_at:desc`
+      options.signal?.throwIfAborted()
+      const detailUrl = `${UC_API}/share/sharepage/detail?pwd_id=${encodeURIComponent(parsed.shareId)}&stoken=${encodeURIComponent(stoken)}&pdir_fid=${encodeURIComponent(options.sourceParentId || '0')}&force=0&_page=${page}&_size=${pageSize}&_sort=file_type:asc,updated_at:desc`
       log.info(`UC saveSharedFiles: fetching detail, page=${page}, url=${detailUrl.substring(0, 150)}...`)
       const detailRes = await ucRequest<{
         list: Array<{ fid: string; share_fid_token: string }>
@@ -477,18 +526,25 @@ export class UcAdapter implements DriveAdapter {
         isOwner = detailRes.data.is_owner
       }
 
-      const list = detailRes.data?.list || []
+      if (!Array.isArray(detailRes.data?.list)) throw new Error('分享目录列表无效，无法确认完整性')
+      const list = detailRes.data.list
       for (const f of list) {
         allFids.push(f.fid)
         allFidTokens.push(f.share_fid_token || '')
       }
       const metadata = detailRes.metadata as { _total?: number; _size?: number; _count?: number } | undefined
-      if (metadata) {
-        if ((metadata._total || 0) <= (metadata._size || pageSize) || (metadata._count || list.length) < pageSize) break
-      } else {
-        if (list.length < pageSize) break
-      }
+      if (!pages.accept(list.map(f => String(f.fid || '')), pageSize, metadata)) break
       page++
+    }
+
+    if (input.fileIds?.length) {
+      const selected = new Set(input.fileIds)
+      const keep = allFids.map((fid, index) => selected.has(fid) ? index : -1).filter(index => index >= 0)
+      const fids = keep.map(index => allFids[index])
+      const fidTokens = keep.map(index => allFidTokens[index])
+      allFids.splice(0, allFids.length, ...fids)
+      allFidTokens.splice(0, allFidTokens.length, ...fidTokens)
+      if (allFids.length !== selected.size) throw new Error('分享文件在扫描后发生变化，请重新检查')
     }
 
     // 如果用户已经是文件所有者，无需转存（参考 QuarkPanTool line 293）
@@ -507,12 +563,13 @@ export class UcAdapter implements DriveAdapter {
     if (allFids.length === 0) throw new Error('转存失败：分享中没有文件')
 
     // Save to own drive
+    options.signal?.throwIfAborted()
     const saveRes = await ucRequest<{ task_id: string }>(`${UC_API}/share/sharepage/save`, cookies, {
       method: 'POST',
       body: {
         fid_list: allFids, fid_token_list: allFidTokens,
         to_pdir_fid: targetDirId === '0' ? '' : targetDirId,
-        pwd_id: parsed.shareId, stoken, pdir_fid: '0', scene: 'link',
+        pwd_id: parsed.shareId, stoken, pdir_fid: options.sourceParentId || '0', scene: 'link',
       },
     })
     if (saveRes.code !== 0) throw new Error(getUcErrorMessage(saveRes.code, '转存'))
@@ -520,22 +577,23 @@ export class UcAdapter implements DriveAdapter {
     const taskId = saveRes.data?.task_id
     if (!taskId) throw new Error('转存失败：未返回任务 ID')
 
-    // Poll task
+    // Poll task；非 0 业务码即为 UC 侧终态失败，直接抛出而不是空转到超时
     for (let retryIndex = 0; retryIndex < 50; retryIndex++) {
       await sleep(randomInt(500, 1000))
       const taskRes = await ucRequest<{ status: number; save_as?: { save_as_top_fids?: string[] } }>(
         `${UC_API}/task?task_id=${taskId}&retry_index=${retryIndex}`, cookies,
       )
-      if (taskRes.code !== 0) {
-        if (taskRes.code === 32003) throw new Error('转存失败：容量不足')
-        continue
-      }
+      if (taskRes.code !== 0) throw new Error(getUcErrorMessage(taskRes.code, '转存'))
       if (taskRes.data?.status === 2) {
-        const savedFileIds = taskRes.data.save_as?.save_as_top_fids || allFids
+        // Missing destination IDs must not fall back to IDs from the sharer.
+        const destinationIds = taskRes.data.save_as?.save_as_top_fids
+        const savedFileIds = Array.isArray(destinationIds)
+          ? destinationIds.filter((id) => typeof id === 'string' && id.trim().length > 0)
+          : undefined
         return {
           platform: 'uc', accountId: account.id, sourceUrl: input.url,
           success: true, savedCount: allFids.length, targetDirId,
-          savedFileIds, savedFileNames: [],
+          savedFileIds,
         }
       }
     }
@@ -543,6 +601,14 @@ export class UcAdapter implements DriveAdapter {
   }
 
   // ── Download（与 Quark 一致，alist quark_uc getDownloadLink） ──
+
+  async getDownloadSource(account: DriveAccount, fileId: string): Promise<DriveDownloadSource> {
+    return {
+      url: await this.getDownloadUrl!(account, fileId),
+      headers: { Cookie: account.credential.cookies || '', Referer: 'https://drive.uc.cn/', 'User-Agent': UC_UA },
+      fetch: (url, init) => session.fromPartition(UC_SESSION).fetch(url, init),
+    }
+  }
 
   async getDownloadUrl(account: DriveAccount, fileId: string): Promise<string> {
     const cookies = account.credential.cookies
@@ -561,8 +627,6 @@ export class UcAdapter implements DriveAdapter {
   }
 
   async download(account: DriveAccount, fileId: string, localDirPath: string, options?: DownloadOptions): Promise<DownloadResult> {
-    const fs = require('fs')
-    const path = require('path')
     options?.signal?.throwIfAborted()
 
     const cookies = account.credential.cookies
@@ -587,44 +651,8 @@ export class UcAdapter implements DriveAdapter {
       throw new Error(`下载失败: ${response.statusText}`)
     }
 
-    const writer = fs.createWriteStream(localPath)
-    const reader = response.body?.getReader()
-    if (!reader) throw new Error('无法读取响应流')
-
-    let loaded = 0
-    const startTime = Date.now()
-    const contentLength = response.headers.get('Content-Length')
-    const totalSize = contentLength ? parseInt(contentLength, 10) : 0
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        writer.write(Buffer.from(value))
-        loaded += value.length
-        const elapsed = (Date.now() - startTime) / 1000
-        const speed = elapsed > 0 ? loaded / elapsed : 0
-        options?.onProgress?.({
-          loaded,
-          total: totalSize || loaded,
-          percent: totalSize ? Math.round((loaded / totalSize) * 100) : 0,
-          speed,
-        })
-      }
-
-      writer.end()
-      await new Promise<void>((resolve, reject) => {
-        writer.on('finish', resolve)
-        writer.on('error', reject)
-      })
-
-      return { success: true, fileName, localPath, fileSize: loaded }
-    } catch (err) {
-      reader.cancel().catch(() => {})
-      writer.destroy()
-      try { fs.unlinkSync(localPath) } catch {}
-      throw err
-    }
+    const loaded = await writeDownloadResponse(response, localPath, options)
+    return { success: true, localPath, fileName, fileSize: loaded }
   }
 
   // ── Upload（完全参照 alist quark_uc upPre/upHash/upPart/upCommit/upFinish） ──
@@ -640,6 +668,11 @@ export class UcAdapter implements DriveAdapter {
 
     const fileName = options?.fileName || path.basename(localFilePath)
     const fileSize = fs.statSync(localFilePath).size
+    const completedUpload = (fileId: unknown): UploadResult => {
+      options?.signal?.throwIfAborted()
+      options?.onProgress?.({ loaded: fileSize, total: fileSize, percent: 100, speed: 0 })
+      return { success: true, fileId: typeof fileId === 'string' && fileId ? fileId : undefined, fileName, fileSize }
+    }
 
     // 流式计算文件哈希（避免将整个文件读入内存）
     const { md5: md5Hash, sha1: sha1Hash } = await new Promise<{ md5: string; sha1: string }>((resolve, reject) => {
@@ -662,12 +695,13 @@ export class UcAdapter implements DriveAdapter {
         format_type: 'application/octet-stream',
         l_created_at: now,
         l_updated_at: now,
-        pdir_fid: targetDirId === '0' ? '' : targetDirId,
+        pdir_fid: targetDirId || '0',
         size: fileSize,
       },
     })
 
     if (preRes.code !== 0) throw new Error(`预上传失败: ${preRes.message}`)
+    options?.signal?.throwIfAborted()
 
     const preData = preRes.data
     const taskId = preData?.task_id
@@ -679,8 +713,8 @@ export class UcAdapter implements DriveAdapter {
     const callback = preData?.callback
     const partSize = (preRes.metadata?.part_size as number) || 4 * 1024 * 1024
 
-    if (preData?.finish) {
-      return { success: true, fileId: preData.fid || taskId, fileName, fileSize }
+    if (preData?.finish === true) {
+      return completedUpload(preData.fid)
     }
     if (!taskId) throw new Error('预上传响应缺少 task_id')
 
@@ -689,12 +723,16 @@ export class UcAdapter implements DriveAdapter {
       method: 'POST',
       body: { md5: md5Hash, sha1: sha1Hash, task_id: taskId },
     })
-    if (hashRes.code === 0 && hashRes.data?.finish) {
-      return { success: true, fileId: hashRes.data?.fid || taskId, fileName, fileSize }
+    options?.signal?.throwIfAborted()
+    if (hashRes.code !== 0) throw new Error(`上传哈希检查失败: ${hashRes.message}`)
+    if (hashRes.data?.finish === true) {
+      return completedUpload(hashRes.data?.fid || preData.fid)
     }
 
     // 3. 分片上传（alist upPart）
     const totalParts = Math.ceil(fileSize / partSize)
+    if (!Number.isSafeInteger(partSize) || partSize <= 0 || partSize > 256 * 1024 * 1024 || totalParts > 10000) throw new Error('上传分片大小或数量超出当前支持范围')
+    if ([uploadUrl, bucket, objKey, uploadId, authInfo].some(value => typeof value !== 'string' || !value)) throw new Error('预上传响应缺少有效上传参数')
     let uploadedBytes = 0
     const etags: string[] = []
 
@@ -712,6 +750,7 @@ export class UcAdapter implements DriveAdapter {
       const end = Math.min(start + partSize, fileSize)
       const chunkSize = end - start
       const bytesRead = fs.readSync(fd, chunkBuf, 0, chunkSize, start)
+      if (bytesRead !== chunkSize) throw new Error('上传文件在读取过程中发生变化')
       const chunk = chunkBuf.subarray(0, bytesRead)
       const partNumber = i + 1
 
@@ -731,6 +770,8 @@ export class UcAdapter implements DriveAdapter {
       if (partAuthRes.code !== 0) throw new Error(`获取分片授权失败: ${partAuthRes.message}`)
 
       const authKey = partAuthRes.data?.auth_key
+      options?.signal?.throwIfAborted()
+      if (typeof authKey !== 'string' || !authKey) throw new Error('分片授权响应缺少有效 auth_key')
       const ossUrl = `${ossBaseUrl}?partNumber=${partNumber}&uploadId=${uploadId}`
 
       const ses = session.fromPartition(UC_SESSION)
@@ -753,12 +794,13 @@ export class UcAdapter implements DriveAdapter {
       }
 
       const etag = ossRes.headers.get('etag') || ''
+      if (!etag) throw new Error('上传分片响应缺少 ETag，无法确认分片完成')
       etags.push(etag)
       uploadedBytes += chunk.length
 
       options?.onProgress?.({
         loaded: uploadedBytes, total: fileSize,
-        percent: fileSize > 0 ? Math.round((uploadedBytes / fileSize) * 100) : 100, speed: 0,
+        percent: fileSize > 0 ? Math.min(99, Math.round((uploadedBytes / fileSize) * 100)) : 0, speed: 0,
       })
     }
     } finally {
@@ -791,6 +833,7 @@ export class UcAdapter implements DriveAdapter {
     if (commitAuthRes.code !== 0) throw new Error(`获取提交授权失败: ${commitAuthRes.message}`)
 
     const commitUrl = `${ossBaseUrl}?uploadId=${uploadId}`
+    options?.signal?.throwIfAborted()
     const ses2 = session.fromPartition(UC_SESSION)
     const commitRes = await ses2.fetch(commitUrl, {
       signal: options?.signal,
@@ -813,6 +856,7 @@ export class UcAdapter implements DriveAdapter {
 
     // 5. 完成上传（alist upFinish）
     await new Promise(resolve => setTimeout(resolve, 1000))
+    options?.signal?.throwIfAborted()
 
     const finishRes = await ucRequest<any>(`${UC_API}/file/upload/finish`, cookies, {
       method: 'POST',
@@ -820,36 +864,19 @@ export class UcAdapter implements DriveAdapter {
     })
     if (finishRes.code !== 0) throw new Error(`完成上传失败: ${finishRes.message}`)
 
-    return { success: true, fileId: finishRes.data?.fid || taskId, fileName, fileSize }
+    return completedUpload(finishRes.data?.fid || preData.fid)
   }
 
   async getQuota(account: DriveAccount): Promise<{ used: number; total: number }> {
     const cookies = account.credential.cookies || ''
     if (!cookies) throw new Error('未登录')
 
-    // 尝试多个端点
-    const endpoints = [
-      `${UC_API}/quota`,
-      `${UC_API}/capacity`,
-      `${UC_API}/account/capacity`,
-      `${UC_API}/member`,
-    ]
-
-    for (const url of endpoints) {
-      try {
-        const data = await ucRequest<any>(url, cookies)
-        log.info(`[Quota] UC ${url}:`, JSON.stringify(data).substring(0, 300))
-
-        const d = data.data || data
-        const used = d.used_capacity || d.use_capacity || d.used || 0
-        const total = d.total_capacity || d.capacity || d.total || 0
-        if (total > 0) return { used, total }
-      } catch (err) {
-        log.warn(`[Quota] UC ${url} failed:`, String(err))
-      }
-    }
-
-    throw new Error('UC网盘暂不支持容量查询')
+    const data = await ucRequest<any>(`${UC_API}/member`, cookies)
+    const quota = data.data || data
+    const used = Number(quota.use_capacity ?? quota.secret_use_capacity ?? quota.used_capacity ?? quota.used ?? 0)
+    const total = Number(quota.total_capacity ?? quota.secret_total_capacity ?? quota.capacity ?? quota.total ?? 0)
+    if (!Number.isFinite(total) || total <= 0) throw new Error('UC网盘容量数据不可用')
+    return { used: Number.isFinite(used) ? used : 0, total }
   }
 
   async getMembership(account: DriveAccount) {

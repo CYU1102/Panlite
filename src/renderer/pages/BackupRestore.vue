@@ -50,16 +50,18 @@
         <el-button type="danger" :disabled="!confirmed" :loading="restoring" @click="confirmRestore">确认恢复</el-button>
       </div>
     </section>
+    <AppSnapshotsPanel />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import type { UploadFile } from 'element-plus'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { ArchiveRestore, Download, ShieldCheck, Upload } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
+import AppSnapshotsPanel from '../components/AppSnapshotsPanel.vue'
 
 type ImportMode = 'merge' | 'replace'
 
@@ -93,6 +95,15 @@ const fileName = ref('')
 const mode = ref<ImportMode>('merge')
 const preview = ref<ImportPreview | null>(null)
 const confirmed = ref(false)
+let fileGeneration = 0
+let previewGeneration = 0
+
+watch([backupText, mode], () => {
+  previewGeneration++
+  preview.value = null
+  confirmed.value = false
+  previewing.value = false
+}, { flush: 'sync' })
 
 function asResult(value: unknown): IpcResult {
   return value as IpcResult
@@ -125,39 +136,53 @@ async function confirmExport(): Promise<void> {
 
 async function selectFile(uploadFile: UploadFile): Promise<void> {
   if (!uploadFile.raw) return
+  const generation = ++fileGeneration
+  backupText.value = ''
+  fileName.value = ''
+  preview.value = null
+  confirmed.value = false
   if (uploadFile.raw.size > 20 * 1024 * 1024) {
     ElMessage.error('备份文件不能超过 20 MB')
     return
   }
-  backupText.value = await uploadFile.raw.text()
-  fileName.value = uploadFile.name
-  preview.value = null
-  confirmed.value = false
+  try {
+    const text = await uploadFile.raw.text()
+    if (generation !== fileGeneration) return
+    backupText.value = text
+    fileName.value = uploadFile.name
+  } catch (error) {
+    if (generation === fileGeneration) ElMessage.error('读取备份失败: ' + String(error))
+  }
 }
 
 async function loadPreview(): Promise<void> {
+  const generation = ++previewGeneration
   previewing.value = true
   try {
     const result = asResult(await electronApi.previewConfigBackup(backupText.value, { mode: mode.value }))
+    if (generation !== previewGeneration) return
     if (!result.success || !result.preview) throw new Error(result.error || '备份校验失败')
     preview.value = result.preview
     confirmed.value = false
   } catch (error) {
+    if (generation !== previewGeneration) return
     preview.value = null
     ElMessage.error(String(error))
   } finally {
-    previewing.value = false
+    if (generation === previewGeneration) previewing.value = false
   }
 }
 
 async function confirmRestore(): Promise<void> {
   if (!preview.value || !confirmed.value) return
+  const generation = previewGeneration
   try {
     await ElMessageBox.confirm(
       `将新增 ${preview.value.totals.inserts} 条、更新 ${preview.value.totals.updates} 条、删除 ${preview.value.totals.deletes} 条配置。是否继续？`,
       '最终恢复确认',
       { type: 'error', confirmButtonText: '执行恢复' },
     )
+    if (generation !== previewGeneration || !preview.value || !confirmed.value) throw new Error('预览已过期，请重新校验并确认')
     restoring.value = true
     const result = asResult(await electronApi.importConfigBackup(backupText.value, { mode: mode.value }))
     if (!result.success) throw new Error(result.error || '恢复失败')

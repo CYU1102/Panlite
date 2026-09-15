@@ -21,6 +21,10 @@
         <el-option label="百度网盘" value="baidu" />
         <el-option label="UC网盘" value="uc" />
         <el-option label="迅雷网盘" value="xunlei" />
+        <el-option label="WebDAV" value="webdav" />
+        <el-option label="阿里云盘" value="aliyun" />
+        <el-option label="123云盘" value="pan123" />
+        <el-option label="阿里云盘·网页版" value="aliyun_web" />
       </el-select>
     </div>
 
@@ -44,6 +48,143 @@
     </div>
 
     <!-- Quark: Auto Cookie Login -->
+    <div v-if="selectedPlatform === 'webdav'" class="method-body">
+      <div class="form-card">
+        <div class="help-steps">
+          <div class="help-title">支持 Nextcloud、Alist、群晖/威联通 NAS 及各类 WebDAV 网盘桥</div>
+          <div class="help-step"><span class="help-num">1</span>填写服务器地址（如 <strong>https://dav.example.com/dav</strong>）</div>
+          <div class="help-step"><span class="help-num">2</span>填写账号密码；Alist 用户填列表里显示的账号密码</div>
+        </div>
+        <el-form label-position="top">
+          <el-form-item label="服务器地址" required>
+            <el-input v-model="webdavServerUrl" placeholder="https://dav.example.com/dav" />
+          </el-form-item>
+          <el-form-item label="账号">
+            <el-input v-model="webdavUsername" placeholder="WebDAV 用户名" autocomplete="off" />
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input v-model="webdavPassword" type="password" show-password autocomplete="new-password" placeholder="WebDAV 密码或应用密码" />
+          </el-form-item>
+          <el-form-item label="账号昵称">
+            <el-input v-model="webdavNickname" placeholder="例如：我的 NAS（可选）" />
+          </el-form-item>
+        </el-form>
+      </div>
+    </div>
+
+    <div v-if="selectedPlatform === 'aliyun'" class="method-body">
+
+      <div class="form-card">
+
+        <div class="help-steps">
+
+          <div class="help-title">使用自有开放平台应用授权</div>
+
+          <div class="help-step"><span class="help-num">1</span>先在设置中填写你的开放平台应用 Client ID 和 Client Secret</div>
+
+          <div class="help-step"><span class="help-num">2</span>通过该应用的授权流程获得授权码，或准备同一应用签发的 Refresh Token</div>
+
+          <div class="help-step"><span class="help-num">3</span>在下方任选一种凭据填写后保存。公共工具签发的令牌不能用自己的应用配置续期</div>
+
+        </div>
+
+        <el-button style="margin-bottom: 10px" @click="openAliyunSettings">前往设置配置应用</el-button>
+
+        <el-form label-position="top">
+
+          <el-form-item label="账号昵称">
+
+            <el-input v-model="aliyunNickname" placeholder="例如：阿里云盘（可选）" />
+
+          </el-form-item>
+
+          <el-form-item label="同一应用的 Refresh Token（与授权码二选一）">
+
+            <el-input v-model="aliyunRefreshToken" type="textarea" :rows="3" placeholder="必须由设置中配置的同一应用签发" />
+
+          </el-form-item>
+
+        </el-form>
+
+        <div class="help-steps" style="margin-top: 8px">
+
+          <div class="help-title">使用授权码换取令牌</div>
+
+          <div class="help-step"><span class="help-num">·</span>没有 Refresh Token 时，粘贴该应用授权流程返回的授权码</div>
+
+        </div>
+
+        <el-form label-position="top">
+
+          <el-form-item label="自有应用授权码">
+
+            <el-input v-model="aliyunCode" placeholder="粘贴自有应用的授权码" />
+
+          </el-form-item>
+
+        </el-form>
+
+        <el-alert v-if="aliyunError" :title="aliyunError" type="error" :closable="false" />
+
+      </div>
+
+    </div>
+
+    <div v-if="selectedPlatform === 'pan123'" class="method-body">
+      <div class="form-card">
+        <el-form label-position="top">
+          <el-form-item label="账号昵称">
+            <el-input v-model="pan123Nickname" placeholder="例如：123云盘（可选）" />
+          </el-form-item>
+          <el-form-item label="Client ID" required>
+            <el-input v-model="pan123ClientId" placeholder="123开放平台 Client ID" autocomplete="off" />
+          </el-form-item>
+          <el-form-item label="Client Secret" required>
+            <el-input v-model="pan123ClientSecret" type="password" show-password placeholder="123开放平台 Client Secret" autocomplete="new-password" />
+          </el-form-item>
+        </el-form>
+        <el-alert v-if="pan123Error" :title="pan123Error" type="error" :closable="false" />
+      </div>
+    </div>
+
+    <div v-if="selectedPlatform === 'aliyun_web'" class="method-body">
+
+      <div class="form-card">
+
+        <div class="help-steps">
+
+          <div class="help-title">网页版通道支持批量分享/转存（开放平台版不支持）</div>
+
+          <div class="help-step"><span class="help-num">1</span>用浏览器登录 <strong>www.alipan.com</strong>（阿里云盘网页版）</div>
+
+          <div class="help-step"><span class="help-num">2</span>按 <kbd>F12</kbd> → <strong>Application</strong> → <strong>Local Storage</strong> → <strong>https://www.alipan.com</strong></div>
+
+          <div class="help-step"><span class="help-num">3</span>找到 <strong>token</strong> 项，复制其中 <strong>refreshToken</strong> 字段的值粘贴到下面</div>
+
+          <div class="help-step"><span class="help-num">4</span>该通道为社区逆向接口，存在随官方调整失效的可能</div>
+
+        </div>
+
+        <el-form label-position="top">
+
+          <el-form-item label="账号昵称">
+
+            <el-input v-model="aliyunWebNickname" placeholder="例如：阿里云盘·网页版（可选）" />
+
+          </el-form-item>
+
+          <el-form-item label="Refresh Token" required>
+
+            <el-input v-model="aliyunWebRefreshToken" type="textarea" :rows="3" placeholder="粘贴网页版 refreshToken（较长的一段字符）" />
+
+          </el-form-item>
+
+        </el-form>
+
+      </div>
+
+    </div>
+
     <div v-if="selectedPlatform === 'quark' && activeMethod === 'auto'" class="method-body">
       <div class="split-layout">
         <div class="steps-panel">
@@ -405,7 +546,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, markRaw } from 'vue'
+import { ref, computed, markRaw, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import {
@@ -415,7 +556,7 @@ import {
 import type { Platform, LoginType, DriveCredential } from '@shared/types'
 import { electronApi, type LoginResult, type BaiduLoginResult } from '../api/ipc'
 
-defineProps<{ modelValue: boolean }>()
+const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; success: [] }>()
 const router = useRouter()
 
@@ -448,12 +589,32 @@ const xunleiMethods = [
   { key: 'token', label: '粘贴 Refresh Token', icon: markRaw(KeyRound) },
 ]
 
+const webdavMethods = [
+  { key: 'account', label: '服务器账号', icon: markRaw(KeyRound) },
+]
+
+const aliyunMethods = [
+  { key: 'oauth', label: '开放平台授权码', icon: markRaw(Globe) },
+]
+
+const pan123Methods = [
+  { key: 'token', label: '开放平台凭据', icon: markRaw(KeyRound) },
+]
+
+const aliyunWebMethods = [
+  { key: 'token', label: '粘贴网页版 Refresh Token', icon: markRaw(KeyRound) },
+]
+
 const currentMethods = computed(() => {
   switch (selectedPlatform.value) {
     case 'quark': return quarkMethods
     case 'baidu': return baiduMethods
     case 'uc': return ucMethods
     case 'xunlei': return xunleiMethods
+    case 'webdav': return webdavMethods
+    case 'aliyun': return aliyunMethods
+    case 'pan123': return pan123Methods
+    case 'aliyun_web': return aliyunWebMethods
     default: return quarkMethods
   }
 })
@@ -472,7 +633,10 @@ const authSupportHint = computed(() => {
 })
 
 function onPlatformChange() {
-  activeMethod.value = 'auto'
+  activeMethod.value = currentMethods.value[0].key
+  if (selectedPlatform.value === 'aliyun') { aliyunCode.value = ''; aliyunError.value = ''; aliyunTokens.value = null; aliyunRefreshToken.value = '' }
+  if (selectedPlatform.value === 'pan123') { pan123Tokens.value = null; pan123Error.value = ''; pan123ClientId.value = ''; pan123ClientSecret.value = '' }
+  if (selectedPlatform.value === 'aliyun_web') { aliyunWebRefreshToken.value = '' }
   resetQuarkAuto()
   resetBaiduAuto()
   resetBaiduOAuth()
@@ -653,6 +817,78 @@ function resetBaiduOAuth() {
 // ── Manual ──
 
 const manualNickname = ref('')
+
+const webdavServerUrl = ref('')
+
+const webdavUsername = ref('')
+
+const webdavPassword = ref('')
+
+const webdavNickname = ref('')
+
+const aliyunNickname = ref('')
+
+const aliyunCode = ref('')
+
+const aliyunRefreshToken = ref('')
+
+const aliyunError = ref('')
+
+const aliyunExchanging = ref(false)
+
+const aliyunTokens = ref<{ access_token?: string; refresh_token?: string; expires_in?: number } | null>(null)
+
+const pan123Nickname = ref('')
+
+const pan123ClientId = ref('')
+
+const pan123ClientSecret = ref('')
+
+
+const aliyunWebNickname = ref('')
+
+const aliyunWebRefreshToken = ref('')
+
+const pan123Tokens = ref<{ accessToken?: string; expiresIn?: number } | null>(null)
+
+const pan123Error = ref('')
+
+async function fetchPan123Token(): Promise<boolean> {
+  pan123Error.value = ''
+  try {
+    const clientId = pan123ClientId.value.trim()
+    const clientSecret = pan123ClientSecret.value.trim()
+    if (!clientId || !clientSecret) throw new Error('请填写开放平台 Client ID 和 Client Secret')
+    const result = await electronApi.pan123FetchToken({ clientId, clientSecret })
+    if (!result.success || !result.tokens?.accessToken) throw new Error(result.error || '获取授权失败')
+    pan123Tokens.value = result.tokens
+    return true
+  } catch (err) {
+    pan123Error.value = String(err instanceof Error ? err.message : err)
+    ElMessage.error(pan123Error.value)
+    return false
+  }
+}
+
+async function openAliyunSettings() {
+  emit('update:modelValue', false)
+  await router.push('/settings')
+}
+
+async function exchangeAliyunCodeNow(): Promise<boolean> {
+  if (!aliyunCode.value.trim()) { ElMessage.warning('请输入授权码'); return false }
+  aliyunExchanging.value = true
+  aliyunError.value = ''
+  try {
+    const result = await electronApi.aliyunExchangeCode(aliyunCode.value.trim())
+    if (!result.success || !result.tokens) throw new Error(result.error || '换取授权失败')
+    aliyunTokens.value = result.tokens
+    return true
+  } catch (err) {
+    aliyunError.value = String(err instanceof Error ? err.message : err)
+    return false
+  } finally { aliyunExchanging.value = false }
+}
 const manualCookie = ref('')
 const manualToken = ref('')
 
@@ -727,6 +963,7 @@ function resetXunleiAuto() {
 // ── Confirm ──
 
 async function onConfirm() {
+  if (saving.value) return
   saving.value = true
   try {
     let params: {
@@ -798,6 +1035,62 @@ async function onConfirm() {
           credential: { cookies: manualCookie.value.trim() },
         }
       }
+    } else if (platform === 'aliyun') {
+      const refreshToken = aliyunRefreshToken.value.trim()
+      if (refreshToken && aliyunCode.value.trim()) { ElMessage.warning('Refresh Token 和授权码请只填写一种'); return }
+      if (refreshToken) {
+        // 官方续期需要设置中配置的同一签发应用。
+        params = {
+          platform: 'aliyun', nickname: aliyunNickname.value.trim() || '阿里云盘账号',
+          loginType: 'oauth',
+          credential: { refreshToken },
+        }
+      } else {
+        if (!aliyunTokens.value) { const ok = await exchangeAliyunCodeNow(); if (!ok) return }
+        const tokens = aliyunTokens.value
+        if (!tokens?.access_token) { ElMessage.warning('授权信息不完整，请重新换取授权'); return }
+        params = {
+          platform: 'aliyun', nickname: aliyunNickname.value.trim() || '阿里云盘账号',
+          loginType: 'oauth',
+          credential: {
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            expiresAt: Date.now() + (tokens.expires_in || 7200) * 1000,
+          },
+        }
+      }
+    } else if (platform === 'pan123') {
+      if (!pan123Tokens.value) { const ok = await fetchPan123Token(); if (!ok) return }
+      const tokens = pan123Tokens.value
+      if (!tokens?.accessToken) { ElMessage.warning('授权信息不完整，请重新获取'); return }
+      params = {
+        platform: 'pan123', nickname: pan123Nickname.value.trim() || '123云盘账号',
+        loginType: 'api_key',
+        credential: {
+          accessToken: tokens.accessToken,
+          clientId: pan123ClientId.value.trim(),
+          clientSecret: pan123ClientSecret.value.trim(),
+          expiresAt: Date.now() + (tokens.expiresIn || 0) * 1000,
+        },
+      }
+    } else if (platform === 'aliyun_web') {
+      const refreshToken = aliyunWebRefreshToken.value.trim()
+      if (!refreshToken) { ElMessage.warning('请粘贴网页版 Refresh Token'); return }
+      params = {
+        platform: 'aliyun_web', nickname: aliyunWebNickname.value.trim() || '阿里云盘·网页版',
+        loginType: 'token',
+        credential: { refreshToken },
+      }
+    } else if (platform === 'webdav') {
+      const serverUrl = webdavServerUrl.value.trim()
+      const username = webdavUsername.value.trim()
+      const password = webdavPassword.value
+      if (!serverUrl || !username || !password) { ElMessage.warning('请填写服务器地址、账号和密码'); return }
+      params = {
+        platform: 'webdav', nickname: webdavNickname.value.trim() || username,
+        loginType: 'password',
+        credential: { serverUrl, username, password },
+      }
     } else if (platform === 'xunlei') {
       if (activeMethod.value === 'auto') {
         if (xunleiAutoStep.value !== 'success') { ElMessage.warning('请先完成登录'); return }
@@ -832,6 +1125,8 @@ async function onConfirm() {
     } else {
       ElMessage.error(result.error || '添加失败')
     }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
   } finally { saving.value = false }
 }
 
@@ -846,16 +1141,36 @@ function resetForms() {
   manualNickname.value = ''
   manualCookie.value = ''
   manualToken.value = ''
+  webdavServerUrl.value = ''
+  webdavUsername.value = ''
+  webdavPassword.value = ''
+  webdavNickname.value = ''
+  aliyunNickname.value = ''
+  aliyunRefreshToken.value = ''
+  aliyunCode.value = ''
+  aliyunTokens.value = null
+  aliyunError.value = ''
+  aliyunWebNickname.value = ''
+  aliyunWebRefreshToken.value = ''
+  pan123Nickname.value = ''
+  pan123ClientId.value = ''
+  pan123ClientSecret.value = ''
+  pan123Tokens.value = null
+  pan123Error.value = ''
 }
 
 function onClose() { emit('update:modelValue', false) }
+
+watch(() => props.modelValue, (open) => { if (!open) resetForms() })
+watch([pan123ClientId, pan123ClientSecret], () => { pan123Tokens.value = null }, { flush: 'sync' })
+watch(aliyunCode, () => { aliyunTokens.value = null }, { flush: 'sync' })
 </script>
 
 <style scoped>
 .dialog-header h2 {
   font-size: 18px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--pl-text);
   margin-bottom: 4px;
 }
 
@@ -866,7 +1181,7 @@ function onClose() { emit('update:modelValue', false) }
   display: block;
   font-size: 13px;
   font-weight: 500;
-  color: #374151;
+  color: var(--pl-text);
   margin-bottom: 6px;
 }
 
@@ -875,7 +1190,7 @@ function onClose() { emit('update:modelValue', false) }
   display: flex;
   gap: 6px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--pl-hover);
   margin-bottom: 20px;
 }
 
@@ -899,16 +1214,16 @@ function onClose() { emit('update:modelValue', false) }
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
+  border: 1px solid var(--pl-border);
+  background: var(--pl-surface);
   border-radius: 8px;
   font-size: 13px;
   font-weight: 500;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
 }
-.method-btn:hover { border-color: #d1d5db; background: #f9fafb; }
+.method-btn:hover { border-color: var(--pl-border); background: var(--pl-surface-subtle); }
 .method-btn.active { background: #eff6ff; border-color: #93c5fd; color: #3b82f6; }
 
 /* ── Method body ── */
@@ -929,7 +1244,7 @@ function onClose() { emit('update:modelValue', false) }
   flex-direction: column;
   gap: 8px;
   padding: 16px;
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 12px;
 }
 
@@ -943,8 +1258,8 @@ function onClose() { emit('update:modelValue', false) }
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: #e5e7eb;
-  color: #6b7280;
+  background: var(--pl-border);
+  color: var(--pl-text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -955,8 +1270,8 @@ function onClose() { emit('update:modelValue', false) }
 .step-num.done { background: #22c55e; color: #ffffff; }
 
 .step-content { min-width: 0; }
-.step-title { font-size: 13px; font-weight: 600; color: #1f2937; }
-.step-desc { font-size: 12px; color: #9ca3af; margin-top: 2px; }
+.step-title { font-size: 13px; font-weight: 600; color: var(--pl-text); }
+.step-desc { font-size: 12px; color: var(--pl-text-muted); margin-top: 2px; }
 
 .action-panel {
   flex: 1;
@@ -973,11 +1288,11 @@ function onClose() { emit('update:modelValue', false) }
   border-radius: 6px;
   font-size: 12px;
   font-weight: 500;
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
   align-self: flex-start;
 }
-.status-tag.logging { background: #fffbeb; color: #f59e0b; }
+.status-tag.logging { background: var(--pl-surface); color: #f59e0b; }
 .status-tag.logging svg { animation: spin 1s linear infinite; }
 .status-tag.success { background: #f0fdf4; color: #22c55e; }
 .status-tag.failed { background: #fef2f2; color: #ef4444; }
@@ -994,8 +1309,8 @@ function onClose() { emit('update:modelValue', false) }
 }
 .action-center.success { color: #22c55e; }
 .action-center.failed { color: #ef4444; }
-.nickname { font-size: 16px; font-weight: 600; color: #1f2937; }
-.action-hint { font-size: 13px; color: #9ca3af; }
+.nickname { font-size: 16px; font-weight: 600; color: var(--pl-text); }
+.action-hint { font-size: 13px; color: var(--pl-text-muted); }
 
 .oauth-error {
   display: flex;
@@ -1007,7 +1322,7 @@ function onClose() { emit('update:modelValue', false) }
   border: 1px solid #f7d7a7;
   border-radius: 8px;
   color: #9a6512;
-  background: #fff9ed;
+  background: var(--pl-surface);
   font-size: 12px;
   line-height: 1.55;
 }
@@ -1046,7 +1361,7 @@ function onClose() { emit('update:modelValue', false) }
 
 /* ── Help steps ── */
 .help-steps {
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 10px;
   padding: 14px 16px;
   display: flex;
@@ -1057,7 +1372,7 @@ function onClose() { emit('update:modelValue', false) }
 .help-title {
   font-size: 13px;
   font-weight: 600;
-  color: #374151;
+  color: var(--pl-text);
   margin-bottom: 4px;
 }
 
@@ -1066,7 +1381,7 @@ function onClose() { emit('update:modelValue', false) }
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   line-height: 1.6;
 }
 
@@ -1074,38 +1389,38 @@ function onClose() { emit('update:modelValue', false) }
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #e5e7eb;
-  color: #374151;
+  background: var(--pl-border);
+  color: var(--pl-text);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
   flex-shrink: 0;
 }
 
 .help-step strong {
-  color: #1f2937;
+  color: var(--pl-text);
 }
 
 .help-step kbd {
   display: inline-block;
   padding: 1px 5px;
-  background: #ffffff;
-  border: 1px solid #d1d5db;
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-family: monospace;
-  color: #374151;
+  color: var(--pl-text);
 }
 
 .help-step code {
   display: inline-block;
   padding: 1px 5px;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-family: monospace;
   color: #3b82f6;
   word-break: break-all;

@@ -100,6 +100,175 @@
         </div>
       </div>
 
+      <!-- AliyunDrive open platform (optional, collapsed) -->
+      <div class="setting-card">
+        <div class="setting-header">
+          <div class="setting-icon">
+            <Cloud :size="16" />
+          </div>
+          <div>
+            <h3>阿里云盘</h3>
+            <p>开放平台账号的授权和续期需要同一签发应用的 Client ID / Secret；公共工具令牌不能搭配其他应用配置使用</p>
+          </div>
+        </div>
+        <div class="setting-body">
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">自有开放平台应用</span>
+              <span class="label-hint">添加开放平台账号前请配置；阿里云盘网页版使用独立的登录方式</span>
+            </div>
+            <el-button size="small" @click="showAliyunAdvanced = !showAliyunAdvanced">{{ showAliyunAdvanced ? '收起' : '展开高级选项' }}</el-button>
+          </div>
+          <template v-if="showAliyunAdvanced">
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text">Client ID</span>
+              </div>
+              <el-input v-model="form.aliyunClientId" placeholder="Client ID" style="width: 320px" />
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">
+                <span class="label-text">Client Secret</span>
+              </div>
+              <el-input v-model="form.aliyunClientSecret" type="password" show-password autocomplete="off" placeholder="Client Secret" style="width: 320px" />
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Appearance -->
+      <div class="setting-card">
+        <div class="setting-header">
+          <div class="setting-icon">
+            <Moon :size="16" />
+          </div>
+          <div>
+            <h3>外观</h3>
+            <p>选择浅色或深色界面主题，立即生效</p>
+          </div>
+        </div>
+        <div class="setting-body">
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">界面主题</span>
+              <span class="label-hint">也可以在顶部工具栏一键切换</span>
+            </div>
+            <el-radio-group :model-value="appStore.theme" @update:model-value="(v: string) => appStore.setTheme(v as 'light' | 'dark')">
+              <el-radio-button value="light">浅色</el-radio-button>
+              <el-radio-button value="dark">深色</el-radio-button>
+            </el-radio-group>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transfer engine -->
+      <div class="setting-card">
+        <div class="setting-header">
+          <div class="setting-icon">
+            <Gauge :size="16" />
+          </div>
+          <div>
+            <h3>传输引擎</h3>
+            <p>大文件自动分块下载；传输时段作用于任务，限速作用于支持直链的迁移下载</p>
+          </div>
+        </div>
+        <div class="setting-body">
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">并行分块数</span>
+              <span class="label-hint">1-8，数值越大对服务器压力越大</span>
+            </div>
+            <el-input-number v-model="form.transferParallelChunks" :min="1" :max="8" size="small" />
+          </div>
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">并发迁移文件数</span>
+              <span class="label-hint">跨网盘迁移时同时处理的文件数（1-4），过大易触发平台限流</span>
+            </div>
+            <el-input-number v-model="form.transferParallelFiles" :min="1" :max="4" size="small" />
+          </div>
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">限速（MB/s）</span>
+              <span class="label-hint">0 表示不限速；限制跨网盘迁移中的直链下载总速率</span>
+            </div>
+            <el-input-number v-model="form.transferSpeedLimitMbps" :min="0" :max="2048" size="small" />
+          </div>
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">定时传输时段</span>
+              <span class="label-hint">HH:MM-HH:MM，支持跨午夜；等待时段的任务不占运行名额，保存后立即重算；留空不限</span>
+            </div>
+            <el-input v-model="form.transferScheduledWindow" placeholder="例如 02:00-08:00" style="width: 220px" />
+          </div>
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">时段结束后自动等待</span>
+              <span class="label-hint">完成当前文件或已提交操作后保存进度，下一时段继续；手动暂停的任务保持暂停</span>
+            </div>
+            <el-switch v-model="form.transferPauseAtWindowEnd" />
+          </div>
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">传输临时目录</span>
+              <span class="label-hint">跨网盘迁移的中转文件位置；留空使用系统临时目录。迁移开始前会按最大单文件检查剩余空间</span>
+            </div>
+            <el-input v-model="form.transferTempDir" placeholder="例如 D:\PanLiteTemp" style="width: 320px" />
+          </div>
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">分享订阅检查间隔（分钟）</span>
+              <span class="label-hint">每隔多久检查订阅链接的新文件，最短 5 分钟</span>
+            </div>
+            <el-input-number v-model="form.shareSubscriptionIntervalMinutes" :min="5" :max="1440" size="small" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Global shortcuts -->
+      <div class="setting-card">
+        <div class="setting-header">
+          <div class="setting-icon">
+            <Command :size="16" />
+          </div>
+          <div>
+            <h3>全局快捷键</h3>
+            <p>应用在后台时也能呼出 PanLite</p>
+          </div>
+        </div>
+        <div class="setting-body">
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">启用全局快捷键</span>
+              <span class="label-hint">显示/隐藏窗口 Ctrl+Alt+P · 快速搜索 Ctrl+Alt+F · 批量转存 Ctrl+Alt+B</span>
+            </div>
+            <el-switch v-model="globalShortcutsEnabled" @change="onGlobalShortcutsToggle" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Clipboard monitor -->
+      <div class="setting-card">
+        <div class="setting-header">
+          <div class="setting-icon">
+            <ClipboardList :size="16" />
+          </div>
+          <div>
+            <h3>剪贴板监听</h3>
+            <p>复制网盘分享链接时自动弹出批量转存入口</p>
+          </div>
+        </div>
+        <div class="setting-body">
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">启用剪贴板监听</span>
+              <span class="label-hint">支持百度、夸克、UC、迅雷分享链接，10 分钟内不会重复提醒同一链接</span>
+            </div>
+            <el-switch v-model="clipboardMonitorEnabled" @change="onClipboardMonitorToggle" />
+          </div>
+        </div>
+      </div>
+
       <!-- Ad filter settings -->
       <div class="setting-card">
         <div class="setting-header">
@@ -562,7 +731,11 @@ https://pan.funletu.com"
             </div>
             <div class="about-row">
               <span class="about-label">版本</span>
-              <span class="about-value">0.1.0</span>
+              <span class="about-value">{{ appVersion }}</span>
+            </div>
+            <div class="about-row">
+              <span class="about-label">应用更新</span>
+              <AppUpdate />
             </div>
             <div class="about-row">
               <span class="about-label">技术栈</span>
@@ -612,11 +785,18 @@ https://pan.funletu.com"
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import {
-  Settings as SettingsIcon, Gauge, Info, Save, Key, Shield, Search, Plus, Edit as EditIcon, Delete, Hash, Globe, Zap, ArrowDown, Upload,
+  Settings as SettingsIcon, Gauge, Info, Save, Key, Shield, Search, Plus, Delete, Hash, Globe, Zap, Upload, ClipboardList, Moon, Command, Cloud,
 } from 'lucide-vue-next'
 import { PLATFORM_LABELS } from '@shared/constants'
 import { DEFAULT_BANNED_KEYWORDS } from '@shared/constants'
 import { electronApi } from '../api/ipc'
+import { useAppStore } from '../stores/app'
+import AppUpdate from '../components/AppUpdate.vue'
+
+const appStore = useAppStore()
+
+// 版本号由 vite define 注入，避免硬编码过期
+const appVersion = __APP_VERSION__
 
 const saving = ref(false)
 
@@ -629,6 +809,15 @@ const form = reactive({
   requestDelayMs: 300,
   adFilterEnabled: true,
   bannedKeywords: DEFAULT_BANNED_KEYWORDS,
+  aliyunClientId: '',
+  aliyunClientSecret: '',
+  transferParallelChunks: 4,
+  transferParallelFiles: 2,
+  transferSpeedLimitMbps: 0,
+  transferScheduledWindow: '',
+  transferPauseAtWindowEnd: false,
+  transferTempDir: '',
+  shareSubscriptionIntervalMinutes: 15,
 })
 
 const SETTINGS_KEYS = [
@@ -640,6 +829,15 @@ const SETTINGS_KEYS = [
   'requestDelayMs',
   'adFilterEnabled',
   'bannedKeywords',
+  'aliyunClientId',
+  'aliyunClientSecret',
+  'transferParallelChunks',
+  'transferParallelFiles',
+  'transferSpeedLimitMbps',
+  'transferScheduledWindow',
+  'transferPauseAtWindowEnd',
+  'transferTempDir',
+  'shareSubscriptionIntervalMinutes',
 ] as const
 
 const REQUEST_SETTING_LIMITS = {
@@ -652,6 +850,12 @@ function clampRequestSetting<K extends keyof typeof REQUEST_SETTING_LIMITS>(key:
   const [min, max] = REQUEST_SETTING_LIMITS[key]
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return key === 'quarkPageSize' ? 200 : key === 'baiduPageSize' ? 100 : 300
+  return Math.min(max, Math.max(min, Math.round(parsed)))
+}
+
+function clampTransferNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
   return Math.min(max, Math.max(min, Math.round(parsed)))
 }
 
@@ -668,6 +872,17 @@ async function loadSettings() {
       if (s.requestDelayMs !== undefined) form.requestDelayMs = clampRequestSetting('requestDelayMs', s.requestDelayMs)
       if (s.adFilterEnabled !== undefined) form.adFilterEnabled = s.adFilterEnabled !== 'false'
       if (s.bannedKeywords !== undefined) form.bannedKeywords = s.bannedKeywords
+      if (s.aliyunClientId !== undefined) form.aliyunClientId = s.aliyunClientId
+      if (s.aliyunClientSecret !== undefined) form.aliyunClientSecret = s.aliyunClientSecret
+      if (s.transferParallelChunks !== undefined) form.transferParallelChunks = clampTransferNumber(s.transferParallelChunks, 4, 1, 8)
+      if (s.transferParallelFiles !== undefined) form.transferParallelFiles = clampTransferNumber(s.transferParallelFiles, 2, 1, 4)
+      if (s.transferSpeedLimitMbps !== undefined) form.transferSpeedLimitMbps = clampTransferNumber(s.transferSpeedLimitMbps, 0, 0, 2048)
+      if (s.transferScheduledWindow !== undefined) form.transferScheduledWindow = s.transferScheduledWindow
+      if (s.transferPauseAtWindowEnd !== undefined) form.transferPauseAtWindowEnd = s.transferPauseAtWindowEnd === 'true'
+      if (s.transferTempDir !== undefined) form.transferTempDir = s.transferTempDir
+      if (s.shareSubscriptionIntervalMinutes !== undefined) {
+        form.shareSubscriptionIntervalMinutes = clampTransferNumber(s.shareSubscriptionIntervalMinutes, 15, 5, 1440)
+      }
     }
   } catch (err) {
     console.error('Failed to load settings:', err)
@@ -682,7 +897,8 @@ async function onSave() {
     form.requestDelayMs = clampRequestSetting('requestDelayMs', form.requestDelayMs)
     for (const key of SETTINGS_KEYS) {
       const value = String(form[key])
-      await electronApi.setSetting(key, value)
+      const result = await electronApi.setSetting(key, value)
+      if (!result.success) throw new Error(result.error || `无法保存设置：${key}`)
     }
     ElMessage.success('设置已保存')
   } catch (err) {
@@ -693,6 +909,59 @@ async function onSave() {
 }
 
 onMounted(loadSettings)
+
+// ---- Clipboard monitor ----
+const clipboardMonitorEnabled = ref(false)
+
+async function loadClipboardMonitor() {
+  try {
+    const result = await electronApi.getClipboardMonitor()
+    clipboardMonitorEnabled.value = result.success ? Boolean(result.enabled) : false
+  } catch { clipboardMonitorEnabled.value = false }
+}
+
+async function onClipboardMonitorToggle(value: boolean | string | number) {
+  const enabled = Boolean(value)
+  try {
+    const result = await electronApi.setClipboardMonitor(enabled)
+    if (!result.success) throw new Error(result.error || '设置失败')
+    clipboardMonitorEnabled.value = Boolean(result.enabled)
+    ElMessage.success(enabled ? '剪贴板监听已开启' : '剪贴板监听已关闭')
+  } catch (err) {
+    clipboardMonitorEnabled.value = !enabled
+    ElMessage.error('设置失败: ' + String(err))
+  }
+}
+
+onMounted(loadClipboardMonitor)
+
+// ---- AliyunDrive advanced toggle ----
+const showAliyunAdvanced = ref(false)
+
+// ---- Global shortcuts ----
+const globalShortcutsEnabled = ref(false)
+
+async function loadGlobalShortcuts() {
+  try {
+    const result = await electronApi.getGlobalShortcuts()
+    globalShortcutsEnabled.value = result.success ? Boolean(result.enabled) : false
+  } catch { globalShortcutsEnabled.value = false }
+}
+
+async function onGlobalShortcutsToggle(value: boolean | string | number) {
+  const enabled = Boolean(value)
+  try {
+    const result = await electronApi.setGlobalShortcuts(enabled)
+    if (!result.success) throw new Error(result.error || '设置失败')
+    globalShortcutsEnabled.value = Boolean(result.enabled)
+    ElMessage.success(enabled ? '全局快捷键已启用' : '全局快捷键已禁用')
+  } catch (err) {
+    globalShortcutsEnabled.value = !enabled
+    ElMessage.error('设置失败: ' + String(err))
+  }
+}
+
+onMounted(loadGlobalShortcuts)
 
 // ---- Search Sources Management ----
 
@@ -816,46 +1085,6 @@ async function onBatchDeleteSources() {
     await loadSearchSources()
   } catch (err) {
     ElMessage.error('批量删除失败: ' + String(err))
-  }
-}
-
-// 预设搜索源模板
-const presetSources: Record<string, Partial<SearchSourceItem>> = {
-  quark: {
-    name: '夸克网盘搜索',
-    type: 'api',
-    platform: 'quark',
-    url: 'https://www.pansearch.me/api/search?keyword={keyword}&pan=quark',
-    method: 'GET',
-    field_map: JSON.stringify({ list_path: 'data', fields: { title: 'title', url: 'url' } }),
-  },
-  baidu: {
-    name: '百度网盘搜索',
-    type: 'api',
-    platform: 'baidu',
-    url: 'https://www.pansearch.me/api/search?keyword={keyword}&pan=baidu',
-    method: 'GET',
-    field_map: JSON.stringify({ list_path: 'data', fields: { title: 'title', url: 'url' } }),
-  },
-}
-
-function onPresetSource(command: string) {
-  const preset = presetSources[command]
-  if (preset) {
-    Object.assign(editingSource, {
-      id: '',
-      ...preset,
-      max_count: 20,
-      weight: 0,
-      status: 1,
-      params: null,
-      headers: null,
-      html_selectors: null,
-      paramsStr: '',
-      headersStr: '',
-      fieldMapStr: preset.field_map || '',
-    })
-    sourceDialogVisible.value = true
   }
 }
 
@@ -1360,7 +1589,7 @@ onMounted(loadKkSources)
 .platform-chip { display: inline-block; padding: 4px 9px; border-radius: 999px; font-size: 12px; font-weight: 550; }
 .platform-chip.quark { background: var(--pl-primary-soft); color: var(--pl-primary); }
 .platform-chip.baidu { background: var(--pl-success-soft); color: var(--pl-success); }
-.platform-chip.uc { background: #fff4df; color: #a56a16; }
+.platform-chip.uc { background: var(--pl-surface); color: #a56a16; }
 .platform-chip.xunlei { background: #f1eaff; color: #7652b8; }
 
 .save-bar { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; background: var(--pl-surface); border: 1px solid var(--pl-border); border-radius: var(--pl-radius-card); box-shadow: var(--pl-shadow-card); flex-shrink: 0; margin-top: 12px; }

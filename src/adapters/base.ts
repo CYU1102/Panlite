@@ -1,5 +1,13 @@
 import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult, ParsedShareLink, UploadOptions, UploadResult, DownloadOptions, DownloadResult, QuotaInfo } from '../shared/types'
 import type { MembershipInfo } from '../shared/membership'
+import type { SharedDirectoryOptions, SharedDirectoryResult, SharedSaveOptions } from '../shared/subscription-types'
+
+/** Authenticated download source retained in the main process only. */
+export interface DriveDownloadSource {
+  url: string
+  headers?: Record<string, string>
+  fetch?: (url: string, init: RequestInit) => Promise<Response>
+}
 
 export interface DriveAdapter {
   /** Verify the account is still logged in */
@@ -38,14 +46,20 @@ export interface DriveAdapter {
   /** Create a share link for files */
   createShare?(account: DriveAccount, items: ShareTaskPayload['items'], options?: ShareOptions): Promise<ShareInfo>
 
+  /** Cancel (invalidate) a share previously created by createShare */
+  cancelShare?(account: DriveAccount, shareId: string): Promise<void>
+
   /** Parse a share link to extract share ID / token */
   parseShareLink?(url: string, password?: string): Promise<ParsedShareLink>
 
   /** Get share detail (file list) from a share link */
   getShareDetail?(account: DriveAccount, input: TransferLinkInput): Promise<ShareDetail>
 
+  /** Read every page of one shared directory. Unsupported platforms omit this method. */
+  listSharedDirectory?(account: DriveAccount, input: TransferLinkInput, options?: SharedDirectoryOptions): Promise<SharedDirectoryResult>
+
   /** Save shared files to the account's drive */
-  saveSharedFiles?(account: DriveAccount, input: TransferLinkInput, targetDirId: string): Promise<TransferResult>
+  saveSharedFiles?(account: DriveAccount, input: TransferLinkInput, targetDirId: string, options?: SharedSaveOptions): Promise<TransferResult>
 
   /** Upload a local file to the drive (optional) */
   upload?(
@@ -57,6 +71,9 @@ export interface DriveAdapter {
 
   /** Get download URL for a file (optional) */
   getDownloadUrl?(account: DriveAccount, fileId: string): Promise<string>
+
+  /** Resolve a source including provider-required headers for online previews. Never expose via IPC. */
+  getDownloadSource?(account: DriveAccount, fileId: string): Promise<DriveDownloadSource>
 
   /** Download a file to local path (optional) */
   download?(

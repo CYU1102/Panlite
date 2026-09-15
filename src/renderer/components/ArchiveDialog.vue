@@ -124,7 +124,7 @@ watch(() => props.modelValue, async (newVal) => {
   if (newVal && props.account && props.fileId) {
     await loadArchive()
   }
-})
+}, { immediate: true })
 
 async function loadArchive() {
   if (!props.account) return

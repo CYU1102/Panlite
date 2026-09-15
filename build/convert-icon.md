@@ -1,43 +1,7 @@
-# 图标转换说明
+# 应用图标
 
-PanLite 使用 `icon.svg` 作为源图标文件。
+`build/icon.svg` 是图标源文件。修改后运行 `npm run build:icons`，使用项目现有 Electron/Chromium 将 SVG 渲染为 PNG，并生成包含 16、24、32、48、64、128、256 像素图层的 ICO，无需在线转换或额外依赖。
 
-## 转换为 ICO 格式
+将 `icon.svg`、`icon.png`、`icon.ico` 一并提交。Windows 应用、安装程序与卸载程序使用 ICO；主窗口使用 PNG。普通 smoke 构建也会写入图标和版本资源，只有代码签名保持关闭。
 
-### 方法 1：在线转换（推荐）
-
-1. 访问 https://convertio.co/svg-ico/
-2. 上传 `icon.svg`
-3. 选择输出尺寸：256x256
-4. 下载转换后的 `icon.ico`
-5. 将 `icon.ico` 放到 `build/` 目录
-
-### 方法 2：使用 ImageMagick
-
-```bash
-# 安装 ImageMagick
-# Windows: https://imagemagick.org/script/download.php
-
-# 转换命令
-convert icon.svg -resize 256x256 icon.ico
-```
-
-### 方法 3：使用 Node.js
-
-```bash
-npm install --save-dev sharp ico-endcoder
-
-# 创建转换脚本 convert-icon.js
-```
-
-## 图标规格
-
-- 格式：ICO
-- 尺寸：256x256 像素
-- 颜色：RGBA（支持透明度）
-
-## 注意事项
-
-- electron-builder 支持 PNG 和 ICO 格式
-- 建议同时提供 16x16、32x32、48x48、256x256 多种尺寸
-- macOS 需要 ICNS 格式（可使用 iconutil 转换）
+执行打包后检查 `PanLite.exe` 的图标及文件属性；正式构建还需验证签名。图标文件不是签名证书。

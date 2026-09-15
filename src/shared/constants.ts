@@ -1,4 +1,9 @@
 export const IPC_CHANNELS = {
+  APP_UPDATE_STATUS: 'app-update:status',
+  APP_UPDATE_CHECK: 'app-update:check',
+  APP_UPDATE_DOWNLOAD: 'app-update:download',
+  APP_UPDATE_INSTALL: 'app-update:install',
+  APP_UPDATE_CHANGED: 'app-update:changed',
   // Account
   ACCOUNT_ADD: 'account:add',
   ACCOUNT_LIST: 'account:list',
@@ -36,6 +41,7 @@ export const IPC_CHANNELS = {
   // Share
   SHARE_BATCH_CREATE: 'share:batch-create',
   SHARE_LIST: 'share:list',
+  SHARE_CANCEL: 'share:cancel',
   SHARE_DELETE: 'share:delete',
   SHARE_EXPORT_CSV: 'share:export-csv',
 
@@ -157,16 +163,36 @@ export const IPC_CHANNELS = {
   AI_DOCUMENT_REINDEX: 'ai:document-reindex',
   AI_TASK_LIST: 'ai:task-list',
   AI_TASK_UPDATED: 'ai:task-updated',
+  CLIPBOARD_SHARE_DETECTED: 'clipboard:share-detected',
+  CLIPBOARD_MONITOR_GET: 'clipboard:monitor-get',
+  CLIPBOARD_MONITOR_SET: 'clipboard:monitor-set',
+  SHORTCUTS_GET: 'shortcuts:get',
+  SHORTCUTS_SET: 'shortcuts:set',
+  ALIYUN_EXCHANGE_CODE: 'aliyun:exchange-code',
+  PAN123_FETCH_TOKEN: 'pan123:fetch-token',
+  AI_IMPORT_CLOUD_FILE: 'ai:import-cloud-file',
+  SUBSCRIPTION_LIST: 'subscription:list',
+  SUBSCRIPTION_ADD: 'subscription:add',
+  SUBSCRIPTION_REMOVE: 'subscription:remove',
+  SUBSCRIPTION_TOGGLE: 'subscription:toggle',
+  SUBSCRIPTION_RUN_NOW: 'subscription:run-now',
   AI_PROVIDER_GET: 'ai:provider-get',
   AI_PROVIDER_SAVE: 'ai:provider-save',
   AI_PROVIDER_TEST: 'ai:provider-test',
+  AI_PROVIDER_TEST_CONFIG: 'ai:provider-test-config',
+  AI_PROVIDER_LIST_MODELS: 'ai:provider-list-models',
+  AI_PROVIDER_QUERY_BALANCE: 'ai:provider-query-balance',
   AI_PROVIDER_LIST: 'ai:provider-list',
   AI_PROVIDER_ACTIVATE: 'ai:provider-activate',
   AI_PROVIDER_DELETE: 'ai:provider-delete',
+  AI_PROVIDER_DUPLICATE: 'ai:provider-duplicate',
+  AI_PROVIDER_CHANGED: 'ai:provider-changed',
   AI_PROVIDER_USAGE: 'ai:provider-usage',
   AI_LOCAL_TOOLS_GET: 'ai:local-tools-get',
   AI_LOCAL_TOOLS_SAVE: 'ai:local-tools-save',
   AI_LOCAL_TOOLS_SELECT: 'ai:local-tools-select',
+  AI_PROCESSING_POLICY_GET: 'ai:processing-policy-get',
+  AI_PROCESSING_POLICY_SAVE: 'ai:processing-policy-save',
   AI_ASK: 'ai:ask',
   AI_ASK_STREAM_START: 'ai:ask-stream-start',
   AI_ASK_STREAM_CANCEL: 'ai:ask-stream-cancel',
@@ -190,6 +216,10 @@ export const PLATFORM_LABELS: Record<string, string> = {
   baidu: '百度网盘',
   uc: 'UC网盘',
   xunlei: '迅雷网盘',
+  webdav: 'WebDAV',
+  aliyun: '阿里云盘',
+  pan123: '123云盘',
+  aliyun_web: '阿里云盘·网页版',
 }
 
 export const PAN_PATTERNS: Record<string, RegExp> = {
@@ -197,6 +227,7 @@ export const PAN_PATTERNS: Record<string, RegExp> = {
   baidu: /https?:\/\/pan\.baidu\.com\/s\/[a-zA-Z0-9_-]+(\?pwd=[a-zA-Z0-9]+)?/,
   uc: /https?:\/\/drive\.uc\.cn\/s\/[a-zA-Z0-9]+/,
   xunlei: /https?:\/\/pan\.xunlei\.com\/s\/[a-zA-Z0-9_-]+(\?pwd=[a-zA-Z0-9]+)?/,
+  aliyun_web: /https?:\/\/(?:www\.)?(?:alipan\.com|aliyundrive\.com)\/s\/[a-zA-Z0-9_-]+/,
 }
 
 export const TASK_TYPE_LABELS: Record<string, string> = {
@@ -209,6 +240,11 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
   transfer: '转存',
   batch_transfer: '批量转存',
   cloud_transfer: '跨网盘迁移',
+  planned_transfer: '迁移计划',
+  subscription_sync: '订阅追更',
+  file_backup: '文件版本备份',
+  file_restore: '文件版本恢复',
+  file_backup_prune: '清理历史版本',
   upload: '上传文件',
   download: '下载文件',
   archive_extract: '解压文件',
@@ -244,6 +280,17 @@ export const BAIDU_SAVE_LIMIT = 1000
 export const SETTINGS_KEYS = {
   BANNED_KEYWORDS: 'bannedKeywords',
   AD_FILTER_ENABLED: 'adFilterEnabled',
+  CLIPBOARD_MONITOR_ENABLED: 'clipboardMonitorEnabled',
+} as const
+
+/** 剪贴板监听默认开启 */
+export const CLIPBOARD_MONITOR_DEFAULT_ENABLED = true
+
+/** 全局快捷键组合 */
+export const GLOBAL_SHORTCUTS = {
+  TOGGLE_WINDOW: 'Ctrl+Alt+P',
+  QUICK_SEARCH: 'Ctrl+Alt+F',
+  BATCH_TRANSFER: 'Ctrl+Alt+B',
 } as const
 
 /** 默认广告关键词列表（参考 xinyue-search） */

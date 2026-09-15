@@ -166,6 +166,7 @@ import { PLATFORM_LABELS } from '@shared/constants'
 import { getPlatformCapabilities } from '@shared/capabilities'
 import { isTargetInsideSelectedDirectory, selectCloudTransferMode } from '@shared/cloud-transfer'
 import { electronApi } from '../api/ipc'
+import { extractSourceHash } from '@shared/cloud-transfer'
 import { useAccountStore } from '../stores/account'
 
 type SafeAccount = Omit<DriveAccount, 'credential'>
@@ -195,18 +196,29 @@ const selectedIds = computed(() => new Set(selectedFiles.value.map((file) => fil
 const baiduCookieSource = computed(() => Boolean(
   sourceAccount.value?.platform === 'baidu' && sourceAccount.value.loginType !== 'oauth',
 ))
-const canSubmit = computed(() => Boolean(
-  sourceAccount.value && targetAccount.value && selectedFiles.value.length && !baiduCookieSource.value,
-))
-const transferModeText = computed(() => {
-  if (!sourceAccount.value || !targetAccount.value) return '选择源账号和目标账号后显示迁移方式'
-  const mode = selectCloudTransferMode({
+const selectedTransferMode = computed(() => {
+  if (!sourceAccount.value || !targetAccount.value) return null
+  return selectCloudTransferMode({
     sameAccount: sourceAccount.value.id === targetAccount.value.id,
     samePlatform: sourceAccount.value.platform === targetAccount.value.platform,
     conflictPolicy: conflictPolicy.value,
     canNativeCopy: getPlatformCapabilities(sourceAccount.value.platform).copy,
-    canSharedTransfer: true,
+    canSharedTransfer:
+      getPlatformCapabilities(sourceAccount.value.platform).share
+      && getPlatformCapabilities(targetAccount.value.platform).transfer,
   })
+})
+const canSubmit = computed(() => {
+  if (!sourceAccount.value || !targetAccount.value || !selectedFiles.value.length || baiduCookieSource.value) return false
+  const sourceCapabilities = getPlatformCapabilities(sourceAccount.value.platform)
+  const targetCapabilities = getPlatformCapabilities(targetAccount.value.platform)
+  if (selectedTransferMode.value === 'native_copy') return sourceCapabilities.copy
+  if (selectedTransferMode.value === 'shared_transfer') return sourceCapabilities.share && targetCapabilities.transfer
+  return sourceCapabilities.downloadFile && targetCapabilities.uploadFile
+})
+const transferModeText = computed(() => {
+  if (!sourceAccount.value || !targetAccount.value) return '选择源账号和目标账号后显示迁移方式'
+  const mode = selectedTransferMode.value
   if (mode === 'native_copy') return '迁移方式：网盘原生云端复制'
   if (mode === 'shared_transfer') return '迁移方式：同平台云端转存，不占用本地带宽'
   return '迁移方式：源网盘官方下载 → 目标网盘官方上传，临时文件完成后清理'
@@ -226,33 +238,45 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
+let loadSourceFilesVersion = 0
 async function loadSourceFiles(parentId: string): Promise<void> {
-  if (!sourceAccountId.value) return
+  const version = ++loadSourceFilesVersion
+  const accountId = sourceAccountId.value
+  if (!accountId) return
   sourceLoading.value = true
+  sourceFiles.value = []
   try {
-    const result = await electronApi.listFiles(sourceAccountId.value, parentId)
-    if (!result.success) throw new Error(result.error || '加载源目录失败')
+    const result = await electronApi.listFiles(accountId, parentId)
+    if (version !== loadSourceFilesVersion || accountId !== sourceAccountId.value) return
+    if (!result.success) throw new Error(result.error || '加载目录失败')
     sourceFiles.value = result.files
-  } catch (err) {
+  } catch (error) {
+    if (version !== loadSourceFilesVersion || accountId !== sourceAccountId.value) return
     sourceFiles.value = []
-    ElMessage.error(String(err))
+    ElMessage.error('加载目录失败: ' + String(error))
   } finally {
-    sourceLoading.value = false
+    if (version === loadSourceFilesVersion) sourceLoading.value = false
   }
 }
 
+let loadTargetFoldersVersion = 0
 async function loadTargetFolders(parentId: string): Promise<void> {
-  if (!targetAccountId.value) return
+  const version = ++loadTargetFoldersVersion
+  const accountId = targetAccountId.value
+  if (!accountId) return
   targetLoading.value = true
+  targetFolders.value = []
   try {
-    const result = await electronApi.listFiles(targetAccountId.value, parentId)
-    if (!result.success) throw new Error(result.error || '加载目标目录失败')
+    const result = await electronApi.listFiles(accountId, parentId)
+    if (version !== loadTargetFoldersVersion || accountId !== targetAccountId.value) return
+    if (!result.success) throw new Error(result.error || '加载目录失败')
     targetFolders.value = result.files.filter((file: FileItem) => file.isDir)
-  } catch (err) {
+  } catch (error) {
+    if (version !== loadTargetFoldersVersion || accountId !== targetAccountId.value) return
     targetFolders.value = []
-    ElMessage.error(String(err))
+    ElMessage.error('加载目录失败: ' + String(error))
   } finally {
-    targetLoading.value = false
+    if (version === loadTargetFoldersVersion) targetLoading.value = false
   }
 }
 
@@ -297,6 +321,7 @@ function targetBack(): void {
 }
 
 async function submitTransfer(): Promise<void> {
+  if (submitting.value || !canSubmit.value) return
   if (!sourceAccount.value || !targetAccount.value || selectedFiles.value.length === 0) return
   const targetAncestorIds = targetNav.value.map((item) => item.id)
   if (sourceAccount.value.id === targetAccount.value.id
@@ -318,6 +343,7 @@ async function submitTransfer(): Promise<void> {
         fileSize: file.size,
         isDir: file.isDir,
         path: file.path,
+        hash: extractSourceHash(file.platform, file.raw),
       })),
       targetDirId: targetCurrentId.value,
       targetPath: targetPathLabel.value,
@@ -335,6 +361,8 @@ async function submitTransfer(): Promise<void> {
 }
 
 watch(sourceAccountId, (accountId) => {
+  loadSourceFilesVersion++
+  sourceLoading.value = false
   sourceNav.value = [{ id: '0', name: '根目录' }]
   sourceFiles.value = []
   selectedFiles.value = []
@@ -342,6 +370,8 @@ watch(sourceAccountId, (accountId) => {
 })
 
 watch(targetAccountId, (accountId) => {
+  loadTargetFoldersVersion++
+  targetLoading.value = false
   targetNav.value = [{ id: '0', name: '根目录' }]
   targetFolders.value = []
   if (accountId) loadTargetFolders('0')
@@ -383,7 +413,7 @@ onMounted(async () => {
 .folder-icon { flex-shrink: 0; color: var(--pl-warning); }
 .file-icon { flex-shrink: 0; color: var(--pl-text-muted); }
 .file-name { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
-.file-size { flex-shrink: 0; color: var(--pl-text-muted); font-size: 11px; }
+.file-size { flex-shrink: 0; color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .enter-button { width: 26px; height: 26px; display: grid; flex-shrink: 0; place-items: center; border-radius: var(--pl-radius-sm); }
 .empty-state { height: 100%; min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--pl-text-muted); font-size: 12px; }
 .selection-summary, .target-summary { min-height: 34px; display: flex; align-items: center; justify-content: space-between; color: var(--pl-text-secondary); font-size: 12px; }

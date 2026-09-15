@@ -18,6 +18,22 @@ const QUARK_UA =
   'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko)' +
   ' Chrome/94.0.4606.71 Safari/537.36 Core/1.94.225.400 QQBrowser/12.2.5544.400'
 
+interface LoginConfirmEvent {
+  readonly sender: unknown
+  readonly senderFrame: unknown | null
+}
+
+interface LoginConfirmWindow {
+  isDestroyed(): boolean
+  webContents: { readonly mainFrame: unknown }
+}
+
+export function isLoginConfirmFromWindow(event: LoginConfirmEvent, loginWindow: LoginConfirmWindow): boolean {
+  if (loginWindow.isDestroyed()) return false
+  return event.sender === loginWindow.webContents
+    && event.senderFrame === loginWindow.webContents.mainFrame
+}
+
 /**
  * 打开夸克网盘登录窗口
  * 完全参照 QuarkPanTool 的逻辑：
@@ -76,7 +92,8 @@ export async function openQuarkLoginWindow(parentWindow: BrowserWindow): Promise
     })
 
     // 监听用户点击"我已登录"按钮
-    const onConfirm = async (_event: Electron.IpcMainEvent) => {
+    const onConfirm = async (event: Electron.IpcMainEvent) => {
+      if (!isLoginConfirmFromWindow(event, loginWindow)) return
       if (resolved) return
 
       try {
@@ -214,7 +231,8 @@ export async function openUcLoginWindow(parentWindow: BrowserWindow): Promise<Lo
 
     const ucSession = session.fromPartition('persist:uc-login')
 
-    const onConfirm = async (_event: Electron.IpcMainEvent) => {
+    const onConfirm = async (event: Electron.IpcMainEvent) => {
+      if (!isLoginConfirmFromWindow(event, loginWindow)) return
       if (resolved) return
       try {
         const allCookies = await ucSession.cookies.get({})
@@ -359,7 +377,8 @@ export async function openBaiduLoginWindow(parentWindow: BrowserWindow): Promise
 
     const baiduSession = session.fromPartition('persist:baidu-login')
 
-    const onConfirm = async (_event: Electron.IpcMainEvent) => {
+    const onConfirm = async (event: Electron.IpcMainEvent) => {
+      if (!isLoginConfirmFromWindow(event, loginWindow)) return
       if (resolved) return
       try {
         const userAgent = loginWindow.webContents.getUserAgent()
@@ -491,7 +510,8 @@ export async function openXunleiLoginWindow(parentWindow: BrowserWindow): Promis
       log.error(`Xunlei login window: page load failed: ${errorCode} ${errorDescription} for ${validatedURL}`)
     })
 
-    const onConfirm = async (_event: Electron.IpcMainEvent) => {
+    const onConfirm = async (event: Electron.IpcMainEvent) => {
+      if (!isLoginConfirmFromWindow(event, loginWindow)) return
       if (resolved) return
       try {
         // 从 localStorage 提取 refresh_token
@@ -562,18 +582,18 @@ export async function openXunleiLoginWindow(parentWindow: BrowserWindow): Promis
 
             // 如果没有 refresh_token，尝试从原始 JSON 中查找
             if (!refreshToken) {
-              for (var idx = 0; idx < localStorage.length; idx++) {
-                var k = localStorage.key(idx) || '';
-                var v = localStorage.getItem(k);
+              for (let idx = 0; idx < localStorage.length; idx++) {
+                const k = localStorage.key(idx) || '';
+                const v = localStorage.getItem(k);
                 if (v && v.startsWith('{')) {
                   try {
-                    var o = JSON.parse(v);
+                    const o = JSON.parse(v);
                     if (o && o.refresh_token) {
                       refreshToken = o.refresh_token;
                       log.info(`Xunlei login: found refresh_token in key="${k}", len=${refreshToken.length}`);
                       break;
                     }
-                  } catch(e) {}
+                  } catch { }
                 }
               }
             }
@@ -711,7 +731,7 @@ export async function openXunleiLoginWindow(parentWindow: BrowserWindow): Promis
               userId = userData.id || userData.user_id || userData.sub
               log.info('Xunlei login: got userId:', userId)
             }
-          } catch (parseErr) {
+          } catch {
             log.warn('Xunlei login: failed to parse user response')
           }
         } catch (err) {

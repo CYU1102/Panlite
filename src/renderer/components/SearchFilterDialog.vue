@@ -66,6 +66,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 
 export interface SearchFilterOptions {
   fileTypes?: string[]
@@ -102,9 +103,13 @@ watch(() => props.filters, (newFilters) => {
   dateRange.value = newFilters.dateFrom && newFilters.dateTo
     ? [new Date(newFilters.dateFrom), new Date(newFilters.dateTo)]
     : null
-}, { deep: true })
+}, { deep: true, immediate: true })
 
 function onApply() {
+  if (minSizeMB.value !== undefined && maxSizeMB.value !== undefined && minSizeMB.value > maxSizeMB.value) {
+    ElMessage.warning('最小文件大小不能大于最大文件大小')
+    return
+  }
   const filters: SearchFilterOptions = {}
 
   if (selectedTypes.value.length > 0) {
@@ -121,7 +126,7 @@ function onApply() {
 
   if (dateRange.value && dateRange.value.length === 2) {
     filters.dateFrom = dateRange.value[0].getTime()
-    filters.dateTo = dateRange.value[1].getTime() + 24 * 60 * 60 * 1000 - 1 // 包含结束日期
+    filters.dateTo = new Date(dateRange.value[1]).setHours(23, 59, 59, 999)
   }
 
   emit('apply', filters)

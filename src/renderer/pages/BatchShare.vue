@@ -1,4 +1,4 @@
-﻿<template>
+<template>
 
  <div class="batch-share">
 
@@ -87,6 +87,8 @@
  <el-option label="UC网盘" value="uc" />
 
  <el-option label="迅雷网盘" value="xunlei" />
+
+ <el-option label="阿里云盘·网页版" value="aliyun_web" />
 
  </el-select>
 
@@ -312,7 +314,11 @@
           </el-form-item>
 
           <el-form-item label="提取码">
-            <el-input v-model="password" placeholder="留空则自动生成" />
+            <el-input
+              v-model="password"
+              :disabled="platform === 'xunlei'"
+              :placeholder="platform === 'xunlei' ? '迅雷由服务端自动生成' : '留空则自动生成'"
+            />
           </el-form-item>
         </el-form>
 
@@ -461,7 +467,7 @@ const accountStore = useAccountStore()
 
 
 
-const platform = ref<'quark' | 'baidu' | 'uc' | 'xunlei'>('quark')
+const platform = ref<'quark' | 'baidu' | 'uc' | 'xunlei' | 'aliyun_web'>('quark')
 
 const selectedAccountId = ref('')
 
@@ -514,9 +520,9 @@ watch(platform, () => {
 
 watch(filteredAccounts, (accs) => {
 
-  if (accs.length > 0 && !accs.find((a) => a.id === selectedAccountId.value)) {
+  if (!accs.find((a) => a.id === selectedAccountId.value)) {
 
-    selectedAccountId.value = accs[0].id
+    selectedAccountId.value = accs[0]?.id || ''
 
   }
 
@@ -540,57 +546,27 @@ const loadingFiles = ref(false)
 
 
 
-async function loadFiles(parentId: string) {
-
-  const accId = selectedAccountId.value
-
-  if (!accId) return
-
-
-
+let loadFilesVersion = 0
+async function loadFiles(parentId: string): Promise<void> {
+  const version = ++loadFilesVersion
+  const accountId = selectedAccountId.value
+  if (!accountId) return
   loadingFiles.value = true
-
+  files.value = []
   try {
-
-    const result = await electronApi.listFiles(accId, parentId)
-
-    if (result.success) {
-
-      // Sort: folders first, then files
-
-      files.value = (result.files || []).sort((a: FileItem, b: FileItem) => {
-
-        if (a.isDir && !b.isDir) return -1
-
-        if (!a.isDir && b.isDir) return 1
-
-        return a.name.localeCompare(b.name)
-
-      })
-
-    } else {
-
-      ElMessage.error(result.error || '加载文件失败')
-
-      files.value = []
-
-    }
-
-  } catch (err) {
-
-    ElMessage.error('加载文件失败: ' + String(err))
-
+    const result = await electronApi.listFiles(accountId, parentId)
+    if (version !== loadFilesVersion || accountId !== selectedAccountId.value) return
+    if (!result.success) throw new Error(result.error || '加载目录失败')
+    files.value = [...result.files].sort((left: FileItem, right: FileItem) =>
+      Number(right.isDir) - Number(left.isDir) || left.name.localeCompare(right.name))
+  } catch (error) {
+    if (version !== loadFilesVersion || accountId !== selectedAccountId.value) return
     files.value = []
-
+    ElMessage.error('加载目录失败: ' + String(error))
   } finally {
-
-    loadingFiles.value = false
-
+    if (version === loadFilesVersion) loadingFiles.value = false
   }
-
 }
-
-
 
 function onEnterDir(file: FileItem) {
 
@@ -629,6 +605,9 @@ function onGoBack() {
 
 
 watch(selectedAccountId, (id) => {
+  selectedFiles.value = []
+  loadFilesVersion++
+  loadingFiles.value = false
 
   if (id) {
 
@@ -701,6 +680,7 @@ function clearSelection() {
 
 
 async function onSubmit() {
+  if (submitting.value) return
 
   if (!selectedAccountId.value) return
 
@@ -708,6 +688,8 @@ async function onSubmit() {
 
 
 
+  const accountId = selectedAccountId.value
+  const filesToShare = [...selectedFiles.value]
   submitting.value = true
 
   try {
@@ -730,7 +712,7 @@ async function onSubmit() {
 
       // One share link for all files
       // 使用 JSON 序列化去除 Vue 响应式包装，避免 IPC 克隆失败
-      const items = JSON.parse(JSON.stringify(selectedFiles.value.map((f) => ({
+      const items = JSON.parse(JSON.stringify(filesToShare.map((f) => ({
 
         fileId: f.id,
 
@@ -742,13 +724,13 @@ async function onSubmit() {
 
       }))))
 
-      const result = await electronApi.batchShare(selectedAccountId.value, items, options)
+      const result = await electronApi.batchShare(accountId, items, options)
 
       if (result.success) {
 
         ElMessage.success('分享任务已创建，请在任务日志中查看进度')
 
-        selectedFiles.value = []
+        if (selectedAccountId.value === accountId) selectedFiles.value = []
 
       } else {
 
@@ -764,11 +746,12 @@ async function onSubmit() {
 
       let failCount = 0
 
-      for (const file of selectedFiles.value) {
+      const failedFiles: FileItem[] = []
+      for (const file of filesToShare) {
 
         const items = JSON.parse(JSON.stringify([{ fileId: file.id, name: file.name, isDir: file.isDir, raw: file.raw }]))
 
-        const result = await electronApi.batchShare(selectedAccountId.value, items, options)
+        const result = await electronApi.batchShare(accountId, items, options)
 
         if (result.success) {
 
@@ -777,6 +760,7 @@ async function onSubmit() {
         } else {
 
           failCount++
+          failedFiles.push(file)
 
         }
 
@@ -792,7 +776,7 @@ async function onSubmit() {
 
       }
 
-      selectedFiles.value = []
+      if (selectedAccountId.value === accountId) selectedFiles.value = failedFiles
 
     }
 
@@ -813,6 +797,7 @@ async function onSubmit() {
 onMounted(async () => {
 
   await accountStore.fetchAccounts()
+  if (selectedAccountId.value) await loadFiles('0')
 
   // Auto-select first account if none selected
 
@@ -860,11 +845,11 @@ onMounted(async () => {
 
   padding: 20px 24px;
 
-  background: #ffffff;
+  background: var(--pl-surface);
 
   border-radius: 12px;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
 }
 
@@ -910,7 +895,7 @@ onMounted(async () => {
 
   font-weight: 700;
 
-  color: #1f2937;
+  color: var(--pl-text);
 
   margin-bottom: 2px;
 
@@ -922,7 +907,7 @@ onMounted(async () => {
 
   font-size: 12px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
 }
 
@@ -948,11 +933,11 @@ onMounted(async () => {
 
   flex: 1;
 
-  background: #ffffff;
+  background: var(--pl-surface);
 
   border-radius: 12px;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
   padding: 16px;
 
@@ -972,7 +957,7 @@ onMounted(async () => {
 
   font-weight: 600;
 
-  color: #374151;
+  color: var(--pl-text);
 
 }
 
@@ -1008,11 +993,11 @@ onMounted(async () => {
 
   gap: 8px;
 
-  color: #d1d5db;
+  color: var(--pl-border);
 
 }
 
-.file-empty p { font-size: 13px; color: #9ca3af; }
+.file-empty p { font-size: 13px; color: var(--pl-text-muted); }
 
 
 
@@ -1028,11 +1013,11 @@ onMounted(async () => {
 
   padding: 8px 12px;
 
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
 
   border-radius: 8px;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
 }
 
@@ -1060,7 +1045,7 @@ onMounted(async () => {
 
   font-size: 13px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
   cursor: pointer;
 
@@ -1072,13 +1057,13 @@ onMounted(async () => {
 
 }
 
-.crumb:hover { background: #e5e7eb; color: #3b82f6; }
+.crumb:hover { background: var(--pl-border); color: #3b82f6; }
 
-.crumb.active { color: #1f2937; font-weight: 600; cursor: default; }
+.crumb.active { color: var(--pl-text); font-weight: 600; cursor: default; }
 
 .crumb.active:hover { background: transparent; }
 
-.crumb-sep { color: #d1d5db; flex-shrink: 0; }
+.crumb-sep { color: var(--pl-border); flex-shrink: 0; }
 
 
 
@@ -1096,11 +1081,11 @@ onMounted(async () => {
 
   border: none;
 
-  background: #e5e7eb;
+  background: var(--pl-border);
 
   border-radius: 6px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
   cursor: pointer;
 
@@ -1108,7 +1093,7 @@ onMounted(async () => {
 
 }
 
-.nav-btn:hover:not(:disabled) { background: #d1d5db; color: #374151; }
+.nav-btn:hover:not(:disabled) { background: var(--pl-border); color: var(--pl-text); }
 
 .nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -1122,7 +1107,7 @@ onMounted(async () => {
 
   overflow-y: auto;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
   border-radius: 8px;
 
@@ -1142,11 +1127,11 @@ onMounted(async () => {
 
   padding: 40px 0;
 
-  color: #d1d5db;
+  color: var(--pl-border);
 
 }
 
-.file-empty-list span { font-size: 13px; color: #9ca3af; }
+.file-empty-list span { font-size: 13px; color: var(--pl-text-muted); }
 
 
 
@@ -1162,9 +1147,9 @@ onMounted(async () => {
 
   cursor: pointer;
 
-  color: #374151;
+  color: var(--pl-text);
 
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--pl-hover);
 
   transition: background 0.1s;
 
@@ -1172,7 +1157,7 @@ onMounted(async () => {
 
 .file-item:last-child { border-bottom: none; }
 
-.file-item:hover { background: #f9fafb; }
+.file-item:hover { background: var(--pl-surface-subtle); }
 
 .file-item.selected { background: #eff6ff; }
 
@@ -1202,7 +1187,7 @@ onMounted(async () => {
 
 .file-icon.dir { background: #eff6ff; color: #3b82f6; }
 
-.file-icon.file { background: #f3f4f6; color: #6b7280; }
+.file-icon.file { background: var(--pl-hover); color: var(--pl-text-secondary); }
 
 
 
@@ -1226,7 +1211,7 @@ onMounted(async () => {
 
   font-size: 12px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
   flex-shrink: 0;
 
@@ -1256,7 +1241,7 @@ onMounted(async () => {
 
   border-radius: 4px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
   cursor: pointer;
 
@@ -1264,7 +1249,7 @@ onMounted(async () => {
 
 }
 
-.file-enter:hover { background: #e5e7eb; color: #374151; }
+.file-enter:hover { background: var(--pl-border); color: var(--pl-text); }
 
 
 
@@ -1304,7 +1289,7 @@ onMounted(async () => {
 
   font-size: 13px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
 }
 
@@ -1342,7 +1327,7 @@ onMounted(async () => {
 
   overflow-y: auto;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
   border-radius: 8px;
 
@@ -1368,7 +1353,7 @@ onMounted(async () => {
 
 }
 
-.selected-item:hover { background: #f9fafb; }
+.selected-item:hover { background: var(--pl-surface-subtle); }
 
 
 
@@ -1392,7 +1377,7 @@ onMounted(async () => {
 
 .selected-icon.dir { background: #eff6ff; color: #3b82f6; }
 
-.selected-icon.file { background: #f3f4f6; color: #6b7280; }
+.selected-icon.file { background: var(--pl-hover); color: var(--pl-text-secondary); }
 
 
 
@@ -1430,7 +1415,7 @@ onMounted(async () => {
 
   border-radius: 4px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
   cursor: pointer;
 
@@ -1446,7 +1431,7 @@ onMounted(async () => {
 
   font-size: 12px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
   text-align: center;
 
@@ -1466,7 +1451,7 @@ onMounted(async () => {
 
   justify-content: center;
 
-  border: 1px dashed #e5e7eb;
+  border: 1px dashed var(--pl-border);
 
   border-radius: 8px;
 
@@ -1476,7 +1461,7 @@ onMounted(async () => {
 
   font-size: 13px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
   text-align: center;
 
@@ -1496,11 +1481,11 @@ onMounted(async () => {
 
   padding: 12px 20px;
 
-  background: #ffffff;
+  background: var(--pl-surface);
 
   border-radius: 12px;
 
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 
 }
 
@@ -1510,7 +1495,7 @@ onMounted(async () => {
 
   font-size: 13px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
 }
 
@@ -1595,7 +1580,7 @@ onMounted(async () => {
 
 .step-copy { display: flex; flex-direction: column; line-height: 1.25; }
 .step-copy strong { color: var(--pl-text); font-size: 12px; font-weight: 650; white-space: nowrap; }
-.step-copy small { margin-top: 2px; font-size: 10px; color: currentColor; white-space: nowrap; }
+.step-copy small { margin-top: 2px; font-size: var(--pl-font-xs); color: currentColor; white-space: nowrap; }
 
 .step-line { height: 1px; min-width: 24px; background: var(--pl-border); transition: background 180ms ease; }
 .step-line.complete { background: var(--pl-success); }
@@ -1605,10 +1590,10 @@ onMounted(async () => {
 
 .panel-heading { display: flex; align-items: center; gap: var(--pl-space-3); min-height: 36px; }
 .panel-heading > div:nth-child(2) { min-width: 0; }
-.panel-step { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--pl-radius-sm); color: var(--pl-primary); background: var(--pl-primary-soft); font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+.panel-step { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--pl-radius-sm); color: var(--pl-primary); background: var(--pl-primary-soft); font-size: var(--pl-font-xs); font-weight: 750; letter-spacing: .04em; }
 .panel-title { font-size: 14px; font-weight: 700; }
-.panel-hint { margin-top: 2px; color: var(--pl-text-muted); font-size: 11px; line-height: 1.35; }
-.selection-count { margin-left: auto; padding: 4px 9px; border-radius: 999px; background: var(--pl-success-soft); color: var(--pl-success); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.panel-hint { margin-top: 2px; color: var(--pl-text-muted); font-size: var(--pl-font-xs); line-height: 1.35; }
+.selection-count { margin-left: auto; padding: 4px 9px; border-radius: 999px; background: var(--pl-success-soft); color: var(--pl-success); font-size: var(--pl-font-xs); font-weight: 650; white-space: nowrap; }
 
 .account-bar { padding: var(--pl-space-2); border-radius: var(--pl-radius-control); background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); }
 .file-list { background: var(--pl-surface); }
@@ -1628,7 +1613,7 @@ onMounted(async () => {
 .options-panel :deep(.el-form) { padding: var(--pl-space-3); border: 1px solid var(--pl-border); border-radius: var(--pl-radius-control); background: var(--pl-surface-subtle); }
 .options-panel :deep(.el-form-item:last-child) { margin-bottom: 0; }
 .selected-title { min-height: 28px; }
-.selected-count { padding: 2px 8px; border-radius: 999px; background: var(--pl-primary-soft); color: var(--pl-primary); font-size: 11px; }
+.selected-count { padding: 2px 8px; border-radius: 999px; background: var(--pl-primary-soft); color: var(--pl-primary); font-size: var(--pl-font-xs); }
 .selected-item { min-height: 36px; transition: background 150ms ease, transform 150ms ease; }
 .selected-item:hover { background: var(--pl-surface); transform: translateX(2px); }
 
@@ -1649,7 +1634,7 @@ onMounted(async () => {
 
 @media (max-width: 560px) {
   .workflow-steps { padding: var(--pl-space-3); }
-  .step-copy strong { font-size: 11px; }
+  .step-copy strong { font-size: var(--pl-font-xs); }
   .panel-heading { align-items: flex-start; }
   .panel-hint { display: none; }
   .selection-count { align-self: center; }

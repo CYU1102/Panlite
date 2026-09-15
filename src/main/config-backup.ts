@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import type Database from 'better-sqlite3'
 import { getDb } from './db'
+import { isRequestSettingKey, normalizeRequestSetting } from './request-settings'
 
 export const CONFIG_BACKUP_FORMAT = 'panlite-config-backup'
 export const CONFIG_BACKUP_VERSION = 1
@@ -268,6 +269,7 @@ function normalizeRow(row: unknown, spec: TableSpec, index: number): Record<stri
   if (spec.table === 'settings') {
     const key = String(result.key)
     if (!SAFE_SETTING_KEYS.has(key) || Number(result.encrypted || 0) !== 0) throw new Error(`设置 ${key} 不允许导入`)
+    if (isRequestSettingKey(key)) result.value = String(normalizeRequestSetting(key, result.value))
     result.encrypted = 0
   }
   return result
@@ -342,7 +344,13 @@ function previewTable(
   mode: BackupImportMode,
 ): BackupTablePreview {
   const existing = existingKeys(database, table, key)
+  if (table === 'settings' && tableExists(database, table)) {
+    const safeKeys = database.prepare('SELECT key FROM settings WHERE encrypted = 0').all() as Array<{ key: string }>
+    existing.clear()
+    for (const row of safeKeys) if (SAFE_SETTING_KEYS.has(row.key)) existing.add(row.key)
+  }
   const incoming = new Set(rows.map((row) => String((row as unknown as Record<string, unknown>)[key])))
+  if (incoming.size !== rows.length) throw new Error(`${table} 包含重复的 ${key}`)
   let updates = 0
   for (const value of incoming) if (existing.has(value)) updates += 1
   let deletes = 0
@@ -361,6 +369,15 @@ export function previewConfigBackupImport(
   const backup = parseConfigBackup(input)
   const mode = options.mode || 'merge'
   if (mode !== 'merge' && mode !== 'replace') throw new Error('导入模式无效')
+  if (tableExists(db, 'accounts')) {
+    const findAccount = db.prepare('SELECT platform, login_type FROM accounts WHERE id = ?')
+    for (const incoming of backup.data.accounts) {
+      const existing = findAccount.get(incoming.id) as { platform: string; login_type: string } | undefined
+      if (existing && (existing.platform !== incoming.platform || existing.login_type !== incoming.login_type)) {
+        throw new Error(`账号 ${incoming.id} 的平台或登录方式与现有账号冲突，不能覆盖原凭据的归属`)
+      }
+    }
+  }
   const tables: BackupTablePreview[] = [
     previewTable(db, 'accounts', 'id', backup.data.accounts, mode),
     ...TABLE_SPECS.map((spec) => previewTable(db, spec.table, spec.key, backup.data[spec.table], mode)),

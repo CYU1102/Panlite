@@ -1,6 +1,6 @@
 import type { SearchResultItem } from '../shared/types'
 import { PAN_PATTERNS } from '../shared/constants'
-import { fetchHtml, stripHtml, decodeHtmlEntities } from './crawler-utils'
+import { fetchHtml, stripHtml } from './crawler-utils'
 import log from 'electron-log'
 import * as cheerio from 'cheerio'
 
@@ -14,11 +14,8 @@ import * as cheerio from 'cheerio'
 
 /** 构建完整URL（与xinyue-search的buildFullUrl一致） */
 function buildFullUrl(url: string, baseUrl: string): string {
-  if (url.startsWith('http')) return url
   try {
-    const parsed = new URL(baseUrl)
-    const base = `${parsed.protocol}//${parsed.host}`
-    return url.startsWith('/') ? `${base}${url}` : `${base}/${url}`
+    return new URL(url, baseUrl).href
   } catch {
     return url
   }
@@ -193,23 +190,11 @@ async function extractUrlFromDetailPage(
 
   // 遍历详情页节点查找网盘链接
   for (const node of nodes.toArray()) {
-    const nodeHtml = $.html(node)
-
-    // 尝试从内容中提取
-    const contentSelector = buildCssSelector(tagUrl, classStringUrl)
-    const contentElement = $(node).find(contentSelector).first()
-    if (contentElement.length > 0) {
-      const extractedUrl = stripHtml(contentElement.html() || '')
-      const urlMatch = extractedUrl.match(panPattern)
-      if (urlMatch) return urlMatch[0].trim()
-    }
-
-    // 尝试从href属性中提取
-    const hrefPattern = buildHrefPattern(tagUrl, classStringUrl)
-    const hrefMatch = nodeHtml.match(hrefPattern)
-    if (hrefMatch) {
-      const extractedUrl = hrefMatch[1].trim()
-      const urlMatch = extractedUrl.match(panPattern)
+    const textMatch = $(node).text().match(panPattern)
+    if (textMatch) return textMatch[0].trim()
+    // The configured element is the content container; links may be its descendants.
+    for (const link of $(node).find('[href]').addBack('[href]').toArray()) {
+      const urlMatch = ($(link).attr('href') || '').match(panPattern)
       if (urlMatch) return urlMatch[0].trim()
     }
   }

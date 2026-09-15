@@ -223,7 +223,12 @@ async function startUpload() {
   try {
     const result = await electronApi.uploadFiles({
       accountId: props.account.id,
-      files: fileList.value,
+      files: fileList.value.map((file) => ({
+        localPath: file.localPath,
+        fileName: file.fileName,
+        fileSize: file.fileSize,
+        ...(file.relativePath !== undefined ? { relativePath: file.relativePath } : {}),
+      })),
       targetDirId: props.targetDirId,
       conflictPolicy: conflictPolicy.value,
     })
@@ -235,8 +240,8 @@ async function startUpload() {
     } else {
       ElMessage.error(result.error || '创建上传任务失败')
     }
-  } catch {
-    ElMessage.error('创建上传任务失败')
+  } catch (error) {
+    ElMessage.error('创建上传任务失败: ' + (error instanceof Error ? error.message : String(error)))
   } finally {
     uploading.value = false
   }
@@ -386,12 +391,12 @@ function onClose() {
   border-radius: 12px;
 }
 .target-item { gap: 12px; color: var(--pl-text-secondary); }
-.target-label { min-width: 58px; color: var(--pl-text-muted); font-size: 11px; font-weight: 600; }
+.target-label { min-width: 58px; color: var(--pl-text-muted); font-size: var(--pl-font-xs); font-weight: 600; }
 .target-value { color: var(--pl-text); font-size: 13px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .section-heading div { display: flex; flex-direction: column; gap: 2px; }
 .section-heading strong { color: var(--pl-text); font-size: 13px; }
-.section-heading span { color: var(--pl-text-muted); font-size: 11px; }
+.section-heading span { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .select-buttons { gap: 8px; margin-bottom: 12px; }
 .drop-zone {
   display: flex;
@@ -432,15 +437,15 @@ function onClose() {
 .drop-icon svg { margin: 0; }
 .drop-zone p { margin: 2px 0 0; color: var(--pl-text-secondary); font-size: 13px; }
 .drop-zone p strong { color: var(--pl-primary); font-weight: 600; }
-.drop-zone > span:last-child { color: var(--pl-text-muted); font-size: 11px; }
+.drop-zone > span:last-child { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .file-list { padding: 12px; margin-bottom: 18px; background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); border-radius: 12px; }
 .file-list-header { margin-bottom: 9px; color: var(--pl-text-secondary); font-size: 12px; font-weight: 600; }
 .file-item { gap: 10px; padding: 9px 4px; border-bottom-color: var(--pl-border); }
 .file-icon { width: 30px; height: 30px; display: grid; place-items: center; color: var(--pl-primary); background: var(--pl-primary-soft); border-radius: 9px; }
 .file-name { color: var(--pl-text); font-size: 12px; }
-.file-size { color: var(--pl-text-muted); font-size: 11px; }
+.file-size { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .options { align-items: flex-start; gap: 14px; margin-top: 2px; }
 .options > div { display: flex; flex-direction: column; gap: 2px; min-width: 100px; }
 .option-label { color: var(--pl-text); font-size: 12px; font-weight: 600; }
-.option-hint { color: var(--pl-text-muted); font-size: 11px; }
+.option-hint { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 </style>

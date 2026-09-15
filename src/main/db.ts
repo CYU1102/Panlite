@@ -2,6 +2,16 @@
 import { app } from 'electron'
 import { join } from 'path'
 import log from 'electron-log'
+import type { TaskStatus } from '../shared/types'
+import { isTaskStatus, recoverTaskState } from './task-state-machine'
+import { initializeCatalogSchema } from './catalog-store'
+import { initializeTransferPlanSchema } from './transfer-plan-store'
+import { initializeTaskSchedulingSchema } from './task-scheduling-store'
+import { initializeAiProcessingCoverageSchema } from './ai/processing-coverage-store'
+import { initializeStorageAnalysisSchema } from './storage-analysis-store'
+import { initializeAiWorkflowSchema } from './ai/document-workflow-store'
+import { initializeFileBackupSchema } from './file-backup-store'
+import { initializeAutomationRuleSchema } from './automation-rule-store'
 
 let db: Database.Database
 
@@ -166,6 +176,25 @@ const migrations: Migration[] = [
     description: 'Add independent AI workspace documents and tasks',
     up: () => {
       db.exec(`
+        CREATE TABLE IF NOT EXISTS share_subscriptions (
+          id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          url TEXT NOT NULL,
+          password TEXT,
+          title TEXT,
+          target_dir_id TEXT NOT NULL,
+          target_dir_path TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          last_signature TEXT,
+          seen_file_ids TEXT,
+          last_error TEXT,
+          last_checked_at INTEGER,
+          last_synced_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS ai_documents (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
@@ -271,8 +300,127 @@ const migrations: Migration[] = [
       db.exec('ALTER TABLE ai_document_chunks ADD COLUMN embedding TEXT')
     },
   },
+  {
+    id: '008_add_task_execution_token',
+    description: 'Add an execution token to task rows so stale workers cannot update a newer attempt',
+    up: () => {
+      const columns = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]
+      const names = new Set(columns.map((column) => column.name))
+      if (!names.has('execution_token')) {
+        // Nullable by design: rows created by older versions and terminal rows
+        // do not have an active worker until they are claimed again.
+        db.exec('ALTER TABLE tasks ADD COLUMN execution_token TEXT')
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_execution_token ON tasks(execution_token)')
+    },
+  },
+  {
+    id: '009_add_task_operations',
+    description: 'Persist remote operation keys and results across task attempts',
+    up: () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS task_operations (
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          operation_key TEXT NOT NULL,
+          execution_token TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('prepared', 'started', 'succeeded')),
+          result_json TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (task_id, operation_key)
+        )
+      `)
+    },
+  },
+  {
+    id: '010_repair_share_subscriptions_table',
+    description: 'Create the share subscription table for databases that already applied migration 004',
+    up: () => {
+      // share_subscriptions was originally added to migration 004 after that
+      // migration had already shipped. Existing profiles therefore recorded
+      // 004 as applied without ever creating this table. Keep the repair in a
+      // new migration so both old and fresh profiles converge on one schema.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS share_subscriptions (
+          id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          url TEXT NOT NULL,
+          password TEXT,
+          title TEXT,
+          target_dir_id TEXT NOT NULL,
+          target_dir_path TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          last_signature TEXT,
+          seen_file_ids TEXT,
+          last_error TEXT,
+          last_checked_at INTEGER,
+          last_synced_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_share_subscriptions_account
+          ON share_subscriptions(account_id);
+        CREATE INDEX IF NOT EXISTS idx_share_subscriptions_status
+          ON share_subscriptions(status);
+      `)
+    },
+  },
+  {
+    id: '011_add_personal_file_catalog',
+    description: 'Add local file catalog, resumable scans, labels and virtual collections',
+    up: () => {
+      initializeCatalogSchema(db)
+      db.exec(`
+        CREATE TRIGGER catalog_account_deleted AFTER DELETE ON accounts BEGIN
+          DELETE FROM catalog_accounts WHERE id = OLD.id;
+        END;
+        CREATE TRIGGER catalog_account_platform_changed AFTER UPDATE OF platform ON accounts
+        WHEN OLD.platform <> NEW.platform BEGIN
+          DELETE FROM catalog_accounts WHERE id = OLD.id;
+        END;
+      `)
+    },
+  },
+  {
+    id: '012_add_saved_transfer_plans',
+    description: 'Persist versioned migration plans, preview evidence and per-file results',
+    up: () => { initializeTransferPlanSchema(db) },
+  },
+  {
+    id: '013_add_versioned_file_backups',
+    description: 'Persist content-addressed file versions, restore previews and retention journals',
+    up: () => { initializeFileBackupSchema(db) },
+  },
+  {
+    id: '015_add_automation_rules',
+    description: 'Persist versioned automation rules, trigger receipts and original task provenance',
+    up: () => { initializeAutomationRuleSchema(db) },
+  },
+  {
+    id: '020_add_storage_analysis',
+    description: 'Persist explicit content evidence and storage organization plans',
+    up: () => { initializeStorageAnalysisSchema(db) },
+  },
+  {
+    id: '021_add_task_scheduling',
+    description: 'Persist task priority and admission windows separately from execution checkpoints',
+    up: () => { initializeTaskSchedulingSchema(db) },
+  },
+  {
+    id: '022_add_ai_source_coverage_and_timing',
+    description: 'Preserve media citation timestamps and distinguish parsed-text coverage from source completeness',
+    up: () => { initializeAiProcessingCoverageSchema(db) },
+  },
+  {
+    id: '023_add_complete_document_workflows',
+    description: 'Persist complete document processing batches, structured results and extraction templates',
+    up: () => { initializeAiWorkflowSchema(db) },
+  },
   // 添加更多迁移...
 ]
+
+export function getSupportedDatabaseMigrations(): readonly string[] { return migrations.map(migration => migration.id) }
 
 function runMigrations(): void {
   // 创建迁移记录表
@@ -348,6 +496,7 @@ function createTables(): void {
       progress INTEGER DEFAULT 0,
       retry_count INTEGER DEFAULT 0,
       error_message TEXT,
+      execution_token TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       finished_at INTEGER
@@ -885,6 +1034,8 @@ export interface DbTask {
   progress: number
   retry_count: number
   error_message: string | null
+  /** Token owned by the worker for the current execution attempt. */
+  execution_token: string | null
   created_at: number
   updated_at: number
   finished_at: number | null
@@ -892,8 +1043,8 @@ export interface DbTask {
 
 export function insertTask(task: DbTask): void {
   const stmt = getDb().prepare(`
-    INSERT INTO tasks (id, account_id, platform, task_type, title, payload, status, progress, retry_count, error_message, created_at, updated_at, finished_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO tasks (id, account_id, platform, task_type, title, payload, status, progress, retry_count, error_message, execution_token, created_at, updated_at, finished_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   stmt.run(
     task.id,
@@ -906,6 +1057,7 @@ export function insertTask(task: DbTask): void {
     task.progress,
     task.retry_count,
     task.error_message,
+    task.execution_token,
     task.created_at,
     task.updated_at,
     task.finished_at,
@@ -935,6 +1087,95 @@ export function updateTaskStatus(id: string, status: string, progress?: number, 
   }
 }
 
+/**
+ * Atomically apply a status update only when the row still has the expected
+ * status. The task runner uses this as the persistence boundary for its pure
+ * state machine, preventing a worker that is starting or finishing from
+ * overwriting a concurrent pause, cancel, or retry request.
+ *
+ * Existing callers can continue to use updateTaskStatus. This helper is
+ * intentionally additive and returns false when the row was changed by
+ * another actor (or does not exist).
+ */
+export interface TaskStatusTransitionOptions {
+  progress?: number
+  errorMessage?: string | null
+  incrementRetry?: boolean
+  /** Optional upper bound for an atomic retry increment. */
+  maxRetryCount?: number
+  /** Value to persist for the worker execution token. */
+  executionToken?: string | null
+  /** Compare-and-swap guard for the current worker execution token. */
+  expectedExecutionToken?: string | null
+}
+
+export function transitionTaskStatusIfCurrent(
+  id: string,
+  expectedStatus: TaskStatus | string,
+  nextStatus: TaskStatus | string,
+  options: TaskStatusTransitionOptions = {},
+): boolean {
+  // Keep the persistence boundary closed over the finite lifecycle enum. The
+  // legacy updateTaskStatus API remains for compatibility, but new callers
+  // must not be able to introduce an arbitrary status value.
+  if (!isTaskStatus(expectedStatus) || !isTaskStatus(nextStatus)) return false
+  const timestamp = Date.now()
+  const isTerminal = nextStatus === 'success'
+    || nextStatus === 'partial_success'
+    || nextStatus === 'failed'
+    || nextStatus === 'cancelled'
+
+  const assignments = [
+    'status = ?',
+    'updated_at = ?',
+    // Every non-terminal transition re-opens the task. This also clears a
+    // stale finished_at value when a terminal task is explicitly retried.
+    'finished_at = ?',
+  ]
+  const values: Array<string | number | null> = [nextStatus, timestamp, isTerminal ? timestamp : null]
+
+  if (options.progress !== undefined) {
+    assignments.push('progress = ?')
+    values.push(options.progress)
+  }
+  if (options.errorMessage !== undefined) {
+    assignments.push('error_message = ?')
+    values.push(options.errorMessage)
+  }
+  if (options.incrementRetry) {
+    assignments.push('retry_count = retry_count + 1')
+  }
+
+  if (options.executionToken !== undefined) {
+    assignments.push('execution_token = ?')
+    values.push(options.executionToken)
+  }
+
+  const predicates = ['id = ?', 'status = ?']
+  const predicateValues: Array<string | number | null> = [id, expectedStatus]
+  if (options.expectedExecutionToken !== undefined) {
+    if (options.expectedExecutionToken === null) {
+      // SQL NULL is not equal to itself; use IS NULL for legacy/unclaimed rows.
+      predicates.push('execution_token IS NULL')
+    } else {
+      predicates.push('execution_token = ?')
+      predicateValues.push(options.expectedExecutionToken)
+    }
+  }
+  if (options.maxRetryCount !== undefined) {
+    // Keep the retry ceiling in the same CAS statement as the increment. A
+    // worker that loses the ownership race (or a duplicate failure handler)
+    // must not push retry_count beyond the configured limit.
+    predicates.push('retry_count < ?')
+    predicateValues.push(options.maxRetryCount)
+  }
+
+  const result = getDb().prepare(
+    `UPDATE tasks SET ${assignments.join(', ')} WHERE ${predicates.join(' AND ')}`,
+  ).run(...values, ...predicateValues)
+  return result.changes > 0
+}
+
 export function updateTaskPayload(id: string, payload: unknown): void {
   getDb().prepare('UPDATE tasks SET payload = ?, updated_at = ? WHERE id = ?')
     .run(JSON.stringify(payload), Date.now(), id)
@@ -946,6 +1187,32 @@ export function incrementTaskRetry(id: string): void {
 
 export function updateTaskProgress(id: string, progress: number): void {
   getDb().prepare('UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?').run(progress, Date.now(), id)
+}
+
+/**
+ * Update progress only for the currently running execution attempt. This is
+ * deliberately separate from the legacy unguarded helper so an old worker
+ * cannot write progress after a pause/retry has started a new attempt.
+ */
+export function updateTaskProgressIfOwned(id: string, executionToken: string, progress: number): boolean {
+  if (!executionToken) return false
+  const result = getDb().prepare(
+    `UPDATE tasks
+     SET progress = ?, updated_at = ?
+     WHERE id = ? AND status = 'running' AND execution_token = ?`,
+  ).run(progress, Date.now(), id, executionToken)
+  return result.changes > 0
+}
+
+/** Persist a task payload only when the supplied worker still owns the run. */
+export function updateTaskPayloadIfOwned(id: string, executionToken: string, payload: unknown): boolean {
+  if (!executionToken) return false
+  const result = getDb().prepare(
+    `UPDATE tasks
+     SET payload = ?, updated_at = ?
+     WHERE id = ? AND status = 'running' AND execution_token = ?`,
+  ).run(JSON.stringify(payload), Date.now(), id, executionToken)
+  return result.changes > 0
 }
 
 export function markTaskSuccess(id: string): void {
@@ -967,12 +1234,15 @@ export function markTaskCancelled(id: string): void {
 }
 
 export function recoverInterruptedTasks(): number {
+  const recovery = recoverTaskState('running')
+  if (!recovery.ok || recovery.to !== 'pending') return 0
   const now = Date.now()
   const result = getDb().prepare(`
     UPDATE tasks
-    SET status = 'pending', error_message = 'Recovered after application restart', updated_at = ?, finished_at = NULL
-    WHERE status = 'running'
-  `).run(now)
+    SET status = 'pending', execution_token = NULL,
+        error_message = 'Recovered after application restart', updated_at = ?, finished_at = NULL
+    WHERE status = ?
+  `).run(now, recovery.from)
   return result.changes
 }
 
@@ -981,7 +1251,18 @@ export function getPendingTasks(): DbTask[] {
 }
 
 export function getTasksByAccount(accountId: string): DbTask[] {
-  return getDb().prepare('SELECT * FROM tasks WHERE account_id = ? ORDER BY created_at DESC').all(accountId) as DbTask[]
+  // Both endpoints of a migration must stay available while its task is active.
+  return getDb().prepare(`
+    SELECT * FROM tasks
+    WHERE account_id = ? OR (
+      task_type IN ('cloud_transfer', 'planned_transfer') AND
+      CASE WHEN json_valid(payload) THEN json_extract(payload, '$.targetAccountId') ELSE NULL END = ?
+    ) OR (
+      task_type = 'planned_transfer' AND
+      CASE WHEN json_valid(payload) THEN json_extract(payload, '$.sourceAccountId') ELSE NULL END = ?
+    )
+    ORDER BY created_at DESC
+  `).all(accountId, accountId, accountId) as DbTask[]
 }
 
 export function deleteTaskById(id: string): boolean {
@@ -1199,7 +1480,18 @@ export function insertShareLink(link: DbShareLink): void {
   )
 }
 
+export function getShareLinkById(id: string): DbShareLink | undefined {
+  return getDb().prepare('SELECT * FROM share_links WHERE id = ?').get(id) as DbShareLink | undefined
+}
+
 export function listShareLinks(filters?: { accountId?: string; platform?: string; status?: string; keyword?: string }): DbShareLink[] {
+  const timestamp = Date.now()
+  getDb().prepare(`
+    UPDATE share_links
+    SET status = 'expired', updated_at = ?
+    WHERE status = 'active' AND expired_at IS NOT NULL AND expired_at <= ?
+  `).run(timestamp, timestamp)
+
   let sql = 'SELECT sl.*, a.nickname as account_nickname FROM share_links sl LEFT JOIN accounts a ON sl.account_id = a.id WHERE 1=1'
   const params: unknown[] = []
 
@@ -1342,6 +1634,96 @@ export function getAllSettings(): { key: string; value: string; encrypted: numbe
   return getDb().prepare('SELECT key, value, encrypted FROM settings').all() as { key: string; value: string; encrypted: number }[]
 }
 
+// ── Share subscriptions ──
+
+export interface ShareSubscriptionRow {
+  id: string
+  account_id: string
+  platform: string
+  url: string
+  password: string | null
+  title: string | null
+  target_dir_id: string
+  target_dir_path: string | null
+  status: string
+  last_signature: string | null
+  seen_file_ids: string | null
+  last_error: string | null
+  last_checked_at: number | null
+  last_synced_at: number | null
+  created_at: number
+  updated_at: number
+}
+
+function mapSubscription(row: ShareSubscriptionRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    platform: row.platform,
+    url: row.url,
+    password: row.password || '',
+    title: row.title || '',
+    targetDirId: row.target_dir_id,
+    targetDirPath: row.target_dir_path || '',
+    status: row.status,
+    lastError: row.last_error || '',
+    lastCheckedAt: row.last_checked_at || undefined,
+    lastSyncedAt: row.last_synced_at || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+export function listShareSubscriptions(): Array<Record<string, unknown>> {
+  const rows = getDb().prepare('SELECT * FROM share_subscriptions ORDER BY created_at DESC').all() as ShareSubscriptionRow[]
+  return rows.map(mapSubscription)
+}
+
+export function getShareSubscription(id: string): ShareSubscriptionRow | undefined {
+  return getDb().prepare('SELECT * FROM share_subscriptions WHERE id = ?').get(id) as ShareSubscriptionRow | undefined
+}
+
+export function insertShareSubscription(input: {
+  id: string
+  account_id: string
+  platform: string
+  url: string
+  password?: string
+  title?: string
+  target_dir_id: string
+  target_dir_path?: string
+}): void {
+  const now = Date.now()
+  getDb().prepare(`
+    INSERT INTO share_subscriptions (id, account_id, platform, url, password, title, target_dir_id, target_dir_path, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+  `).run(input.id, input.account_id, input.platform, input.url, input.password || null, input.title || null,
+    input.target_dir_id, input.target_dir_path || null, now, now)
+}
+
+export function deleteShareSubscription(id: string): void {
+  getDb().prepare('DELETE FROM share_subscriptions WHERE id = ?').run(id)
+}
+
+export function setShareSubscriptionStatus(id: string, status: 'active' | 'paused'): void {
+  getDb().prepare('UPDATE share_subscriptions SET status = ?, last_error = NULL, updated_at = ? WHERE id = ?').run(status, Date.now(), id)
+}
+
+export function markShareSubscriptionChecked(id: string, lastError?: string): void {
+  getDb().prepare('UPDATE share_subscriptions SET last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?')
+    .run(Date.now(), lastError || null, Date.now(), id)
+}
+
+export function markShareSubscriptionSynced(id: string, signature: string, seenFileIds: string[]): void {
+  getDb().prepare('UPDATE share_subscriptions SET last_signature = ?, seen_file_ids = ?, last_synced_at = ?, last_checked_at = ?, last_error = NULL, updated_at = ? WHERE id = ?')
+    .run(signature, JSON.stringify(seenFileIds), Date.now(), Date.now(), Date.now(), id)
+}
+
+export function markShareSubscriptionError(id: string, error: string): void {
+  getDb().prepare('UPDATE share_subscriptions SET status = ?, last_error = ?, last_checked_at = ?, updated_at = ? WHERE id = ?')
+    .run('error', error, Date.now(), Date.now(), id)
+}
+
 /**
  * Delete an account and all related data (files_cache, tasks, logs).
  * Returns counts of deleted rows per table.
@@ -1358,6 +1740,10 @@ export function deleteTransferRecordsByAccount(accountId: string): number {
 
 export function deleteAccountCascade(id: string): { accounts: number; files: number; tasks: number; logs: number; shares: number; transfers: number; searchCache: number; searchHistory: number } {
   const txn = getDb().transaction(() => {
+    const retained = getDb().prepare(`SELECT count(*) AS count FROM file_backup_snapshots s
+      JOIN file_backup_plans p ON p.id=s.plan_id
+      WHERE json_extract(p.data,'$.target.accountId')=? AND s.status<>'deleted'`).get(id) as { count: number }
+    if (retained.count) throw new Error(`该账号仍关联 ${retained.count} 个保留备份版本，请先到文件版本备份处理这些版本，避免失去恢复入口`)
     const files = deleteFilesCacheByAccount(id)
     const logs = deleteLogsByAccount(id)
     const tasks = deleteTasksByAccount(id)

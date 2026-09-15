@@ -1,4 +1,5 @@
 import log from 'electron-log'
+import { setTimeout as delay } from 'node:timers/promises'
 
 /**
  * 并发控制模块
@@ -100,7 +101,7 @@ export function isProcessing(keyword: string): boolean {
 /**
  * 获取正在进行的搜索结果（等待完成）
  */
-export async function waitForResults(keyword: string, timeoutMs: number = 60000): Promise<any[] | null> {
+export async function waitForResults(keyword: string, timeoutMs: number = 60000, signal?: AbortSignal): Promise<any[] | null> {
   const lock = processingLocks.get(keyword)
   if (!lock) return null
 
@@ -114,7 +115,7 @@ export async function waitForResults(keyword: string, timeoutMs: number = 60000)
     }
 
     // 暂停1秒后重试（与xinyue-search一致）
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    await delay(1000, undefined, { signal })
   }
 
   // 返回缓存的结果
@@ -134,8 +135,8 @@ export function setProcessingLock(keyword: string, promise: Promise<any[]>): voi
 /**
  * 释放处理锁
  */
-export function releaseProcessingLock(keyword: string): void {
-  processingLocks.delete(keyword)
+export function releaseProcessingLock(keyword: string, owner?: Promise<any[]>): void {
+  if (!owner || processingLocks.get(keyword)?.promise === owner) processingLocks.delete(keyword)
 }
 
 /**
@@ -175,7 +176,7 @@ export async function executeWithConcurrency<T>(
     return results
   } finally {
     // 6. 释放处理锁
-    releaseProcessingLock(keyword)
+    releaseProcessingLock(keyword, searchPromise)
   }
 }
 
@@ -240,4 +241,4 @@ export function cleanupRateLimits(): void {
 }
 
 // 定期清理（每分钟）
-setInterval(cleanupRateLimits, 60 * 1000)
+setInterval(cleanupRateLimits, 60 * 1000).unref()

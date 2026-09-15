@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { DriveAccount, Platform } from '@shared/types'
 import { electronApi } from '../api/ipc'
+import { useAppStore } from './app'
 
 export const useAccountStore = defineStore('account', () => {
   const accounts = ref<Omit<DriveAccount, 'credential'>[]>([])
@@ -30,6 +31,8 @@ export const useAccountStore = defineStore('account', () => {
     const result = await electronApi.deleteAccount(id)
     if (result.success) {
       accounts.value = accounts.value.filter((a) => a.id !== id)
+      const appStore = useAppStore()
+      if (appStore.currentAccount?.id === id) appStore.setAccount(null)
     }
     return result
   }
