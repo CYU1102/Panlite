@@ -142,6 +142,8 @@ export const IPC_CHANNELS = {
   LOGIN_BAIDU_COOKIE: 'login:baidu-cookie',
   BAIDU_GET_AUTH_URL: 'baidu:get-auth-url',
   LOGIN_UC: 'login:uc',
+  LOGIN_INLINE_STATUS: 'login:inline-status',
+  LOGIN_INLINE_RESET: 'login:inline-reset',
   LOGIN_XUNLEI: 'login:xunlei',
   LOGIN_XUNLEI_AUTO: 'login:xunlei-auto',
   LOGIN_WINDOW_RESULT: 'login:window-result',

@@ -100,6 +100,8 @@ const electronAPI = {
   loginBaidu: (code: string) => ipcRenderer.invoke(IPC_CHANNELS.LOGIN_BAIDU, code),
   loginBaiduCookie: () => ipcRenderer.invoke(IPC_CHANNELS.LOGIN_BAIDU_COOKIE),
   loginUc: () => ipcRenderer.invoke(IPC_CHANNELS.LOGIN_UC),
+  getInlineLoginStatus: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.LOGIN_INLINE_STATUS, input),
+  resetInlineLoginSession: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.LOGIN_INLINE_RESET, input),
   loginXunlei: (refreshToken: string) => ipcRenderer.invoke(IPC_CHANNELS.LOGIN_XUNLEI, refreshToken),
   openXunleiLogin: () => ipcRenderer.invoke(IPC_CHANNELS.LOGIN_XUNLEI_AUTO),
 

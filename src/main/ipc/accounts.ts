@@ -15,6 +15,8 @@ import { setAliyunWebCredentialRefreshHandler } from '../../adapters/aliyun-web'
 import { fetchPan123AccessToken, setPan123CredentialRefreshHandler } from '../../adapters/pan123'
 import type { IpcRegistrar } from './types'
 import { dbAccountToDriveAccount, sanitizeAccount } from './account-mapping'
+import { getInlineLoginStatus, resetInlineLoginSession } from '../inline-login'
+import type { InlineLoginRequest } from '../../shared/inline-login'
 
 export function registerAccountsIpcHandlers(ipcMain: IpcRegistrar): void {
   // Load Baidu credentials from settings (if configured)
@@ -92,6 +94,13 @@ export function registerAccountsIpcHandlers(ipcMain: IpcRegistrar): void {
   setPan123CredentialRefreshHandler(persistRefreshedCredential)
 
   // ---- Quark Login ----
+
+  ipcMain.handle(IPC_CHANNELS.LOGIN_INLINE_STATUS, async (event, input: InlineLoginRequest) => {
+    return getInlineLoginStatus(event, input)
+  })
+  ipcMain.handle(IPC_CHANNELS.LOGIN_INLINE_RESET, async (event, input: InlineLoginRequest) => {
+    return resetInlineLoginSession(event, input)
+  })
 
   ipcMain.handle(IPC_CHANNELS.LOGIN_QUARK, async (event) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender)

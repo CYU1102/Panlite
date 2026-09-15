@@ -5,6 +5,7 @@ import type { FilePreviewIpcResult } from '@shared/file-preview'
 import type { AiProcessingPolicy, AiProcessingPolicyResult } from '@shared/ai-processing-policy'
 import type { MembershipInfo } from '@shared/membership'
 import type { AiAskInput, AiAskResult, AiAskStreamEvent, AiConversation, AiConversationCreateInput, AiConversationMessage, AiConversationSearchHit, AiDocument, AiImportFileInput, AiLocalToolStatus, AiLocalToolsConfig, AiProviderBalance, AiProviderConfig, AiProviderDraftInput, AiProviderSaveInput, AiProviderUsage, AiTask } from '@shared/ai-types'
+import type { InlineLoginRequest, InlineLoginStatus } from '@shared/inline-login'
 
 export interface LoginResult {
   success: boolean
@@ -91,6 +92,8 @@ declare global {
       loginBaidu: (code: string) => Promise<BaiduLoginResult>
       loginBaiduCookie: () => Promise<LoginResult>
       loginUc: () => Promise<LoginResult>
+      getInlineLoginStatus: (input: InlineLoginRequest) => Promise<InlineLoginStatus>
+      resetInlineLoginSession: (input: InlineLoginRequest) => Promise<{ success: boolean; error?: string }>
       loginXunlei: (refreshToken: string) => Promise<SimpleResult & { refreshToken?: string; nickname?: string }>
       openXunleiLogin: () => Promise<XunleiLoginResult>
       addAccount: (params: AddAccountParams) => Promise<AccountAddResult>
