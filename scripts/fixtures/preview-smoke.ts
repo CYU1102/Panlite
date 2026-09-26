@@ -103,7 +103,9 @@ app.whenReady().then(async () => {
         const node=document.createElement(preview.kind==='image'?'img':preview.kind);node.style.cssText='width:320px;max-height:180px;margin:8px';node.muted=true;node.controls=true;node.preload='metadata';document.querySelector('main').append(node);
         const loaded=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error(preview.kind+' load timeout')),12000);node.addEventListener(preview.kind==='image'?'load':'loadedmetadata',()=>{clearTimeout(timer);resolve(true)},{once:true});node.onerror=()=>{clearTimeout(timer);reject(new Error(preview.kind+' decode failure '+node.error?.code))}});
         node.src=preview.assetUrl;await loaded;
-        if(preview.kind!=='image') {await node.play();await new Promise(resolve=>setTimeout(resolve,250));if(node.currentTime<=0)throw new Error(preview.kind+' did not advance');node.pause();node.playbackRate=1.5;
+        if(preview.kind!=='image') {await node.play();const playbackDeadline=Date.now()+3000;
+          while(node.currentTime<=0 && Date.now()<playbackDeadline)await new Promise(resolve=>setTimeout(resolve,50));
+          if(node.currentTime<=0)throw new Error(preview.kind+' did not advance');node.pause();node.playbackRate=1.5;
           const seeked=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('seek timeout')),5000);node.addEventListener('seeked',()=>{clearTimeout(timer);resolve(true)},{once:true})});node.currentTime=0.7;await seeked;}
         results.push({kind:preview.kind,fileName:preview.fileName,width:node.videoWidth||node.naturalWidth||null,currentTime:node.currentTime||null,playbackRate:node.playbackRate||null});
         if(preview.fileName==='h264.mp4')node.remove();
@@ -163,7 +165,8 @@ app.whenReady().then(async () => {
         const node=document.createElement('audio');node.muted=true;node.preload='metadata';document.body.append(node);
         try {
           const loaded=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Recovery metadata timeout')),5000);node.onloadedmetadata=()=>{clearTimeout(timer);resolve(true)};node.onerror=()=>{clearTimeout(timer);reject(new Error('Recovery media error'))}});
-          node.src=${JSON.stringify(recovered.assetUrl)};await loaded;await node.play();await new Promise(resolve=>setTimeout(resolve,250));
+          node.src=${JSON.stringify(recovered.assetUrl)};await loaded;await node.play();const playbackDeadline=Date.now()+3000;
+          while(node.currentTime<=0 && Date.now()<playbackDeadline)await new Promise(resolve=>setTimeout(resolve,50));
           if(node.currentTime<=0)throw new Error('Recovered audio did not advance');node.pause();
           const seeked=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Recovery seek timeout')),5000);node.onseeked=()=>{clearTimeout(timer);resolve(true)}});node.currentTime=0.7;await seeked;
           return {currentTime:node.currentTime, playable:true, seeked:true};
