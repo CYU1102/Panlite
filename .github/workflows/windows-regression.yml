@@ -20,12 +20,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run ensure:electron
       - run: npm run check
       - run: npm run test:preview
       - run: npm audit --omit=dev --audit-level=high
 
   package:
-    if: github.event_name != 'pull_request'
     needs: check
     runs-on: windows-2022
     timeout-minutes: 60
