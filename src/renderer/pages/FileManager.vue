@@ -1646,7 +1646,16 @@ watch(() => appStore.currentAccount?.id, () => {
 /* Interaction refresh: keep the workbench light while making active states obvious. */
 .file-manager { gap: 14px; }
 
-.page-heading { min-height: 52px; }
+.page-heading { min-height: 58px; }
+.page-heading h1 {
+  font-size: 23px;
+  letter-spacing: -0.025em;
+}
+.page-heading p {
+  color: var(--pl-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
 .page-eyebrow {
   display: block;
   margin-bottom: 3px;
@@ -1664,8 +1673,9 @@ watch(() => appStore.currentAccount?.id, () => {
 }
 
 .path-bar {
-  padding: 10px 12px;
+  padding: 11px 14px;
   border-radius: var(--pl-radius-card);
+  box-shadow: var(--pl-shadow-card);
 }
 .path-btn {
   color: var(--pl-text-secondary);
@@ -1719,7 +1729,10 @@ watch(() => appStore.currentAccount?.id, () => {
 .empty-icon { color: var(--pl-primary); }
 .empty-state h3 { color: var(--pl-text); }
 .empty-state p { color: var(--pl-text-muted); }
-.file-card { background: var(--pl-surface); }
+.file-card {
+  background: var(--pl-surface);
+  border-radius: var(--pl-radius-card);
+}
 .cache-badge {
   color: var(--pl-warning);
   background: var(--pl-warning-soft);

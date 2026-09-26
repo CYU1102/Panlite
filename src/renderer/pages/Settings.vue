@@ -1539,8 +1539,8 @@ onMounted(loadKkSources)
 
 .header-info { display: flex; align-items: center; gap: 12px; }
 .header-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--pl-primary-soft); color: var(--pl-primary); display: flex; align-items: center; justify-content: center; }
-.header-info h2 { font-size: 17px; line-height: 1.3; font-weight: 700; color: var(--pl-text); margin: 0 0 3px; }
-.header-info p { font-size: 12px; color: var(--pl-text-secondary); margin: 0; }
+.header-info h2 { font-size: 21px; line-height: 1.3; font-weight: 700; letter-spacing: -0.025em; color: var(--pl-text); margin: 0 0 4px; }
+.header-info p { font-size: 13px; color: var(--pl-text-secondary); margin: 0; }
 
 .settings-sections {
   flex: 1;
@@ -1568,7 +1568,7 @@ onMounted(loadKkSources)
 
 .setting-header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--pl-border); background: var(--pl-surface-subtle); }
 .setting-icon { width: 34px; height: 34px; border-radius: 10px; background: var(--pl-primary-soft); color: var(--pl-primary); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.setting-header h3 { font-size: 14px; line-height: 1.35; font-weight: 650; color: var(--pl-text); margin: 0 0 3px; }
+.setting-header h3 { font-size: 15px; line-height: 1.35; font-weight: 650; color: var(--pl-text); margin: 0 0 3px; }
 .setting-header p { font-size: 12px; line-height: 1.45; color: var(--pl-text-secondary); margin: 0; }
 .setting-body { padding: 14px 20px 16px; }
 
@@ -1579,7 +1579,7 @@ onMounted(loadKkSources)
 .label-hint { font-size: 12px; line-height: 1.45; color: var(--pl-text-muted); }
 
 .about-info { display: flex; flex-direction: column; gap: 12px; }
-.about-intro { display: flex; flex-direction: column; gap: 4px; margin-bottom: 2px; padding: 12px 14px; border: 1px solid #dbe7fb; border-radius: 10px; color: var(--pl-text-secondary); background: #f6f9ff; font-size: 12px; line-height: 1.55; }
+.about-intro { display: flex; flex-direction: column; gap: 4px; margin-bottom: 2px; padding: 12px 14px; border: 1px solid var(--pl-border-strong); border-radius: 10px; color: var(--pl-text-secondary); background: var(--pl-primary-soft); font-size: 12px; line-height: 1.55; }
 .about-intro strong { color: var(--pl-primary); font-size: 14px; }
 .about-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .about-label { font-size: 13px; color: var(--pl-text-secondary); }

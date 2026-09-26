@@ -576,6 +576,17 @@ onMounted(async () => {
   background: linear-gradient(135deg, var(--pl-surface) 0%, var(--pl-surface-subtle) 100%);
 }
 
+.header-info h2 {
+  margin-bottom: 4px;
+  font-size: 21px;
+  letter-spacing: -0.025em;
+}
+
+.header-info p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .header-icon {
   background: var(--pl-primary-soft);
   color: var(--pl-primary);
@@ -640,7 +651,7 @@ onMounted(async () => {
 
 .account-card {
   position: relative;
-  padding: var(--pl-space-4) var(--pl-space-5);
+  padding: var(--pl-space-5);
   background: var(--pl-surface);
   overflow: hidden;
   outline: none;
@@ -683,9 +694,14 @@ onMounted(async () => {
 
 .account-avatar {
   position: relative;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+}
+
+.account-name {
+  font-size: 15px;
+  line-height: 1.4;
 }
 
 .account-avatar.quark,
@@ -833,6 +849,11 @@ onMounted(async () => {
 .empty-state {
   background: var(--pl-surface);
   padding: 64px var(--pl-space-6);
+}
+
+.empty-state p {
+  max-width: 340px;
+  line-height: 1.6;
 }
 
 .empty-icon {

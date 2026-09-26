@@ -11,7 +11,7 @@
       @row-dblclick="onRowDblClick"
       row-key="id"
       v-loading="loading"
-      element-loading-background="rgba(255,255,255,0.8)"
+      element-loading-background="var(--pl-surface)"
     >
       <el-table-column type="selection" width="48" align="center" />
 
@@ -172,7 +172,7 @@ const emit = defineEmits<{
 }>()
 
 const headerStyle = {
-  background: '#f7f9fc',
+  background: 'var(--pl-surface-subtle)',
   color: 'var(--pl-text-secondary)',
   fontWeight: '600',
   fontSize: '12px',
@@ -240,21 +240,25 @@ function rowClassName({ row }: { row: FileItem }): string {
 /* ── Table overrides ── */
 :deep(.el-table) {
   --el-table-border-color: var(--pl-border);
-  --el-table-row-hover-bg-color: #f5f8ff;
+  --el-table-row-hover-bg-color: var(--pl-hover);
   --el-table-current-row-bg-color: var(--pl-primary-soft);
+  --el-table-header-bg-color: var(--pl-surface-subtle);
+  --el-table-bg-color: var(--pl-surface);
+  --el-table-tr-bg-color: var(--pl-surface);
+  color: var(--pl-text);
 }
 
 :deep(.el-table th.el-table__cell) {
-  background: #f7f9fc !important;
+  background: var(--pl-surface-subtle) !important;
 }
 
 :deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--pl-border);
   transition: background-color 0.18s ease;
 }
 
 :deep(.el-table--enable-row-hover .el-table__body tr:hover > td) {
-  background: #f5f8ff;
+  background: var(--pl-hover);
 }
 
 :deep(.el-table__body tr.is-selected-row > td.el-table__cell) {
@@ -302,7 +306,7 @@ function rowClassName({ row }: { row: FileItem }): string {
 }
 
 .file-name {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--pl-text);
   white-space: nowrap;
   overflow: hidden;
@@ -321,7 +325,7 @@ function rowClassName({ row }: { row: FileItem }): string {
 /* ── Cells ── */
 .cell-muted {
   font-size: 12px;
-  color: var(--pl-text-muted);
+  color: var(--pl-text-secondary);
 }
 
 .type-badge {
@@ -418,7 +422,7 @@ function rowClassName({ row }: { row: FileItem }): string {
   margin-bottom: 6px;
   color: var(--pl-primary);
   background: var(--pl-primary-soft);
-  border: 1px solid #d7e5ff;
+  border: 1px solid var(--pl-border-strong);
   border-radius: 22px;
 }
 
@@ -432,5 +436,12 @@ function rowClassName({ row }: { row: FileItem }): string {
   margin: 0;
   font-size: 13px;
   color: var(--pl-text-muted);
+}
+
+@media (hover: none) {
+  .action-btns {
+    opacity: 1;
+    transform: none;
+  }
 }
 </style>
