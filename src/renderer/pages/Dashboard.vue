@@ -1029,4 +1029,31 @@ onMounted(() => {
     transition: none;
   }
 }
+.page-header {
+  padding: 20px 22px;
+  border-radius: 16px;
+  box-shadow: var(--pl-shadow-card);
+}
+.page-header h2 { font-size: 21px; font-weight: 750; letter-spacing: -0.35px; }
+.header-desc { margin-top: 4px; color: var(--pl-text-secondary); font-size: 13px; }
+.header-icon, .accounts-icon { color: var(--pl-primary); background: var(--pl-primary-soft); }
+.header-icon { width: 44px; height: 44px; border-radius: 12px; }
+.overview-cards, .quota-grid { gap: 14px; }
+.overview-card, .quota-card { border-radius: 15px; box-shadow: var(--pl-shadow-card); }
+.overview-card { gap: 14px; padding: 18px; }
+.overview-icon { width: 44px; height: 44px; border-radius: 12px; }
+.used-icon { color: var(--pl-success); background: var(--pl-success-soft); }
+.total-icon { color: var(--pl-warning); background: var(--pl-warning-soft); }
+.percent-icon { color: var(--pl-primary); background: var(--pl-primary-soft); }
+.overview-value { font-size: 23px; letter-spacing: -0.5px; }
+.overview-label { color: var(--pl-text-secondary); font-size: 12px; }
+.overview-note { color: var(--pl-text-muted); }
+.quota-card { gap: 16px; padding: 19px; transition: border-color 0.18s ease, box-shadow 0.18s ease; }
+.quota-card:hover { border-color: var(--pl-border-strong); box-shadow: var(--pl-shadow-card); }
+.empty-icon { color: var(--pl-primary); background: var(--pl-primary-soft); }
+.empty-state p { color: var(--pl-text-secondary); }
+@media (max-width: 640px) {
+  .page-header { padding: 16px; }
+  .overview-card { padding: 15px; }
+}
 </style>

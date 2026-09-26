@@ -87,6 +87,13 @@ app.whenReady().then(async () => {
   try {
     await loadWorkspace()
     await waitFor("document.querySelectorAll('.workspace-tabs button').length === 5", 'workspace tabs')
+    await waitFor("document.querySelectorAll('.capability-grid article').length === 6", 'capability cards')
+    fs.writeFileSync(path.join(output, 'overview-light.png'), (await win.webContents.capturePage()).toPNG())
+    await evaluate("document.documentElement.classList.add('dark')")
+    await new Promise(resolve => setTimeout(resolve, 150))
+    fs.writeFileSync(path.join(output, 'overview-dark.png'), (await win.webContents.capturePage()).toPNG())
+    await evaluate("document.documentElement.classList.remove('dark')")
+    await new Promise(resolve => setTimeout(resolve, 150))
     if (modelCalls !== 0) throw new Error('Viewing workspace started model work')
     await click('全文处理'); await waitFor("document.querySelectorAll('.document-choice input').length === 2", 'document choices')
     await evaluate("document.querySelector('.document-choice input[value=pdf]').click()")

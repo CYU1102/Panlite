@@ -4,7 +4,10 @@
     <aside class="sidebar">
       <div class="sidebar-logo">
         <div class="logo-icon">P</div>
-        <span class="logo-text">PanLite</span>
+        <div class="logo-copy">
+          <span class="logo-text">PanLite</span>
+          <span class="logo-caption">你的网盘工作台</span>
+        </div>
       </div>
       <SideMenu />
     </aside>
@@ -154,9 +157,9 @@ html, body, #app {
 
 /* ── Sidebar ── */
 .sidebar {
-  width: 220px;
-  min-width: 220px;
-  background: var(--pl-surface-subtle);
+  width: 232px;
+  min-width: 232px;
+  background: linear-gradient(180deg, var(--pl-sidebar-bg), var(--pl-surface-subtle));
   border-right: 1px solid var(--pl-border);
   display: flex;
   flex-direction: column;
@@ -164,34 +167,48 @@ html, body, #app {
 }
 
 .sidebar-logo {
-  height: 72px;
+  height: 82px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 22px;
+  gap: 12px;
+  padding: 0 20px;
   border-bottom: 1px solid var(--pl-border);
   flex-shrink: 0;
 }
 
 .logo-icon {
-  width: 34px;
-  height: 34px;
-  background: linear-gradient(145deg, var(--pl-primary), #5865e9);
-  border-radius: 11px;
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(145deg, var(--pl-primary), #685ddd);
+  border-radius: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
   font-weight: 700;
-  font-size: 16px;
+  font-size: 18px;
   flex-shrink: 0;
+  box-shadow: 0 7px 16px color-mix(in srgb, var(--pl-primary) 24%, transparent);
+}
+
+.logo-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .logo-text {
-  font-size: 17px;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 750;
   color: var(--pl-text);
-  letter-spacing: 0.5px;
+  letter-spacing: -0.3px;
+}
+
+.logo-caption {
+  color: var(--pl-text-muted);
+  font-size: 11px;
+  letter-spacing: 0.2px;
 }
 
 /* ── Main area ── */
@@ -208,7 +225,6 @@ html, body, #app {
   min-height: 72px;
   background: var(--pl-surface);
   border-bottom: 1px solid var(--pl-border);
-  box-shadow: var(--pl-shadow-card);
   display: flex;
   align-items: center;
   padding: 0 26px;
@@ -220,8 +236,8 @@ html, body, #app {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 22px 24px 18px;
-  background: var(--pl-page-bg);
+  padding: 24px 28px 20px;
+  background: radial-gradient(circle at 90% 0%, color-mix(in srgb, var(--pl-primary-soft) 52%, transparent), transparent 42%), var(--pl-page-bg);
 }
 
 .content-area > * {
@@ -242,8 +258,8 @@ html, body, #app {
 
 @media (max-width: 1100px) {
   .sidebar {
-    width: 196px;
-    min-width: 196px;
+    width: 208px;
+    min-width: 208px;
   }
 
   .topbar-wrapper {
@@ -257,8 +273,8 @@ html, body, #app {
 
 @media (max-width: 960px) {
   .sidebar {
-    width: 176px;
-    min-width: 176px;
+    width: 184px;
+    min-width: 184px;
   }
 
   .topbar-wrapper {
@@ -275,7 +291,7 @@ html, body, #app {
 @media (max-width: 820px) {
   .sidebar { width: 76px; min-width: 76px; }
   .sidebar-logo { justify-content: center; padding: 0; }
-  .logo-text { display: none; }
+  .logo-copy { display: none; }
   .content-area { padding: 12px; }
 }
 
