@@ -19,7 +19,7 @@ let options: TaskResumableDownloadOptions
 let status: TaskStatus
 
 beforeEach(async () => {
-  directory = fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-task-resume-test-'))
+  directory = await fsp.realpath(fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-task-resume-test-')))
   bytes = content; etag = '"original"'; rangeSupported = true; headStatus = 200; ranges = []; methods = []; headers = []; override = undefined; status = 'running'
   server = http.createServer((request, response) => {
     methods.push(request.method ?? 'GET'); headers.push(request.headers)

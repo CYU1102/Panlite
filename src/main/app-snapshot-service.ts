@@ -76,13 +76,26 @@ function integrity(database: Database.Database): void {
   const rows = database.pragma('integrity_check') as Array<{ integrity_check: string }>
   if (rows.length !== 1 || rows[0].integrity_check !== 'ok') throw new AppSnapshotError('数据库完整性检查失败')
 }
-function aiReferences(database: Database.Database, profile: string): { managed: string[]; external: number } {
+async function canonicalSourcePath(source: string): Promise<string> {
+  let current = path.resolve(source)
+  const missing: string[] = []
+  while (true) {
+    try { return path.join(await fsp.realpath(current), ...missing.reverse()) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const parent = path.dirname(current)
+      if (parent === current) throw error
+      missing.push(path.basename(current)); current = parent
+    }
+  }
+}
+async function aiReferences(database: Database.Database, profile: string): Promise<{ managed: string[]; external: number }> {
   const present = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_documents'").get()
   if (!present || !(database.prepare('PRAGMA table_info(ai_documents)').all() as { name: string }[]).some(column => column.name === 'source_path')) return { managed: [], external: 0 }
   const rows = database.prepare("SELECT source_path FROM ai_documents WHERE source_path IS NOT NULL AND source_path<>''").all() as { source_path: string }[]
   const managed = new Set<string>(); let external = 0
   for (const row of rows) {
-    const relative = path.relative(profile, path.resolve(row.source_path)).split(path.sep).join('/')
+    const relative = path.relative(profile, await canonicalSourcePath(row.source_path)).split(path.sep).join('/')
     if (relative.startsWith('ai-attachments/')) managed.add(safeRelative(relative))
     else external++
   }
@@ -156,8 +169,8 @@ async function capture(paths: Layout, options: AppSnapshotOptions, snapshotId: s
   try { integrity(database); await database.backup(path.join(data, 'panlite.db')) } finally { database.close() }
   const backedUp = new Database(path.join(data, 'panlite.db'))
   let metadata: ReturnType<typeof databaseMetadata>
-  let references: ReturnType<typeof aiReferences>
-  try { backedUp.pragma('journal_mode=DELETE'); integrity(backedUp); metadata = databaseMetadata(backedUp); references = aiReferences(backedUp, paths.profile) } finally { backedUp.close() }
+  let references: Awaited<ReturnType<typeof aiReferences>>
+  try { backedUp.pragma('journal_mode=DELETE'); integrity(backedUp); metadata = databaseMetadata(backedUp); references = await aiReferences(backedUp, paths.profile) } finally { backedUp.close() }
   await syncFile(path.join(data, 'panlite.db'))
   const before = await tree(paths.profile)
   for (const directory of before.directories) await fsp.mkdir(path.join(data, ...directory.split('/')), { recursive: true })
