@@ -95,7 +95,13 @@ async function aiReferences(database: Database.Database, profile: string): Promi
   const rows = database.prepare("SELECT source_path FROM ai_documents WHERE source_path IS NOT NULL AND source_path<>''").all() as { source_path: string }[]
   const managed = new Set<string>(); let external = 0
   for (const row of rows) {
-    const relative = path.relative(profile, await canonicalSourcePath(row.source_path)).split(path.sep).join('/')
+    let canonical: string
+    try { canonical = await canonicalSourcePath(row.source_path) }
+    catch {
+      // An unavailable external drive must not prevent a snapshot of managed data.
+      external++; continue
+    }
+    const relative = path.relative(profile, canonical).split(path.sep).join('/')
     if (relative.startsWith('ai-attachments/')) managed.add(safeRelative(relative))
     else external++
   }
