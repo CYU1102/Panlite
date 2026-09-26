@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    width="640px"
+    width="860px"
     :show-close="true"
     @close="onClose"
     class="add-account-dialog"
@@ -185,51 +185,8 @@
 
     </div>
 
-    <div v-if="selectedPlatform === 'quark' && activeMethod === 'auto'" class="method-body">
-      <div class="split-layout">
-        <div class="steps-panel">
-          <div class="step-item" v-for="(step, i) in quarkSteps" :key="i">
-            <div class="step-num" :class="{ done: quarkAutoStep === 'success' && i < 4 }">
-              <Check v-if="quarkAutoStep === 'success' && i < 4" :size="14" />
-              <span v-else>{{ i + 1 }}</span>
-            </div>
-            <div class="step-content">
-              <div class="step-title">{{ step.title }}</div>
-              <div class="step-desc">{{ step.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="action-panel">
-          <div class="status-tag" :class="quarkAutoStep">
-            <component :is="stepStatusIcon(quarkAutoStep)" :size="14" />
-            {{ stepStatusText(quarkAutoStep, '扫码') }}
-          </div>
-          <div v-if="quarkAutoStep === 'idle'" class="action-center">
-            <el-button type="primary" size="large" @click="startQuarkAuto">
-              <Monitor :size="16" style="margin-right: 6px" />
-              开始登录
-            </el-button>
-            <p class="action-hint">将打开夸克网盘登录页面，请用夸克 App 扫码</p>
-          </div>
-          <div v-else-if="quarkAutoStep === 'logging'" class="action-center">
-            <div class="pulse-ring"><Monitor :size="28" /></div>
-            <p class="action-hint">请在弹出的窗口中扫码登录</p>
-          </div>
-          <div v-else-if="quarkAutoStep === 'success'" class="action-center success">
-            <CheckCircle2 :size="32" />
-            <p class="nickname">{{ quarkAutoResult.nickname }}</p>
-          </div>
-          <div v-else-if="quarkAutoStep === 'failed'" class="action-center failed">
-            <XCircle :size="32" />
-            <p>{{ quarkAutoError }}</p>
-            <el-button size="small" @click="resetQuarkAuto">重试</el-button>
-          </div>
-        </div>
-      </div>
-      <div class="security-notice">
-        <ShieldCheck :size="14" />
-        <span>登录态仅保存在本地 · Cookie 加密存储 · 不读取系统浏览器数据</span>
-      </div>
+    <div v-if="modelValue && selectedPlatform === 'quark' && activeMethod === 'auto'" class="method-body">
+      <InlineDriveLogin platform="quark" @success="completeQuarkInlineLogin" @fallback="startQuarkAuto" />
     </div>
 
     <!-- Quark: Manual Cookie -->
@@ -264,51 +221,8 @@
     </div>
 
     <!-- Baidu: Auto Cookie Login -->
-    <div v-if="selectedPlatform === 'baidu' && activeMethod === 'auto'" class="method-body">
-      <div class="split-layout">
-        <div class="steps-panel">
-          <div class="step-item" v-for="(step, i) in baiduCookieSteps" :key="i">
-            <div class="step-num" :class="{ done: baiduAutoStep === 'success' && i < 4 }">
-              <Check v-if="baiduAutoStep === 'success' && i < 4" :size="14" />
-              <span v-else>{{ i + 1 }}</span>
-            </div>
-            <div class="step-content">
-              <div class="step-title">{{ step.title }}</div>
-              <div class="step-desc">{{ step.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="action-panel">
-          <div class="status-tag" :class="baiduAutoStep">
-            <component :is="stepStatusIcon(baiduAutoStep)" :size="14" />
-            {{ stepStatusText(baiduAutoStep, '登录') }}
-          </div>
-          <div v-if="baiduAutoStep === 'idle'" class="action-center">
-            <el-button type="primary" size="large" @click="startBaiduAuto">
-              <Monitor :size="16" style="margin-right: 6px" />
-              开始登录
-            </el-button>
-            <p class="action-hint">将打开百度网盘登录页面</p>
-          </div>
-          <div v-else-if="baiduAutoStep === 'logging'" class="action-center">
-            <div class="pulse-ring"><Monitor :size="28" /></div>
-            <p class="action-hint">请在弹出的窗口中登录百度账号</p>
-          </div>
-          <div v-else-if="baiduAutoStep === 'success'" class="action-center success">
-            <CheckCircle2 :size="32" />
-            <p class="nickname">{{ baiduAutoResult.nickname }}</p>
-          </div>
-          <div v-else-if="baiduAutoStep === 'failed'" class="action-center failed">
-            <XCircle :size="32" />
-            <p>{{ baiduAutoError }}</p>
-            <el-button size="small" @click="resetBaiduAuto">重试</el-button>
-          </div>
-        </div>
-      </div>
-      <div class="security-notice">
-        <ShieldCheck :size="14" />
-        <span>登录态仅保存在本地 · Cookie 加密存储 · 不读取系统浏览器数据</span>
-      </div>
+    <div v-if="modelValue && selectedPlatform === 'baidu' && activeMethod === 'auto'" class="method-body">
+      <InlineDriveLogin platform="baidu" @success="completeBaiduInlineLogin" @fallback="startBaiduAuto" />
     </div>
 
     <!-- Baidu: OAuth -->
@@ -397,51 +311,8 @@
     </div>
 
     <!-- UC: Auto Cookie Login -->
-    <div v-if="selectedPlatform === 'uc' && activeMethod === 'auto'" class="method-body">
-      <div class="split-layout">
-        <div class="steps-panel">
-          <div class="step-item" v-for="(step, i) in ucSteps" :key="i">
-            <div class="step-num" :class="{ done: ucAutoStep === 'success' && i < 4 }">
-              <Check v-if="ucAutoStep === 'success' && i < 4" :size="14" />
-              <span v-else>{{ i + 1 }}</span>
-            </div>
-            <div class="step-content">
-              <div class="step-title">{{ step.title }}</div>
-              <div class="step-desc">{{ step.desc }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="action-panel">
-          <div class="status-tag" :class="ucAutoStep">
-            <component :is="stepStatusIcon(ucAutoStep)" :size="14" />
-            {{ stepStatusText(ucAutoStep, '登录') }}
-          </div>
-          <div v-if="ucAutoStep === 'idle'" class="action-center">
-            <el-button type="primary" size="large" @click="startUcAuto">
-              <Monitor :size="16" style="margin-right: 6px" />
-              开始登录
-            </el-button>
-            <p class="action-hint">将打开 UC 网盘登录页面</p>
-          </div>
-          <div v-else-if="ucAutoStep === 'logging'" class="action-center">
-            <div class="pulse-ring"><Monitor :size="28" /></div>
-            <p class="action-hint">请在弹出的窗口中登录 UC 账号</p>
-          </div>
-          <div v-else-if="ucAutoStep === 'success'" class="action-center success">
-            <CheckCircle2 :size="32" />
-            <p class="nickname">{{ ucAutoResult.nickname }}</p>
-          </div>
-          <div v-else-if="ucAutoStep === 'failed'" class="action-center failed">
-            <XCircle :size="32" />
-            <p>{{ ucAutoError }}</p>
-            <el-button size="small" @click="resetUcAuto">重试</el-button>
-          </div>
-        </div>
-      </div>
-      <div class="security-notice">
-        <ShieldCheck :size="14" />
-        <span>登录态仅保存在本地 · Cookie 加密存储</span>
-      </div>
+    <div v-if="modelValue && selectedPlatform === 'uc' && activeMethod === 'auto'" class="method-body">
+      <InlineDriveLogin platform="uc" @success="completeUcInlineLogin" @fallback="startUcAuto" />
     </div>
 
     <!-- UC: Manual Cookie -->
@@ -555,6 +426,7 @@ import {
 } from 'lucide-vue-next'
 import type { Platform, LoginType, DriveCredential } from '@shared/types'
 import { electronApi, type LoginResult, type BaiduLoginResult } from '../api/ipc'
+import InlineDriveLogin from './InlineDriveLogin.vue'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; success: [] }>()
@@ -569,18 +441,18 @@ type Step = 'idle' | 'logging' | 'success' | 'failed'
 // ── Login method definitions ──
 
 const quarkMethods = [
-  { key: 'auto', label: '自动获取 Cookie', icon: markRaw(Globe) },
+  { key: 'auto', label: '扫码登录', icon: markRaw(Globe) },
   { key: 'manual', label: '手动粘贴 Cookie', icon: markRaw(PenSquare) },
 ]
 
 const baiduMethods = [
-  { key: 'auto', label: '自动获取 Cookie', icon: markRaw(Globe) },
+  { key: 'auto', label: '扫码登录', icon: markRaw(Globe) },
   { key: 'oauth', label: 'OAuth 授权', icon: markRaw(KeyRound) },
   { key: 'manual', label: '手动粘贴 Cookie', icon: markRaw(PenSquare) },
 ]
 
 const ucMethods = [
-  { key: 'auto', label: '自动获取 Cookie', icon: markRaw(Globe) },
+  { key: 'auto', label: '扫码登录', icon: markRaw(Globe) },
   { key: 'manual', label: '手动粘贴 Cookie', icon: markRaw(PenSquare) },
 ]
 
@@ -621,10 +493,13 @@ const currentMethods = computed(() => {
 
 const authSupportHint = computed(() => {
   if (selectedPlatform.value === 'quark') {
-    return '夸克官方 OAuth 目前只开放给独立 Skill API；PanLite 文件管理使用网页登录会话，自动登录方式才能保证目录、上传和迁移完整可用。'
+    return '当前页加载夸克官方登录页面；扫码确认后自动验证并保存网页登录会话。'
   }
   if (selectedPlatform.value === 'uc') {
-    return 'UC 公开 OAuth 接口属于小游戏平台，不授予 UC 网盘文件权限；当前使用官方网页登录 Cookie。'
+    return '当前页加载 UC 官方登录页面；扫码确认后自动验证并保存网页登录会话。'
+  }
+  if (selectedPlatform.value === 'baidu' && activeMethod.value === 'auto') {
+    return '当前页加载百度官方登录页面；扫码确认后自动验证账号 Cookie。'
   }
   if (selectedPlatform.value === 'xunlei') {
     return '自动登录使用迅雷官方网页授权并保存访问 Token；手动 Refresh Token 仅作为备用方式。'
@@ -669,16 +544,15 @@ function stepStatusText(step: Step, action: string) {
 
 // ── Quark Auto Cookie ──
 
-const quarkSteps = [
-  { title: '打开夸克网盘', desc: '打开官方登录页面' },
-  { title: '扫码登录', desc: '使用夸克 App 扫码' },
-  { title: '自动获取', desc: '登录成功后自动获取 Cookie' },
-  { title: '保存账号', desc: '验证通过后自动保存' },
-]
-
 const quarkAutoStep = ref<Step>('idle')
 const quarkAutoResult = ref<LoginResult>({ success: false })
 const quarkAutoError = ref('')
+
+function completeQuarkInlineLogin(result: LoginResult) {
+  quarkAutoResult.value = result
+  quarkAutoStep.value = 'success'
+  quarkAutoError.value = ''
+}
 
 async function startQuarkAuto() {
   quarkAutoStep.value = 'logging'
@@ -702,16 +576,15 @@ function resetQuarkAuto() {
 
 // ── Baidu Auto Cookie ──
 
-const baiduCookieSteps = [
-  { title: '打开百度网盘', desc: '打开官方登录页面' },
-  { title: '登录账号', desc: '输入账号密码或扫码登录' },
-  { title: '自动获取', desc: '登录成功后自动获取 Cookie' },
-  { title: '保存账号', desc: '验证通过后自动保存' },
-]
-
 const baiduAutoStep = ref<Step>('idle')
 const baiduAutoResult = ref<LoginResult>({ success: false })
 const baiduAutoError = ref('')
+
+function completeBaiduInlineLogin(result: LoginResult) {
+  baiduAutoResult.value = result
+  baiduAutoStep.value = 'success'
+  baiduAutoError.value = ''
+}
 
 async function startBaiduAuto() {
   baiduAutoStep.value = 'logging'
@@ -894,16 +767,15 @@ const manualToken = ref('')
 
 // ── UC Auto Cookie ──
 
-const ucSteps = [
-  { title: '打开UC网盘', desc: '打开官方登录页面' },
-  { title: '登录账号', desc: '登录您的UC账号' },
-  { title: '自动获取', desc: '登录成功后自动获取 Cookie' },
-  { title: '保存账号', desc: '验证通过后自动保存' },
-]
-
 const ucAutoStep = ref<Step>('idle')
 const ucAutoResult = ref<LoginResult>({ success: false })
 const ucAutoError = ref('')
+
+function completeUcInlineLogin(result: LoginResult) {
+  ucAutoResult.value = result
+  ucAutoStep.value = 'success'
+  ucAutoError.value = ''
+}
 
 async function startUcAuto() {
   ucAutoStep.value = 'logging'

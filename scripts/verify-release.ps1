@@ -1,4 +1,7 @@
-param([string]$ReleaseDirectory = (Join-Path $PSScriptRoot '../release'))
+param(
+  [string]$ReleaseDirectory = (Join-Path $PSScriptRoot '../release'),
+  [switch]$RequireSignature
+)
 $ErrorActionPreference = 'Stop'
 # A PowerShell 7 parent can pass its module search path to Windows PowerShell.
 # Resolve built-in modules from this runtime to avoid loading incompatible copies.
@@ -23,13 +26,23 @@ foreach ($row in $rows) {
   if ($target -ieq $installers[0].FullName) { $listedInstaller = $true }
 }
 if (-not $listedInstaller) { throw 'Installer is absent from checksum manifest.' }
-$executables = @($installers[0].FullName, (Join-Path $releaseRoot 'win-unpacked/PanLite.exe'))
+$executables = @($installers[0].FullName)
+$unpackedApplication = Join-Path $releaseRoot 'win-unpacked/PanLite.exe'
+if (Test-Path -LiteralPath $unpackedApplication) { $executables += $unpackedApplication }
 foreach ($executable in $executables) {
   $signature = Get-AuthenticodeSignature -LiteralPath $executable
-  if ($signature.Status -ne 'Valid') { throw "Invalid or missing signature: $executable ($($signature.Status))" }
-  if (-not $env:PANLITE_PUBLISHER_NAME) { throw 'Set PANLITE_PUBLISHER_NAME for publisher verification.' }
-  $publisher = $signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-  if ($publisher -cne $env:PANLITE_PUBLISHER_NAME.Trim()) { throw "Unexpected signing publisher: $publisher" }
-  Write-Output "Verified signature and publisher: $executable"
+  if ($RequireSignature -or $env:PANLITE_PUBLISHER_NAME) {
+    if ($signature.Status -ne 'Valid') { throw "Invalid or missing signature: $executable ($($signature.Status))" }
+    if (-not $env:PANLITE_PUBLISHER_NAME) { throw 'Set PANLITE_PUBLISHER_NAME for publisher verification.' }
+    $publisher = $signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+    if ($publisher -cne $env:PANLITE_PUBLISHER_NAME.Trim()) { throw "Unexpected signing publisher: $publisher" }
+    Write-Output "Verified signature and publisher: $executable"
+  } elseif ($signature.Status -eq 'NotSigned') {
+    Write-Output "Verified unsigned artifact: $executable"
+  } elseif ($signature.Status -eq 'Valid') {
+    Write-Output "Verified signed artifact: $executable"
+  } else {
+    throw "Invalid signature state: $executable ($($signature.Status))"
+  }
 }
-Write-Output 'Release checksums, application signature and installer signature verified.'
+Write-Output 'Release checksums and artifact signature states verified.'

@@ -1,6 +1,7 @@
 import { BrowserWindow, session, ipcMain } from 'electron'
 import { join } from 'path'
 import log from 'electron-log'
+import { QUARK_LOGIN_USER_AGENT } from '../shared/inline-login'
 
 export interface LoginWindowResult {
   success: boolean
@@ -14,9 +15,7 @@ export interface LoginWindowResult {
 }
 
 // 完全参照 QuarkPanTool 的 User-Agent
-const QUARK_UA =
-  'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko)' +
-  ' Chrome/94.0.4606.71 Safari/537.36 Core/1.94.225.400 QQBrowser/12.2.5544.400'
+const QUARK_UA = QUARK_LOGIN_USER_AGENT
 
 interface LoginConfirmEvent {
   readonly sender: unknown

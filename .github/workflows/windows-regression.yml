@@ -1,0 +1,54 @@
+name: Windows regression
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run ensure:electron
+      - run: npm run check
+      - run: npm run test:preview
+      - run: npm audit --omit=dev --audit-level=high
+
+  package:
+    needs: check
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run pack:release
+      - run: node scripts/verify-package-content.mjs . release
+      - run: node scripts/verify-packaged-imports.cjs release
+      - run: npm run checksums
+      - run: npm run release:verify
+      - run: npm run test:install
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows-installer
+          path: |
+            release/PanLite-Setup-*.exe
+            release/PanLite-Setup-*.exe.blockmap
+            release/SHA256SUMS.txt
+          if-no-files-found: error

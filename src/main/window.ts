@@ -2,9 +2,25 @@ import { app, BrowserWindow, nativeTheme, shell } from 'electron'
 import { join } from 'path'
 import log from 'electron-log'
 import { getExternalHttpUrl, getRendererIndexPath, isTrustedRendererUrl } from './ipc-security'
+import { getInlineLoginPlatformByPartition, isInlineLoginUrl, type InlineLoginPlatform } from '../shared/inline-login'
+
+interface PendingWebviewPolicy {
+  origin: string
+  inlineLoginPlatform: InlineLoginPlatform | null
+}
+
+export function shouldAllowWebviewNavigation(policy: PendingWebviewPolicy, url: string): boolean {
+  if (policy.inlineLoginPlatform) return isInlineLoginUrl(policy.inlineLoginPlatform, url)
+  try {
+    const target = new URL(url)
+    return (target.protocol === 'https:' || target.protocol === 'http:') && target.origin === policy.origin
+  } catch {
+    return false
+  }
+}
 
 export function createMainWindow(): BrowserWindow {
-  const pendingWebviewOrigins: string[] = []
+  const pendingWebviewPolicies: PendingWebviewPolicy[] = []
   const devServerUrl = process.env.VITE_DEV_SERVER_URL
   const rendererIndexPath = getRendererIndexPath()
   const resourcePreloadPath = process.env.VITE_DEV_SERVER_URL
@@ -47,10 +63,16 @@ export function createMainWindow(): BrowserWindow {
   })
 
   win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    const partition = webPreferences.partition || params.partition
+    const inlineLoginPlatform = getInlineLoginPlatformByPartition(partition)
     try {
       const target = new URL(params.src)
-      if (target.protocol !== 'https:' && target.protocol !== 'http:') throw new Error('Unsupported protocol')
-      pendingWebviewOrigins.push(target.origin)
+      if (inlineLoginPlatform) {
+        if (!isInlineLoginUrl(inlineLoginPlatform, target.toString())) throw new Error('Unsupported login origin')
+      } else if (target.protocol !== 'https:' && target.protocol !== 'http:') {
+        throw new Error('Unsupported protocol')
+      }
+      pendingWebviewPolicies.push({ origin: target.origin, inlineLoginPlatform })
     } catch {
       event.preventDefault()
       return
@@ -61,33 +83,31 @@ export function createMainWindow(): BrowserWindow {
     webPreferences.sandbox = true
     webPreferences.webSecurity = true
     webPreferences.allowRunningInsecureContent = false
-    webPreferences.preload = resourcePreloadPath
+    webPreferences.preload = inlineLoginPlatform ? undefined : resourcePreloadPath
   })
 
   win.webContents.on('did-attach-webview', (_event, guest) => {
-    const allowedOrigin = pendingWebviewOrigins.shift()
+    const policy = pendingWebviewPolicies.shift()
     guest.setWindowOpenHandler(({ url }) => {
-      try {
-        const target = new URL(url)
-        if (target.protocol === 'https:' || target.protocol === 'http:') void shell.openExternal(target.toString())
-      } catch { /* deny malformed URL */ }
+      if (policy?.inlineLoginPlatform) {
+        if (shouldAllowWebviewNavigation(policy, url)) void guest.loadURL(url).catch(() => {})
+      } else {
+        try {
+          const target = new URL(url)
+          if (target.protocol === 'https:' || target.protocol === 'http:') void shell.openExternal(target.toString())
+        } catch { /* deny malformed URL */ }
+      }
       return { action: 'deny' }
     })
     const guardGuestNavigation = (event: Electron.Event, url: string) => {
-      try {
-        const target = new URL(url)
-        if (
-          (target.protocol !== 'https:' && target.protocol !== 'http:')
-          || !allowedOrigin
-          || target.origin !== allowedOrigin
-        ) {
-          event.preventDefault()
-          if (target.protocol === 'https:' || target.protocol === 'http:') {
-            void shell.openExternal(target.toString())
-          }
-        }
-      } catch {
+      if (!policy || !shouldAllowWebviewNavigation(policy, url)) {
         event.preventDefault()
+        if (!policy?.inlineLoginPlatform) {
+          try {
+            const target = new URL(url)
+            if (target.protocol === 'https:' || target.protocol === 'http:') void shell.openExternal(target.toString())
+          } catch { /* block malformed URL */ }
+        }
       }
     }
     guest.on('will-navigate', guardGuestNavigation)

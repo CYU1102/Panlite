@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({ addAccount: vi.fn(), pan123FetchToken: vi.fn(), aliyunExchangeCode: vi.fn(),
   openXunleiLogin: vi.fn(), openQuarkLogin: vi.fn(), loginBaiduCookie: vi.fn(), loginUc: vi.fn(),
-  loginBaidu: vi.fn(), success: vi.fn(), warning: vi.fn(), error: vi.fn(), push: vi.fn() }))
+  loginBaidu: vi.fn(), getInlineLoginStatus: vi.fn(), resetInlineLoginSession: vi.fn(), success: vi.fn(), warning: vi.fn(), error: vi.fn(), push: vi.fn() }))
 vi.mock('../api/ipc', () => ({ electronApi: api }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: api.push }) }))
 vi.mock('element-plus/es/components/message/index.mjs', () => ({ ElMessage: api }))
@@ -70,15 +70,23 @@ describe('account creation through visible controls', () => {
     expect(api.addAccount).toHaveBeenCalledWith(expect.objectContaining({ platform: 'xunlei', loginType: 'token', credential: { refreshToken: 'fixture-refresh' } }))
   })
 
-  it.each([
-    ['quark', 'openQuarkLogin'], ['baidu', 'loginBaiduCookie'], ['uc', 'loginUc'], ['xunlei', 'openXunleiLogin'],
-  ] as const)('submits the %s automatic login result', async (name, method) => {
-    api[method].mockResolvedValue({ success: true, cookies: 'fixture-cookie', refreshToken: 'fixture-refresh', accessToken: 'fixture-access', userId: 'fixture-user', userAgent: 'fixture-agent' })
+  it.each(['quark', 'baidu', 'uc'] as const)('submits the %s inline login result', async (name) => {
     await platform(name)
+    wrapper.getComponent({ name: 'InlineDriveLogin' }).vm.$emit('success', {
+      success: true, cookies: 'fixture-cookie', userAgent: 'fixture-agent', nickname: 'fixture-user',
+    })
+    await flushPromises()
+    await click('添加账号')
+    expect(api.addAccount).toHaveBeenCalledWith(expect.objectContaining({ platform: name, loginType: 'cookie' }))
+  })
+
+  it('submits the Xunlei automatic login result', async () => {
+    api.openXunleiLogin.mockResolvedValue({ success: true, refreshToken: 'fixture-refresh', accessToken: 'fixture-access', userId: 'fixture-user' })
+    await platform('xunlei')
     await click('开始登录')
     await click('添加账号')
-    expect(api[method]).toHaveBeenCalledOnce()
-    expect(api.addAccount).toHaveBeenCalledWith(expect.objectContaining({ platform: name, loginType: name === 'xunlei' ? 'oauth' : 'cookie' }))
+    expect(api.openXunleiLogin).toHaveBeenCalledOnce()
+    expect(api.addAccount).toHaveBeenCalledWith(expect.objectContaining({ platform: 'xunlei', loginType: 'oauth' }))
   })
 
   it('offers 123 credentials and exchanges them before creating the account', async () => {
