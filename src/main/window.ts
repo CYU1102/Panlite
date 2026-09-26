@@ -89,8 +89,8 @@ export function createMainWindow(): BrowserWindow {
   win.webContents.on('did-attach-webview', (_event, guest) => {
     const policy = pendingWebviewPolicies.shift()
     guest.setWindowOpenHandler(({ url }) => {
-      if (policy?.inlineLoginPlatform && shouldAllowWebviewNavigation(policy, url)) {
-        void guest.loadURL(url)
+      if (policy?.inlineLoginPlatform) {
+        if (shouldAllowWebviewNavigation(policy, url)) void guest.loadURL(url).catch(() => {})
       } else {
         try {
           const target = new URL(url)
