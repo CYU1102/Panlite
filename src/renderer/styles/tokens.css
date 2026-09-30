@@ -3,7 +3,13 @@
   --pl-page-bg: #f3f6fb;
   --pl-surface: #ffffff;
   --pl-surface-subtle: #f9fbfe;
-  --pl-sidebar-bg: #f8faff;
+  --pl-sidebar-bg: #172a46;
+  --pl-sidebar-raised: #203956;
+  --pl-sidebar-border: #314967;
+  --pl-sidebar-text: #eaf1fc;
+  --pl-sidebar-muted: #9fb2cc;
+  --pl-sidebar-hover: #244261;
+  --pl-sidebar-active: #30547b;
   --pl-border: #dfe6f0;
   --pl-border-strong: #cbd6e5;
   --pl-text: #172338;
@@ -22,6 +28,9 @@
   --pl-radius-sm: 8px;
   --pl-radius-control: 10px;
   --pl-radius-card: 16px;
+  --pl-radius-pill: 999px;
+  --pl-content-max: 1680px;
+  --pl-focus-ring: 0 0 0 3px color-mix(in srgb, var(--pl-primary) 22%, transparent);
   --pl-shadow-card: 0 1px 2px rgba(24, 48, 88, 0.035), 0 8px 24px rgba(24, 48, 88, 0.045);
   --pl-shadow-float: 0 18px 48px rgba(24, 48, 88, 0.14);
   --pl-space-1: 4px;
@@ -55,6 +64,72 @@ body,
   background: var(--pl-page-bg);
   color: var(--pl-text);
   line-height: 1.5;
+}
+
+/* Shared page anatomy. Individual pages only define their content layout. */
+.pl-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 64px;
+}
+
+.pl-page-heading h1,
+.pl-page-heading h2 {
+  margin: 0;
+  color: var(--pl-text);
+  font-size: 24px;
+  font-weight: 750;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+}
+
+.pl-page-heading p {
+  margin: 5px 0 0;
+  color: var(--pl-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pl-eyebrow {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--pl-primary);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+}
+
+.pl-surface {
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-card);
+  box-shadow: var(--pl-shadow-card);
+}
+
+.pl-section-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.pl-section-heading h2,
+.pl-section-heading h3 {
+  margin: 0;
+  color: var(--pl-text);
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+
+@media (max-width: 640px) {
+  .pl-page-heading { align-items: flex-start; flex-direction: column; }
+  .pl-page-heading h1,
+  .pl-page-heading h2 { font-size: 21px; }
 }
 
 .el-button {
@@ -171,7 +246,13 @@ html.dark {
   --pl-page-bg: #0a0a0b;
   --pl-surface: #161618;
   --pl-surface-subtle: #131316;
-  --pl-sidebar-bg: #111216;
+  --pl-sidebar-bg: #0f1929;
+  --pl-sidebar-raised: #19283d;
+  --pl-sidebar-border: #293b53;
+  --pl-sidebar-text: #e5edf8;
+  --pl-sidebar-muted: #92a7c3;
+  --pl-sidebar-hover: #1d334e;
+  --pl-sidebar-active: #28476b;
   --pl-border: #26262a;
   --pl-border-strong: #3a3a40;
   --pl-text: #ededed;
@@ -251,9 +332,5 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 }
 
 /* Chrome 组件里少量硬编码颜色的深色修正 */
-html.dark .nav-item:hover {
-  background: #1e1e22;
-}
-html.dark .nav-item.active {
-  background: linear-gradient(90deg, var(--pl-primary-soft) 0%, #17171a 100%);
-}
+html.dark .nav-item:hover { background: var(--pl-sidebar-hover); }
+html.dark .nav-item.active { background: var(--pl-sidebar-active); }

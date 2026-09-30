@@ -2,9 +2,9 @@
 
  <div class="file-manager">
 
- <div class="page-heading">
+ <div class="page-heading pl-page-heading">
    <div>
-     <span class="page-eyebrow">云端文件</span>
+     <span class="page-eyebrow pl-eyebrow">云端文件</span>
      <h1>文件管理</h1>
      <p>浏览、整理和传输云端文件</p>
    </div>
@@ -16,7 +16,7 @@
 
  <!-- Breadcrumb / navigation bar -->
 
- <div class="path-bar">
+ <div class="path-bar pl-surface">
 
  <div class="path-bar-left">
 
@@ -247,7 +247,7 @@
 
     <!-- File table card -->
 
-    <div v-else class="file-card">
+    <div v-else class="file-card pl-surface">
 
       <FileTable
 
@@ -1644,7 +1644,12 @@ watch(() => appStore.currentAccount?.id, () => {
 }
 
 /* Interaction refresh: keep the workbench light while making active states obvious. */
-.file-manager { gap: 14px; }
+.file-manager {
+  gap: 14px;
+  width: 100%;
+  max-width: var(--pl-content-max);
+  margin-inline: auto;
+}
 
 .page-heading { min-height: 58px; }
 .page-heading h1 {

@@ -1,28 +1,41 @@
 <template>
   <nav class="side-nav">
     <div v-for="group in menuGroups" :key="group.label" class="nav-group">
-      <div class="nav-group-label">{{ group.label }}</div>
       <button
-        v-for="item in group.items"
-        :key="item.path"
         type="button"
-        class="nav-item"
-        :class="{ active: activeMenu === item.path }"
-        :aria-current="activeMenu === item.path ? 'page' : undefined"
-        :title="item.label"
-        @click="onSelect(item.path)"
+        class="nav-group-toggle"
+        :title="`${expandedGroups.has(group.label) ? '收起' : '展开'}${group.label}`"
+        :aria-expanded="expandedGroups.has(group.label)"
+        :aria-controls="`nav-group-${group.id}`"
+        @click="toggleGroup(group.label)"
       >
-        <div class="nav-item-icon">
-          <component :is="item.icon" :size="18" :stroke-width="1.8" />
-        </div>
-        <span class="nav-item-text">{{ item.label }}</span>
+        <component :is="group.icon" class="nav-group-icon" :size="14" :stroke-width="1.8" />
+        <span>{{ group.label }}</span>
+        <ChevronDown class="nav-group-chevron" :size="14" :class="{ expanded: expandedGroups.has(group.label) }" />
       </button>
+      <div v-show="expandedGroups.has(group.label)" :id="`nav-group-${group.id}`" class="nav-group-items">
+        <button
+          v-for="item in group.items"
+          :key="item.path"
+          type="button"
+          class="nav-item"
+          :class="{ active: activeMenu === item.path }"
+          :aria-current="activeMenu === item.path ? 'page' : undefined"
+          :title="item.label"
+          @click="onSelect(item.path)"
+        >
+          <div class="nav-item-icon">
+            <component :is="item.icon" :size="18" :stroke-width="1.8" />
+          </div>
+          <span class="nav-item-text">{{ item.label }}</span>
+        </button>
+      </div>
     </div>
   </nav>
 </template>
 
 <script setup lang="ts">
-import { computed, markRaw } from 'vue'
+import { computed, markRaw, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   FolderOpen,
@@ -40,6 +53,7 @@ import {
   ArrowRightLeft,
   Sparkles,
   Workflow,
+  ChevronDown,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -49,7 +63,9 @@ const activeMenu = computed(() => route.path)
 
 const menuGroups = [
   {
+    id: 'files',
     label: '文件',
+    icon: markRaw(FolderOpen),
     items: [
       { path: '/files', label: '文件管理', icon: markRaw(FolderOpen) },
       { path: '/file-catalog', label: '统一文件目录', icon: markRaw(Library) },
@@ -58,28 +74,41 @@ const menuGroups = [
     ],
   },
   {
-    label: '工具',
+    id: 'discovery',
+    label: '搜索与分享',
+    icon: markRaw(Search),
     items: [
       { path: '/resource-search', label: '资源搜索', icon: markRaw(Search) },
       { path: '/global-search', label: '全局搜索', icon: markRaw(Search) },
       { path: '/batch-share', label: '批量分享', icon: markRaw(Share2) },
+      { path: '/share-links', label: '分享链接', icon: markRaw(Share2) },
+    ],
+  },
+  {
+    id: 'transfers',
+    label: '传输与自动化',
+    icon: markRaw(ArrowRightLeft),
+    items: [
       { path: '/batch-transfer', label: '批量转存', icon: markRaw(ArrowDownToLine) },
       { path: '/cloud-transfer', label: '云端迁移', icon: markRaw(ArrowRightLeft) },
       { path: '/transfer-plans', label: '迁移计划', icon: markRaw(ClipboardCheck) },
       { path: '/automation-rules', label: '自动化规则', icon: markRaw(Workflow) },
-      { path: '/share-links', label: '分享链接', icon: markRaw(Share2) },
       { path: '/transfer-records', label: '转存记录', icon: markRaw(ArrowDownToLine) },
       { path: '/tasks', label: '任务日志', icon: markRaw(ClipboardList) },
     ],
   },
   {
+    id: 'ai',
     label: 'AI',
+    icon: markRaw(Sparkles),
     items: [
       { path: '/ai-workspace', label: 'AI 工作台', icon: markRaw(Sparkles) },
     ],
   },
   {
+    id: 'system',
     label: '系统',
+    icon: markRaw(Settings),
     items: [
       { path: '/dashboard', label: '存储空间', icon: markRaw(BarChart3) },
       { path: '/accounts', label: '账号管理', icon: markRaw(Users) },
@@ -89,6 +118,20 @@ const menuGroups = [
     ],
   },
 ]
+
+const expandedGroups = ref(new Set<string>())
+
+watch(activeMenu, (path) => {
+  const currentGroup = menuGroups.find(group => group.items.some(item => item.path === path))
+  if (currentGroup) expandedGroups.value = new Set([currentGroup.label])
+}, { immediate: true })
+
+function toggleGroup(label: string) {
+  const next = new Set(expandedGroups.value)
+  if (next.has(label)) next.delete(label)
+  else next.add(label)
+  expandedGroups.value = next
+}
 
 function onSelect(path: string) {
   router.push(path)
@@ -108,16 +151,32 @@ function onSelect(path: string) {
 
 .nav-group + .nav-group {
   padding-top: 9px;
-  border-top: 1px solid var(--pl-border);
+  border-top: 1px solid var(--pl-sidebar-border);
 }
 
-.nav-group-label {
-  padding: 10px 12px 7px;
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
   font-size: 11px;
   font-weight: 700;
-  color: var(--pl-text-muted);
+  color: var(--pl-sidebar-muted);
   letter-spacing: 0.9px;
+  text-align: left;
 }
+
+.nav-group-toggle:hover { color: var(--pl-sidebar-text); background: var(--pl-sidebar-hover); }
+.nav-group-icon { opacity: 0.85; }
+.nav-group-chevron { margin-left: auto; transition: transform 160ms ease; }
+.nav-group-chevron.expanded { transform: rotate(180deg); }
+.nav-group-toggle:focus-visible { outline-color: #8fb8ff; }
 
 .nav-item {
   display: flex;
@@ -131,7 +190,7 @@ function onSelect(path: string) {
   border-radius: 9px;
   background: transparent;
   cursor: pointer;
-  color: var(--pl-text-secondary);
+  color: var(--pl-sidebar-muted);
   font: inherit;
   text-align: left;
   transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
@@ -139,15 +198,15 @@ function onSelect(path: string) {
 }
 
 .nav-item:hover {
-  background: var(--pl-hover);
-  color: var(--pl-text);
+  background: var(--pl-sidebar-hover);
+  color: var(--pl-sidebar-text);
 }
 
 .nav-item.active {
-  background: var(--pl-primary-soft);
-  color: var(--pl-primary-hover);
+  background: var(--pl-sidebar-active);
+  color: var(--pl-sidebar-text);
   font-weight: 700;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pl-primary) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pl-sidebar-text) 11%, transparent);
 }
 
 .nav-item.active::before {
@@ -157,7 +216,7 @@ function onSelect(path: string) {
   top: 8px;
   bottom: 8px;
   width: 3px;
-  background: var(--pl-primary);
+  background: #79aaff;
   border-radius: 0 4px 4px 0;
 }
 
@@ -174,12 +233,22 @@ function onSelect(path: string) {
   white-space: nowrap;
 }
 
+.nav-item:focus-visible {
+  outline-color: #8fb8ff;
+}
+
 @media (max-width: 820px) {
   .side-nav { padding: 8px 10px 18px; }
   .nav-group { margin-bottom: 5px; }
-  .nav-group-label { height: 8px; padding: 0; overflow: hidden; color: transparent; }
+  .nav-group-toggle { justify-content: center; width: 48px; height: 28px; min-height: 28px; margin: 0 auto; padding: 0; }
+  .nav-group-toggle span,
+  .nav-group-chevron { display: none; }
   .nav-item { justify-content: center; width: 48px; margin: 3px auto; padding: 0; }
   .nav-item-text { display: none; }
   .nav-item.active::before { left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-group-chevron { transition: none; }
 }
 </style>

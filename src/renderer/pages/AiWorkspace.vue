@@ -1,15 +1,15 @@
 <template>
   <div class="ai-workspace">
-    <header class="page-header">
+    <header class="page-header pl-page-heading">
       <div class="header-copy">
         <span class="header-icon"><Sparkles :size="21" /></span>
-        <div><div class="title-line"><h2>AI 工作台</h2><span>独立栏目</span></div><p>主动导入、独立解析和文档问答，不参与分享、转存或云端迁移</p></div>
+        <div><span class="pl-eyebrow">本地文件理解</span><div class="title-line"><h2>AI 工作台</h2><span>独立栏目</span></div><p>主动导入、独立解析和文档问答，不参与分享、转存或云端迁移</p></div>
       </div>
       <div class="header-actions"><el-button @click="localToolsVisible=true"><Wrench :size="15" />本地能力</el-button><el-button @click="openProviderDialog"><Settings2 :size="15" />模型设置</el-button><el-button type="primary" :loading="importing" @click="selectAndImport"><FilePlus2 :size="15" />导入文件</el-button></div>
     </header>
 
     <nav class="workspace-tabs">
-      <button v-for="tab in tabs" :key="tab.key" :class="{ active: activeView === tab.key }" @click="activeView = tab.key"><component :is="tab.icon" :size="15" />{{ tab.label }}<span v-if="tab.count !== undefined" class="tab-count">{{ tab.count }}</span></button>
+      <button v-for="tab in tabs" :key="tab.key" :class="{ active: activeView === tab.key }" :aria-current="activeView === tab.key ? 'page' : undefined" @click="activeView = tab.key"><component :is="tab.icon" :size="15" />{{ tab.label }}<span v-if="tab.count !== undefined" class="tab-count">{{ tab.count }}</span></button>
     </nav>
 
     <main>
@@ -209,6 +209,9 @@ onUnmounted(()=>{disposeTaskListener?.();disposeStreamListener?.();disposeProvid
 .ai-workspace {
   height: auto;
   min-height: 100%;
+  width: 100%;
+  max-width: var(--pl-content-max);
+  margin-inline: auto;
   overflow: visible;
   padding: 2px 0 32px;
   background: transparent;
@@ -225,18 +228,40 @@ onUnmounted(()=>{disposeTaskListener?.();disposeStreamListener?.();disposeProvid
 }
 .title-line h2 { font-size: 23px; font-weight: 750; letter-spacing: -0.4px; }
 .header-copy p { color: var(--pl-text-secondary); font-size: 13px; }
-.workspace-tabs { margin-bottom: 18px; padding: 5px; border: 1px solid var(--pl-border); background: var(--pl-surface); }
-.workspace-tabs button { color: var(--pl-text-secondary); }
-.workspace-tabs button.active { color: var(--pl-primary); background: var(--pl-primary-soft); box-shadow: none; }
+.workspace-tabs {
+  width: 100%;
+  gap: 4px;
+  margin-bottom: 20px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--pl-border);
+  border-radius: 0;
+  background: transparent;
+}
+.workspace-tabs button {
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 8px 8px 0 0;
+  color: var(--pl-text-secondary);
+  font-weight: 550;
+}
+.workspace-tabs button:hover { color: var(--pl-text); background: var(--pl-hover); }
+.workspace-tabs button.active {
+  color: var(--pl-primary);
+  background: transparent;
+  box-shadow: inset 0 -2px var(--pl-primary);
+}
 .hero, .panel, .stats article { box-shadow: var(--pl-shadow-card); }
 .hero { border-color: var(--pl-border); background: linear-gradient(120deg, var(--pl-primary-soft), var(--pl-surface) 58%, var(--pl-success-soft)); }
+.hero > div { padding: 28px 32px; }
+.hero aside { margin: 22px; }
 .hero h3 { color: var(--pl-text); font-size: 27px; letter-spacing: -0.5px; }
 .hero p { color: var(--pl-text-secondary); font-size: 13px; }
 .stats { gap: 14px; margin-top: 18px; }
-.stats article { border-radius: 14px; padding: 17px; }
+.stats article { border-radius: var(--pl-radius-card); padding: 17px; }
 .stats strong { color: var(--pl-text); font-size: 21px; letter-spacing: -0.4px; }
 .stats span { color: var(--pl-text-secondary); }
-.panel { margin-top: 18px; padding: 22px; border-radius: 18px; }
+.panel { margin-top: 18px; padding: 22px; border-radius: var(--pl-radius-card); }
 .panel-heading { align-items: flex-end; margin-bottom: 18px; }
 .panel-heading h3 { margin-top: 5px; color: var(--pl-text); font-size: 20px; letter-spacing: -0.35px; }
 .kicker { color: var(--pl-primary); font-size: 11px; letter-spacing: 1.1px; }

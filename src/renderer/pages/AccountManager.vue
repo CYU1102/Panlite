@@ -1,12 +1,13 @@
 <template>
   <div class="account-manager">
     <!-- Page header -->
-    <div class="page-header">
+    <div class="page-header pl-page-heading pl-surface">
       <div class="header-info">
         <div class="header-icon">
           <Users :size="20" :stroke-width="1.5" />
         </div>
         <div>
+          <span class="pl-eyebrow">连接与授权</span>
           <h2>账号管理</h2>
           <p>集中查看授权状态，及时处理失效账号</p>
         </div>
@@ -18,7 +19,7 @@
     </div>
 
     <!-- Account health summary -->
-    <div v-if="accountStore.accounts.length > 0" class="stats-bar" aria-label="账号状态概览">
+    <div v-if="accountStore.accounts.length > 0" class="stats-bar pl-surface" aria-label="账号状态概览">
       <div class="stat-chip stat-total">
         <Database :size="14" />
         <span><strong>{{ accountStore.accounts.length }}</strong> 个账号</span>
@@ -44,7 +45,7 @@
       <p>加载中...</p>
     </div>
 
-    <div v-else-if="accountStore.accounts.length === 0" class="empty-state">
+    <div v-else-if="accountStore.accounts.length === 0" class="empty-state pl-surface">
       <div class="empty-icon">
         <UserX :size="48" :stroke-width="1" />
       </div>
@@ -60,7 +61,7 @@
       <div
         v-for="account in accountStore.accounts"
         :key="account.id"
-        class="account-card"
+        class="account-card pl-surface"
         :class="{ 'is-unhealthy': account.status !== 'active' }"
         tabindex="0"
         role="group"
@@ -560,6 +561,9 @@ onMounted(async () => {
 .account-manager {
   gap: var(--pl-space-4);
   min-width: 0;
+  width: 100%;
+  max-width: var(--pl-content-max);
+  margin-inline: auto;
 }
 
 .page-header,

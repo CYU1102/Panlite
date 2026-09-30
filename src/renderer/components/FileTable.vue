@@ -109,6 +109,9 @@
             >
               <Trash2 :size="14" />
             </button>
+            <button class="action-btn action-more" title="显示文件操作" aria-label="显示文件操作" @click.stop>
+              <MoreHorizontal :size="17" />
+            </button>
           </div>
         </template>
       </el-table-column>
@@ -127,7 +130,7 @@
 </template>
 
 <script setup lang="ts">
-import { FolderOpen, File, PenSquare, Trash2, Copy, Archive, FolderArchive, Eye } from 'lucide-vue-next'
+import { FolderOpen, File, PenSquare, Trash2, Copy, Archive, FolderArchive, Eye, MoreHorizontal } from 'lucide-vue-next'
 import { ref } from 'vue'
 import type { FileItem } from '@shared/types'
 import type { PlatformCapabilities } from '@shared/capabilities'
@@ -353,16 +356,25 @@ function rowClassName({ row }: { row: FileItem }): string {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  opacity: 0;
-  transform: translateX(6px);
-  transition: opacity 0.16s ease, transform 0.16s ease;
+  transition: opacity 0.16s ease;
 }
 
-:deep(.el-table__body tr:hover) .action-btns,
-:deep(.el-table__body tr.is-selected-row) .action-btns,
-.action-btns:focus-within {
+.action-btns .action-btn:not(.action-more) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+:deep(.el-table__body tr:hover) .action-btns .action-btn,
+:deep(.el-table__body tr.is-selected-row) .action-btns .action-btn,
+.action-btns:focus-within .action-btn {
   opacity: 1;
-  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.action-more {
+  color: var(--pl-text-secondary);
+  background: var(--pl-surface-subtle);
+  border: 1px solid var(--pl-border);
 }
 
 .action-btn {
@@ -439,9 +451,9 @@ function rowClassName({ row }: { row: FileItem }): string {
 }
 
 @media (hover: none) {
-  .action-btns {
+  .action-btns .action-btn:not(.action-more) {
     opacity: 1;
-    transform: none;
+    pointer-events: auto;
   }
 }
 </style>

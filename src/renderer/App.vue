@@ -159,8 +159,8 @@ html, body, #app {
 .sidebar {
   width: 232px;
   min-width: 232px;
-  background: linear-gradient(180deg, var(--pl-sidebar-bg), var(--pl-surface-subtle));
-  border-right: 1px solid var(--pl-border);
+  background: linear-gradient(160deg, var(--pl-sidebar-bg), var(--pl-sidebar-raised));
+  border-right: 1px solid var(--pl-sidebar-border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -172,14 +172,14 @@ html, body, #app {
   align-items: center;
   gap: 12px;
   padding: 0 20px;
-  border-bottom: 1px solid var(--pl-border);
+  border-bottom: 1px solid var(--pl-sidebar-border);
   flex-shrink: 0;
 }
 
 .logo-icon {
   width: 40px;
   height: 40px;
-  background: linear-gradient(145deg, var(--pl-primary), #685ddd);
+  background: linear-gradient(145deg, #4e89ff, #7566df);
   border-radius: 13px;
   display: flex;
   align-items: center;
@@ -201,12 +201,12 @@ html, body, #app {
 .logo-text {
   font-size: 18px;
   font-weight: 750;
-  color: var(--pl-text);
+  color: var(--pl-sidebar-text);
   letter-spacing: -0.3px;
 }
 
 .logo-caption {
-  color: var(--pl-text-muted);
+  color: var(--pl-sidebar-muted);
   font-size: 11px;
   letter-spacing: 0.2px;
 }
@@ -236,7 +236,7 @@ html, body, #app {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 24px 28px 20px;
+  padding: 26px clamp(18px, 2.3vw, 36px) 22px;
   background: radial-gradient(circle at 90% 0%, color-mix(in srgb, var(--pl-primary-soft) 52%, transparent), transparent 42%), var(--pl-page-bg);
 }
 
