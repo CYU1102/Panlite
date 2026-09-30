@@ -54,7 +54,7 @@
     </div>
 
     <div class="topbar-right">
-      <button class="theme-toggle" :title="appStore.theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'" :aria-label="appStore.theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'" @click="appStore.toggleTheme()">
+      <button class="theme-toggle" :title="appStore.theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'" @click="appStore.toggleTheme()">
         <Sun v-if="appStore.theme === 'dark'" :size="16" />
         <Moon v-else :size="16" />
       </button>
@@ -81,7 +81,7 @@
           </template>
         </el-autocomplete>
       </div>
-      <el-button @click="onRefresh" :icon="RefreshCw" title="刷新当前页面" aria-label="刷新当前页面" circle />
+      <el-button @click="onRefresh" :icon="RefreshCw" circle />
     </div>
 
     <AddAccountDialog v-if="showAddAccount" v-model="showAddAccount" @success="onAccountAdded" />
@@ -210,7 +210,7 @@ onMounted(() => {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 18px;
 }
 
 .topbar-left {
@@ -222,12 +222,6 @@ onMounted(() => {
 
 .topbar-left :deep(.el-button) {
   margin-left: 0;
-  min-height: 36px;
-  font-weight: 600;
-}
-
-.topbar-left :deep(.el-button--primary) {
-  box-shadow: 0 4px 10px color-mix(in srgb, var(--pl-primary) 18%, transparent);
 }
 
 .topbar-center {
@@ -241,13 +235,12 @@ onMounted(() => {
 .select-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
 }
 
 .select-label {
-  color: var(--pl-text-secondary);
+  color: var(--pl-text-muted);
   font-size: var(--pl-font-xs);
-  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -271,8 +264,6 @@ onMounted(() => {
   min-width: 150px;
   max-width: 330px;
   margin-left: auto;
-  padding-left: 14px;
-  border-left: 1px solid var(--pl-border);
 }
 
 .search-box {
@@ -316,11 +307,6 @@ onMounted(() => {
 }
 
 :deep(.el-select .el-input__wrapper) {
-  min-height: 36px;
-  background: var(--pl-surface-subtle);
-}
-
-.search-box :deep(.el-input__wrapper) {
   min-height: 36px;
   background: var(--pl-surface-subtle);
 }
@@ -369,27 +355,6 @@ onMounted(() => {
   .search-box {
     width: 150px;
   }
-
-  .topbar-right {
-    padding-left: 8px;
-  }
 }
-.theme-toggle {
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--pl-border);
-  border-radius: var(--pl-radius-control);
-  color: var(--pl-text-secondary);
-  background: var(--pl-surface-subtle);
-  cursor: pointer;
-  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease;
-}
-.theme-toggle:hover {
-  color: var(--pl-primary);
-  border-color: var(--pl-border-strong);
-  background: var(--pl-primary-soft);
-}
+.theme-toggle{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--pl-border);border-radius:8px;color:var(--pl-text-secondary);background:var(--pl-surface);cursor:pointer}.theme-toggle:hover{color:var(--pl-primary);border-color:var(--pl-primary)}
 </style>

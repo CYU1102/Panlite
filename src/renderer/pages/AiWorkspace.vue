@@ -1,15 +1,15 @@
 <template>
   <div class="ai-workspace">
-    <header class="page-header pl-page-heading">
+    <header class="page-header">
       <div class="header-copy">
         <span class="header-icon"><Sparkles :size="21" /></span>
-        <div><span class="pl-eyebrow">本地文件理解</span><div class="title-line"><h2>AI 工作台</h2><span>独立栏目</span></div><p>主动导入、独立解析和文档问答，不参与分享、转存或云端迁移</p></div>
+        <div><div class="title-line"><h2>AI 工作台</h2><span>独立栏目</span></div><p>主动导入、独立解析和文档问答，不参与分享、转存或云端迁移</p></div>
       </div>
       <div class="header-actions"><el-button @click="localToolsVisible=true"><Wrench :size="15" />本地能力</el-button><el-button @click="openProviderDialog"><Settings2 :size="15" />模型设置</el-button><el-button type="primary" :loading="importing" @click="selectAndImport"><FilePlus2 :size="15" />导入文件</el-button></div>
     </header>
 
     <nav class="workspace-tabs">
-      <button v-for="tab in tabs" :key="tab.key" :class="{ active: activeView === tab.key }" :aria-current="activeView === tab.key ? 'page' : undefined" @click="activeView = tab.key"><component :is="tab.icon" :size="15" />{{ tab.label }}<span v-if="tab.count !== undefined" class="tab-count">{{ tab.count }}</span></button>
+      <button v-for="tab in tabs" :key="tab.key" :class="{ active: activeView === tab.key }" @click="activeView = tab.key"><component :is="tab.icon" :size="15" />{{ tab.label }}<span v-if="tab.count !== undefined" class="tab-count">{{ tab.count }}</span></button>
     </nav>
 
     <main>
@@ -206,101 +206,4 @@ onUnmounted(()=>{disposeTaskListener?.();disposeStreamListener?.();disposeProvid
 @media(max-width:1080px){.hero{grid-template-columns:1fr 235px}.stats{grid-template-columns:repeat(2,1fr)}.capability-grid{grid-template-columns:repeat(2,1fr)}.chat-layout{grid-template-columns:220px minmax(0,1fr)}.document-row{grid-template-columns:minmax(210px,1.7fr) .5fr .6fr .8fr 100px}.document-row>span:nth-child(5){display:none}}
 @media(max-width:820px){.ai-workspace{padding:16px 16px 30px}.page-header{align-items:flex-start;gap:12px}.header-copy p{max-width:440px}.hero{grid-template-columns:1fr}.hero aside{display:none}.chat-layout{height:auto;min-height:calc(100vh - 160px);grid-template-columns:1fr;grid-template-rows:auto minmax(520px,1fr);overflow:visible}.scope-panel{max-height:260px;border-right:0;border-bottom:1px solid #e5eaf1}.scope-list{max-height:100px}.conversation-list{max-height:82px}.document-table{overflow-x:auto}.document-row{min-width:760px}}
 @media(max-width:620px){.page-header{flex-direction:column}.workspace-tabs{max-width:100%;overflow-x:auto}.stats,.capability-grid,.recent-grid{grid-template-columns:1fr}.hero>div{padding:24px}.hero h3{font-size:21px}.messages{padding:16px 12px}.composer{margin:0 10px 10px}.welcome>div{grid-template-columns:1fr}.chat-toolbar small{display:none}}
-.ai-workspace {
-  height: auto;
-  min-height: 100%;
-  width: 100%;
-  max-width: var(--pl-content-max);
-  margin-inline: auto;
-  overflow: visible;
-  padding: 2px 0 32px;
-  background: transparent;
-}
-
-.page-header { margin-bottom: 20px; }
-.header-copy { gap: 14px; }
-.header-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 13px;
-  border-color: color-mix(in srgb, var(--pl-primary) 15%, var(--pl-border));
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--pl-primary) 8%, transparent);
-}
-.title-line h2 { font-size: 23px; font-weight: 750; letter-spacing: -0.4px; }
-.header-copy p { color: var(--pl-text-secondary); font-size: 13px; }
-.workspace-tabs {
-  width: 100%;
-  gap: 4px;
-  margin-bottom: 20px;
-  padding: 0;
-  border: 0;
-  border-bottom: 1px solid var(--pl-border);
-  border-radius: 0;
-  background: transparent;
-}
-.workspace-tabs button {
-  height: 44px;
-  padding: 0 14px;
-  border-radius: 8px 8px 0 0;
-  color: var(--pl-text-secondary);
-  font-weight: 550;
-}
-.workspace-tabs button:hover { color: var(--pl-text); background: var(--pl-hover); }
-.workspace-tabs button.active {
-  color: var(--pl-primary);
-  background: transparent;
-  box-shadow: inset 0 -2px var(--pl-primary);
-}
-.hero, .panel, .stats article { box-shadow: var(--pl-shadow-card); }
-.hero { border-color: var(--pl-border); background: linear-gradient(120deg, color-mix(in srgb, var(--pl-primary-soft) 46%, var(--pl-surface)), var(--pl-surface) 72%); }
-.hero > div { padding: 28px 32px; }
-.hero aside { margin: 22px; }
-.hero h3 { color: var(--pl-text); font-size: 27px; letter-spacing: -0.5px; }
-.hero p { color: var(--pl-text-secondary); font-size: 13px; }
-.stats { gap: 14px; margin-top: 18px; }
-.stats article { border-radius: var(--pl-radius-card); padding: 17px; }
-.stats strong { color: var(--pl-text); font-size: 21px; letter-spacing: -0.4px; }
-.stats span { color: var(--pl-text-secondary); }
-.panel { margin-top: 18px; padding: 22px; border-radius: var(--pl-radius-card); }
-.panel-heading { align-items: flex-end; margin-bottom: 18px; }
-.panel-heading h3 { margin-top: 5px; color: var(--pl-text); font-size: 20px; letter-spacing: -0.35px; }
-.kicker { color: var(--pl-primary); font-size: 11px; letter-spacing: 1.1px; }
-.capability-grid { gap: 12px; }
-.capability-grid article {
-  display: flex;
-  min-width: 0;
-  min-height: 176px;
-  flex-direction: column;
-  padding: 17px;
-  border-color: var(--pl-border);
-  border-radius: 14px;
-  background: linear-gradient(150deg, var(--pl-surface), var(--pl-surface-subtle));
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-.capability-grid article:hover { border-color: var(--pl-border-strong); box-shadow: var(--pl-shadow-card); }
-.capability-icon { width: 40px; height: 40px; border-radius: 11px; }
-.capability-state { top: 17px; right: 17px; padding: 5px 9px; font-size: 11px; }
-.capability-grid h4 { margin-top: 14px; color: var(--pl-text); font-size: 15px; font-weight: 700; }
-.capability-grid p { min-height: 0; margin-top: 6px; color: var(--pl-text-secondary); font-size: 13px; line-height: 1.55; }
-.capability-grid article>div { flex-wrap: wrap; gap: 5px; margin-top: auto; padding-top: 14px; }
-.capability-grid article>div small { padding: 4px 7px; border-radius: 6px; color: var(--pl-text-secondary); background: var(--pl-hover); font-size: 11px; }
-.link-button { min-height: 32px; padding: 0 8px; border-radius: 7px; color: var(--pl-primary); font-size: 12px; }
-.link-button:hover { background: var(--pl-primary-soft); }
-.recent-grid { gap: 10px; }
-.recent-grid button { padding: 12px; background: var(--pl-surface); }
-.recent-grid button:hover { border-color: var(--pl-border-strong); background: var(--pl-surface-subtle); }
-
-@media (max-width: 1080px) {
-  .capability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 620px) {
-  .ai-workspace { padding: 0 0 24px; }
-  .page-header { margin-bottom: 14px; }
-  .title-line h2 { font-size: 21px; }
-  .panel { padding: 16px; }
-  .capability-grid { grid-template-columns: 1fr; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .capability-grid article { transition: none; }
-}
 </style>

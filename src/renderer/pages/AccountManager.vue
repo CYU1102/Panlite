@@ -1,13 +1,12 @@
 <template>
   <div class="account-manager">
     <!-- Page header -->
-    <div class="page-header pl-page-heading pl-surface">
+    <div class="page-header">
       <div class="header-info">
         <div class="header-icon">
           <Users :size="20" :stroke-width="1.5" />
         </div>
         <div>
-          <span class="pl-eyebrow">连接与授权</span>
           <h2>账号管理</h2>
           <p>集中查看授权状态，及时处理失效账号</p>
         </div>
@@ -19,7 +18,7 @@
     </div>
 
     <!-- Account health summary -->
-    <div v-if="accountStore.accounts.length > 0" class="stats-bar pl-surface" aria-label="账号状态概览">
+    <div v-if="accountStore.accounts.length > 0" class="stats-bar" aria-label="账号状态概览">
       <div class="stat-chip stat-total">
         <Database :size="14" />
         <span><strong>{{ accountStore.accounts.length }}</strong> 个账号</span>
@@ -45,7 +44,7 @@
       <p>加载中...</p>
     </div>
 
-    <div v-else-if="accountStore.accounts.length === 0" class="empty-state pl-surface">
+    <div v-else-if="accountStore.accounts.length === 0" class="empty-state">
       <div class="empty-icon">
         <UserX :size="48" :stroke-width="1" />
       </div>
@@ -61,7 +60,7 @@
       <div
         v-for="account in accountStore.accounts"
         :key="account.id"
-        class="account-card pl-surface"
+        class="account-card"
         :class="{ 'is-unhealthy': account.status !== 'active' }"
         tabindex="0"
         role="group"
@@ -561,9 +560,6 @@ onMounted(async () => {
 .account-manager {
   gap: var(--pl-space-4);
   min-width: 0;
-  width: 100%;
-  max-width: var(--pl-content-max);
-  margin-inline: auto;
 }
 
 .page-header,
@@ -578,17 +574,6 @@ onMounted(async () => {
 .page-header {
   padding: var(--pl-space-5) var(--pl-space-6);
   background: linear-gradient(135deg, var(--pl-surface) 0%, var(--pl-surface-subtle) 100%);
-}
-
-.header-info h2 {
-  margin-bottom: 4px;
-  font-size: 21px;
-  letter-spacing: -0.025em;
-}
-
-.header-info p {
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 .header-icon {
@@ -655,7 +640,7 @@ onMounted(async () => {
 
 .account-card {
   position: relative;
-  padding: var(--pl-space-5);
+  padding: var(--pl-space-4) var(--pl-space-5);
   background: var(--pl-surface);
   overflow: hidden;
   outline: none;
@@ -698,14 +683,9 @@ onMounted(async () => {
 
 .account-avatar {
   position: relative;
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
-}
-
-.account-name {
-  font-size: 15px;
-  line-height: 1.4;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
 }
 
 .account-avatar.quark,
@@ -853,11 +833,6 @@ onMounted(async () => {
 .empty-state {
   background: var(--pl-surface);
   padding: 64px var(--pl-space-6);
-}
-
-.empty-state p {
-  max-width: 340px;
-  line-height: 1.6;
 }
 
 .empty-icon {

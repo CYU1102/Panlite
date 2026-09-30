@@ -11,7 +11,7 @@
       @row-dblclick="onRowDblClick"
       row-key="id"
       v-loading="loading"
-      element-loading-background="var(--pl-surface)"
+      element-loading-background="rgba(255,255,255,0.8)"
     >
       <el-table-column type="selection" width="48" align="center" />
 
@@ -109,9 +109,6 @@
             >
               <Trash2 :size="14" />
             </button>
-            <button class="action-btn action-more" title="显示文件操作" aria-label="显示文件操作" @click.stop>
-              <MoreHorizontal :size="17" />
-            </button>
           </div>
         </template>
       </el-table-column>
@@ -130,7 +127,7 @@
 </template>
 
 <script setup lang="ts">
-import { FolderOpen, File, PenSquare, Trash2, Copy, Archive, FolderArchive, Eye, MoreHorizontal } from 'lucide-vue-next'
+import { FolderOpen, File, PenSquare, Trash2, Copy, Archive, FolderArchive, Eye } from 'lucide-vue-next'
 import { ref } from 'vue'
 import type { FileItem } from '@shared/types'
 import type { PlatformCapabilities } from '@shared/capabilities'
@@ -175,7 +172,7 @@ const emit = defineEmits<{
 }>()
 
 const headerStyle = {
-  background: 'var(--pl-surface-subtle)',
+  background: '#f7f9fc',
   color: 'var(--pl-text-secondary)',
   fontWeight: '600',
   fontSize: '12px',
@@ -243,25 +240,21 @@ function rowClassName({ row }: { row: FileItem }): string {
 /* ── Table overrides ── */
 :deep(.el-table) {
   --el-table-border-color: var(--pl-border);
-  --el-table-row-hover-bg-color: var(--pl-hover);
+  --el-table-row-hover-bg-color: #f5f8ff;
   --el-table-current-row-bg-color: var(--pl-primary-soft);
-  --el-table-header-bg-color: var(--pl-surface-subtle);
-  --el-table-bg-color: var(--pl-surface);
-  --el-table-tr-bg-color: var(--pl-surface);
-  color: var(--pl-text);
 }
 
 :deep(.el-table th.el-table__cell) {
-  background: var(--pl-surface-subtle) !important;
+  background: #f7f9fc !important;
 }
 
 :deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid var(--pl-border);
+  border-bottom: 1px solid #eef2f7;
   transition: background-color 0.18s ease;
 }
 
 :deep(.el-table--enable-row-hover .el-table__body tr:hover > td) {
-  background: var(--pl-hover);
+  background: #f5f8ff;
 }
 
 :deep(.el-table__body tr.is-selected-row > td.el-table__cell) {
@@ -309,7 +302,7 @@ function rowClassName({ row }: { row: FileItem }): string {
 }
 
 .file-name {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--pl-text);
   white-space: nowrap;
   overflow: hidden;
@@ -328,7 +321,7 @@ function rowClassName({ row }: { row: FileItem }): string {
 /* ── Cells ── */
 .cell-muted {
   font-size: 12px;
-  color: var(--pl-text-secondary);
+  color: var(--pl-text-muted);
 }
 
 .type-badge {
@@ -356,25 +349,16 @@ function rowClassName({ row }: { row: FileItem }): string {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  transition: opacity 0.16s ease;
-}
-
-.action-btns .action-btn:not(.action-more) {
   opacity: 0;
-  pointer-events: none;
+  transform: translateX(6px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
 }
 
-:deep(.el-table__body tr:hover) .action-btns .action-btn,
-:deep(.el-table__body tr.is-selected-row) .action-btns .action-btn,
-.action-btns:focus-within .action-btn {
+:deep(.el-table__body tr:hover) .action-btns,
+:deep(.el-table__body tr.is-selected-row) .action-btns,
+.action-btns:focus-within {
   opacity: 1;
-  pointer-events: auto;
-}
-
-.action-more {
-  color: var(--pl-text-secondary);
-  background: var(--pl-surface-subtle);
-  border: 1px solid var(--pl-border);
+  transform: translateX(0);
 }
 
 .action-btn {
@@ -434,7 +418,7 @@ function rowClassName({ row }: { row: FileItem }): string {
   margin-bottom: 6px;
   color: var(--pl-primary);
   background: var(--pl-primary-soft);
-  border: 1px solid var(--pl-border-strong);
+  border: 1px solid #d7e5ff;
   border-radius: 22px;
 }
 
@@ -448,12 +432,5 @@ function rowClassName({ row }: { row: FileItem }): string {
   margin: 0;
   font-size: 13px;
   color: var(--pl-text-muted);
-}
-
-@media (hover: none) {
-  .action-btns .action-btn:not(.action-more) {
-    opacity: 1;
-    pointer-events: auto;
-  }
 }
 </style>

@@ -22,7 +22,6 @@
     "pretest": "npm run rebuild:node",
     "test": "vitest run --maxWorkers=4",
     "test:preview": "node scripts/smoke-preview.mjs",
-    "test:ui": "npm run build:renderer && node scripts/smoke-ui-shell.mjs",
     "test:ocr:accuracy": "node scripts/verify-ocr-accuracy.mjs",
     "test:task-coverage": "npm run rebuild:node && vitest run src/main/task-state-machine.test.ts --coverage",
     "rebuild:node": "node scripts/rebuild-native.mjs node",
