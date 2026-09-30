@@ -176,7 +176,7 @@ function onSelect(path: string) {
 .nav-group-icon { opacity: 0.85; }
 .nav-group-chevron { margin-left: auto; transition: transform 160ms ease; }
 .nav-group-chevron.expanded { transform: rotate(180deg); }
-.nav-group-toggle:focus-visible { outline-color: #8fb8ff; }
+.nav-group-toggle:focus-visible { outline-color: var(--pl-primary); }
 
 .nav-item {
   display: flex;
@@ -204,9 +204,9 @@ function onSelect(path: string) {
 
 .nav-item.active {
   background: var(--pl-sidebar-active);
-  color: var(--pl-sidebar-text);
+  color: var(--pl-sidebar-selected-text);
   font-weight: 700;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pl-sidebar-text) 11%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pl-primary) 10%, transparent);
 }
 
 .nav-item.active::before {
@@ -216,7 +216,7 @@ function onSelect(path: string) {
   top: 8px;
   bottom: 8px;
   width: 3px;
-  background: #79aaff;
+  background: var(--pl-primary);
   border-radius: 0 4px 4px 0;
 }
 
@@ -234,7 +234,7 @@ function onSelect(path: string) {
 }
 
 .nav-item:focus-visible {
-  outline-color: #8fb8ff;
+  outline-color: var(--pl-primary);
 }
 
 @media (max-width: 820px) {

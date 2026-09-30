@@ -159,7 +159,7 @@ html, body, #app {
 .sidebar {
   width: 232px;
   min-width: 232px;
-  background: linear-gradient(160deg, var(--pl-sidebar-bg), var(--pl-sidebar-raised));
+  background: linear-gradient(180deg, var(--pl-sidebar-bg), var(--pl-sidebar-raised));
   border-right: 1px solid var(--pl-sidebar-border);
   display: flex;
   flex-direction: column;
@@ -179,7 +179,7 @@ html, body, #app {
 .logo-icon {
   width: 40px;
   height: 40px;
-  background: linear-gradient(145deg, #4e89ff, #7566df);
+  background: linear-gradient(145deg, var(--pl-primary), var(--pl-primary-hover));
   border-radius: 13px;
   display: flex;
   align-items: center;
@@ -237,7 +237,7 @@ html, body, #app {
   overflow-x: hidden;
   overflow-y: auto;
   padding: 26px clamp(18px, 2.3vw, 36px) 22px;
-  background: radial-gradient(circle at 90% 0%, color-mix(in srgb, var(--pl-primary-soft) 52%, transparent), transparent 42%), var(--pl-page-bg);
+  background: var(--pl-page-bg);
 }
 
 .content-area > * {

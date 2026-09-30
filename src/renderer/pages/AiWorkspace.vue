@@ -252,7 +252,7 @@ onUnmounted(()=>{disposeTaskListener?.();disposeStreamListener?.();disposeProvid
   box-shadow: inset 0 -2px var(--pl-primary);
 }
 .hero, .panel, .stats article { box-shadow: var(--pl-shadow-card); }
-.hero { border-color: var(--pl-border); background: linear-gradient(120deg, var(--pl-primary-soft), var(--pl-surface) 58%, var(--pl-success-soft)); }
+.hero { border-color: var(--pl-border); background: linear-gradient(120deg, color-mix(in srgb, var(--pl-primary-soft) 46%, var(--pl-surface)), var(--pl-surface) 72%); }
 .hero > div { padding: 28px 32px; }
 .hero aside { margin: 22px; }
 .hero h3 { color: var(--pl-text); font-size: 27px; letter-spacing: -0.5px; }
