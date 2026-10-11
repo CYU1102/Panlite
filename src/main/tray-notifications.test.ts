@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { join } from 'node:path'
 import { TrayNotificationManager } from './tray-notifications'
 
-const mocks = vi.hoisted(() => ({ notifications: [] as any[], menus: [] as any[], supported: true }))
+const mocks = vi.hoisted(() => ({ notifications: [] as any[], menus: [] as any[], iconPaths: [] as string[], supported: true }))
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events')
   return {
-    app: { quit: vi.fn() },
-    nativeImage: { createFromPath: () => ({ isEmpty: () => false }) },
+    app: { quit: vi.fn(), getAppPath: () => '/packaged/app' },
+    nativeImage: { createFromPath: (path: string) => { mocks.iconPaths.push(path); return { isEmpty: () => false } } },
     Menu: { buildFromTemplate: (menu: unknown) => { mocks.menus.push(menu); return menu } },
     Tray: class extends EventEmitter {
       destroyed = false
@@ -32,6 +33,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date('2026-09-09T00:00:00Z'))
   mocks.notifications.length = 0
   mocks.menus.length = 0
+  mocks.iconPaths.length = 0
   mocks.supported = true
   openTasks.mockReset()
   showWindow.mockReset()
@@ -42,6 +44,7 @@ afterEach(() => { manager.dispose(); vi.clearAllTimers(); vi.useRealTimers() })
 describe('tray and task notification behavior', () => {
   it('provides task navigation and releases native resources on shutdown', () => {
     const tray = manager.start()
+    expect(mocks.iconPaths).toContain(join('/packaged/app', 'build', 'icon.png'))
     mocks.menus[0].find((item: { label: string }) => item.label === '任务页').click()
     expect(showWindow).toHaveBeenCalledOnce()
     expect(openTasks).toHaveBeenCalledOnce()

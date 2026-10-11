@@ -13,10 +13,22 @@
       </div>
     </div>
 
-    <!-- Settings sections -->
-    <div class="settings-sections">
+    <div v-if="settingsLoadError" class="settings-error" role="alert">
+      <span>{{ settingsLoadError }}</span><el-button size="small" @click="loadSettings">重新读取</el-button>
+    </div>
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="设置分类">
+        <button v-for="category in settingCategories" :key="category.key" type="button"
+          :class="{ active: activeCategory === category.key }" :aria-current="activeCategory === category.key ? 'page' : undefined"
+          @click="activeCategory = category.key">
+          <component :is="category.icon" :size="17" /><span>{{ category.label }}</span>
+        </button>
+        <p>主题、快捷键和剪贴板立即生效；其余修改后请保存。</p>
+      </nav>
+      <div ref="sectionsElement" class="settings-sections">
+        <div class="category-heading"><h3>{{ currentCategory.label }}</h3><p>{{ currentCategory.description }}</p></div>
       <!-- Baidu OAuth settings -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'accounts'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Key :size="16" />
@@ -65,7 +77,7 @@
       </div>
 
       <!-- Page size settings -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'transfer'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Gauge :size="16" />
@@ -101,7 +113,7 @@
       </div>
 
       <!-- AliyunDrive open platform (optional, collapsed) -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'accounts'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Cloud :size="16" />
@@ -137,7 +149,7 @@
       </div>
 
       <!-- Appearance -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'appearance'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Moon :size="16" />
@@ -151,7 +163,7 @@
           <div class="setting-row">
             <div class="setting-label">
               <span class="label-text">界面主题</span>
-              <span class="label-hint">也可以在顶部工具栏一键切换</span>
+              <span class="label-hint">也可以在侧栏底部切换，主题立即生效</span>
             </div>
             <el-radio-group :model-value="appStore.theme" @update:model-value="(v: string) => appStore.setTheme(v as 'light' | 'dark')">
               <el-radio-button value="light">浅色</el-radio-button>
@@ -162,7 +174,7 @@
       </div>
 
       <!-- Transfer engine -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'transfer'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Gauge :size="16" />
@@ -226,7 +238,7 @@
       </div>
 
       <!-- Global shortcuts -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'general'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Command :size="16" />
@@ -248,7 +260,7 @@
       </div>
 
       <!-- Clipboard monitor -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'general'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <ClipboardList :size="16" />
@@ -270,7 +282,7 @@
       </div>
 
       <!-- Ad filter settings -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'search'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Shield :size="16" />
@@ -306,7 +318,7 @@
       </div>
 
       <!-- Search Sources -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'search'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Search :size="16" />
@@ -440,7 +452,7 @@ https://pan.funletu.com"
       </el-dialog>
 
       <!-- TG Channels -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'search'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Hash :size="16" />
@@ -519,7 +531,7 @@ https://pan.funletu.com"
       </el-dialog>
 
       <!-- Crawler Sources -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'search'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Globe :size="16" />
@@ -626,7 +638,7 @@ https://pan.funletu.com"
       </el-dialog>
 
       <!-- KK Sources -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'search'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Zap :size="16" />
@@ -713,7 +725,7 @@ https://pan.funletu.com"
       </el-dialog>
 
       <!-- About -->
-      <div class="setting-card">
+      <div v-show="activeCategory === 'about'" class="setting-card">
         <div class="setting-header">
           <div class="setting-icon">
             <Info :size="16" />
@@ -771,9 +783,13 @@ https://pan.funletu.com"
       </div>
     </div>
 
+    </div>
     <!-- Save button -->
     <div class="save-bar">
-      <el-button type="primary" @click="onSave" :loading="saving">
+      <span class="save-state" role="status" :class="{ pending: hasChanges, failed: lastSaveError }">
+        {{ lastSaveError || (saving ? '正在保存…' : !settingsLoaded ? settingsLoadError ? '设置尚未载入' : '正在读取设置…' : hasChanges ? '有未保存的修改' : lastSavedAt ? `已保存 · ${lastSavedAt}` : '所有修改已保存') }}
+      </span>
+      <el-button type="primary" @click="onSave" :loading="saving" :disabled="!settingsLoaded || (!hasChanges && !lastSaveError)">
         <Save :size="14" style="margin-right: 4px" />
         保存设置
       </el-button>
@@ -782,7 +798,8 @@ https://pan.funletu.com"
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch, markRaw } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import {
   Settings as SettingsIcon, Gauge, Info, Save, Key, Shield, Search, Plus, Delete, Hash, Globe, Zap, Upload, ClipboardList, Moon, Command, Cloud,
@@ -794,11 +811,30 @@ import { useAppStore } from '../stores/app'
 import AppUpdate from '../components/AppUpdate.vue'
 
 const appStore = useAppStore()
+const route = useRoute()
+const settingCategories = [
+  { key: 'appearance', label: '外观', icon: markRaw(Moon), description: '选择适合你的界面主题。' },
+  { key: 'general', label: '通用', icon: markRaw(Command), description: '快捷键与剪贴板，让常用操作更方便。' },
+  { key: 'transfer', label: '请求与传输', icon: markRaw(Gauge), description: '分页、并发、传输时段与临时文件位置。' },
+  { key: 'search', label: '搜索与过滤', icon: markRaw(Search), description: '管理搜索来源、订阅和文件过滤规则。' },
+  { key: 'accounts', label: '账号授权', icon: markRaw(Key), description: '配置网盘开放平台的应用凭证。' },
+  { key: 'about', label: '关于与更新', icon: markRaw(Info), description: '版本信息、更新与应用说明。' },
+]
+const activeCategory = ref(settingCategories.some(item => item.key === route.query.section) ? String(route.query.section) : 'appearance')
+const currentCategory = computed(() => settingCategories.find(item => item.key === activeCategory.value) || settingCategories[0])
+const sectionsElement = ref<HTMLElement>()
+watch(activeCategory, () => { if (sectionsElement.value) sectionsElement.value.scrollTop = 0 })
+watch(() => route.query.section, section => { if (settingCategories.some(item => item.key === section)) activeCategory.value = String(section) })
 
 // 版本号由 vite define 注入，避免硬编码过期
 const appVersion = __APP_VERSION__
 
 const saving = ref(false)
+const settingsLoaded = ref(false)
+const settingsLoadError = ref('')
+const savedForm = ref('')
+const lastSavedAt = ref('')
+const lastSaveError = ref('')
 
 const form = reactive({
   baiduClientId: '',
@@ -819,6 +855,7 @@ const form = reactive({
   transferTempDir: '',
   shareSubscriptionIntervalMinutes: 15,
 })
+const hasChanges = computed(() => settingsLoaded.value && savedForm.value !== JSON.stringify(form))
 
 const SETTINGS_KEYS = [
   'baiduClientId',
@@ -860,6 +897,7 @@ function clampTransferNumber(value: unknown, fallback: number, min: number, max:
 }
 
 async function loadSettings() {
+  settingsLoadError.value = ''
   try {
     const result = await electronApi.getAllSettings()
     if (result.success && result.settings) {
@@ -883,25 +921,36 @@ async function loadSettings() {
       if (s.shareSubscriptionIntervalMinutes !== undefined) {
         form.shareSubscriptionIntervalMinutes = clampTransferNumber(s.shareSubscriptionIntervalMinutes, 15, 5, 1440)
       }
+      savedForm.value = JSON.stringify(form)
+      settingsLoaded.value = true
+    } else {
+      settingsLoadError.value = result.error || '设置读取失败，请重新读取后再修改。'
     }
   } catch (err) {
     console.error('Failed to load settings:', err)
+    settingsLoadError.value = '设置读取失败，请重新读取后再修改。'
   }
 }
 
 async function onSave() {
+  if (saving.value || !settingsLoaded.value) return
   saving.value = true
+  lastSaveError.value = ''
   try {
     form.quarkPageSize = clampRequestSetting('quarkPageSize', form.quarkPageSize)
     form.baiduPageSize = clampRequestSetting('baiduPageSize', form.baiduPageSize)
     form.requestDelayMs = clampRequestSetting('requestDelayMs', form.requestDelayMs)
+    const draft = { ...form }
     for (const key of SETTINGS_KEYS) {
-      const value = String(form[key])
+      const value = String(draft[key])
       const result = await electronApi.setSetting(key, value)
       if (!result.success) throw new Error(result.error || `无法保存设置：${key}`)
     }
+    savedForm.value = JSON.stringify(draft)
+    lastSavedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
     ElMessage.success('设置已保存')
   } catch (err) {
+    lastSaveError.value = '保存失败，修改尚未全部写入，请重试。'
     ElMessage.error('保存失败: ' + String(err))
   } finally {
     saving.value = false
@@ -1524,22 +1573,31 @@ onMounted(loadKkSources)
 
 <style scoped>
 .settings-page { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.settings-layout { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 24px; flex: 1; min-height: 0; }
+.settings-nav { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
+.settings-nav button { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 0 12px; border: 0; border-radius: 8px; color: var(--pl-text-secondary); background: transparent; cursor: pointer; font: inherit; text-align: left; }
+.settings-nav button:hover { color: var(--pl-text); background: var(--pl-hover); }
+.settings-nav button.active { color: var(--pl-primary); background: var(--pl-primary-soft); font-weight: 600; }
+.settings-nav p { margin: 14px 12px 0; font-size: 12px; line-height: 1.7; color: var(--pl-text-secondary); }
+.category-heading { padding: 4px 2px 2px; }
+.category-heading h3 { color: var(--pl-text); font-size: 16px; margin: 0 0 5px; }
+.category-heading p { color: var(--pl-text-secondary); font-size: 13px; margin: 0; }
+.settings-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; margin-bottom: 12px; border: 1px solid var(--pl-border); border-radius: 8px; background: var(--pl-danger-soft); color: var(--pl-danger); }
+.save-state { margin-right: auto; font-size: 13px; color: var(--pl-text-secondary); }
+.save-state.pending { color: var(--pl-warning); }
+.save-state.failed { color: var(--pl-danger); }
 
 .page-header {
   display: flex;
   align-items: center;
-  padding: 18px 22px;
-  background: var(--pl-surface);
-  border: 1px solid var(--pl-border);
-  border-radius: var(--pl-radius-card);
-  box-shadow: var(--pl-shadow-card);
+  padding: 4px 0 16px;
   flex-shrink: 0;
   margin-bottom: 14px;
 }
 
 .header-info { display: flex; align-items: center; gap: 12px; }
 .header-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--pl-primary-soft); color: var(--pl-primary); display: flex; align-items: center; justify-content: center; }
-.header-info h2 { font-size: 17px; line-height: 1.3; font-weight: 700; color: var(--pl-text); margin: 0 0 3px; }
+.header-info h2 { font-size: 22px; line-height: 1.3; font-weight: 700; color: var(--pl-text); margin: 0 0 3px; }
 .header-info p { font-size: 12px; color: var(--pl-text-secondary); margin: 0; }
 
 .settings-sections {
@@ -1566,7 +1624,7 @@ onMounted(loadKkSources)
   flex-shrink: 0;
 }
 
-.setting-header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--pl-border); background: var(--pl-surface-subtle); }
+.setting-header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--pl-border); background: var(--pl-surface); }
 .setting-icon { width: 34px; height: 34px; border-radius: 10px; background: var(--pl-primary-soft); color: var(--pl-primary); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .setting-header h3 { font-size: 14px; line-height: 1.35; font-weight: 650; color: var(--pl-text); margin: 0 0 3px; }
 .setting-header p { font-size: 12px; line-height: 1.45; color: var(--pl-text-secondary); margin: 0; }
@@ -1576,10 +1634,10 @@ onMounted(loadKkSources)
 .setting-row + .setting-row { border-top: 1px solid var(--pl-border); }
 .setting-label { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .label-text { font-size: 13px; font-weight: 550; color: var(--pl-text); }
-.label-hint { font-size: 12px; line-height: 1.45; color: var(--pl-text-muted); }
+.label-hint { font-size: 12px; line-height: 1.55; color: var(--pl-text-secondary); }
 
 .about-info { display: flex; flex-direction: column; gap: 12px; }
-.about-intro { display: flex; flex-direction: column; gap: 4px; margin-bottom: 2px; padding: 12px 14px; border: 1px solid #dbe7fb; border-radius: 10px; color: var(--pl-text-secondary); background: #f6f9ff; font-size: 12px; line-height: 1.55; }
+.about-intro { display: flex; flex-direction: column; gap: 4px; margin-bottom: 2px; padding: 12px 14px; border: 1px solid var(--pl-border); border-radius: 10px; color: var(--pl-text-secondary); background: var(--pl-surface-subtle); font-size: 12px; line-height: 1.55; }
 .about-intro strong { color: var(--pl-primary); font-size: 14px; }
 .about-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .about-label { font-size: 13px; color: var(--pl-text-secondary); }
@@ -1612,6 +1670,10 @@ onMounted(loadKkSources)
 .setting-row > :deep(.el-input) { width: min(320px, 48%) !important; }
 
 @media (max-width: 800px) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { flex-direction: row; overflow-x: auto; flex-shrink: 0; }
+  .settings-nav button { flex: 0 0 auto; min-height: 38px; }
+  .settings-nav p { display: none; }
   .page-header { padding: 15px 16px; }
   .setting-header { padding: 14px 16px; }
   .setting-body { padding: 12px 16px 14px; }

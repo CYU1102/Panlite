@@ -1,6 +1,6 @@
 <template>
   <div class="automation-page">
-    <header class="panel page-header"><div class="header-icon"><Workflow :size="24" /></div><div><h1>自动化规则</h1><p>将已保存的迁移或备份计划，按时间或上一条规则的成功结果执行。</p></div><button type="button" class="button refresh-all" :disabled="loading" @click="loadData">刷新列表</button></header>
+    <header class="panel page-header pl-page-heading"><div class="header-icon"><Workflow :size="24" /></div><div><h1>自动化规则</h1><p>将已保存的迁移或备份计划，按时间或上一条规则的成功结果执行。</p></div><button type="button" class="button refresh-all" :disabled="loading" @click="loadData">刷新列表</button></header>
     <div class="workspace">
       <aside class="panel rule-sidebar">
         <div class="section-heading"><h2>已保存规则</h2><button type="button" class="text-button" @click="selectRule(null)"><Plus :size="15" />新建</button></div>

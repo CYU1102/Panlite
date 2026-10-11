@@ -1,6 +1,6 @@
 <template>
   <div class="module-page">
-    <header class="page-header">
+    <header class="page-header pl-page-heading">
       <span class="heading-icon"><ArchiveRestore :size="23" /></span>
       <div>
         <h2>配置备份与迁移</h2>

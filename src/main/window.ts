@@ -1,10 +1,14 @@
-import { app, BrowserWindow, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, nativeTheme, session, shell } from 'electron'
 import { join } from 'path'
 import log from 'electron-log'
 import { getExternalHttpUrl, getRendererIndexPath, isTrustedRendererUrl } from './ipc-security'
+import { SHARE_BROWSER_PARTITION, getShareBrowserUrl } from '../shared/share-browser'
+import { configureShareSession, configureShareWebview } from './share-webview'
 
 export function createMainWindow(): BrowserWindow {
   const pendingWebviewOrigins: string[] = []
+  const shareSession = session.fromPartition(SHARE_BROWSER_PARTITION)
+  configureShareSession(shareSession)
   const devServerUrl = process.env.VITE_DEV_SERVER_URL
   const rendererIndexPath = getRendererIndexPath()
   const resourcePreloadPath = process.env.VITE_DEV_SERVER_URL
@@ -47,10 +51,12 @@ export function createMainWindow(): BrowserWindow {
   })
 
   win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    const inlineShare = params.partition === SHARE_BROWSER_PARTITION
     try {
       const target = new URL(params.src)
       if (target.protocol !== 'https:' && target.protocol !== 'http:') throw new Error('Unsupported protocol')
-      pendingWebviewOrigins.push(target.origin)
+      if (inlineShare && !getShareBrowserUrl(params.src)) throw new Error('Invalid share URL')
+      if (!inlineShare) pendingWebviewOrigins.push(target.origin)
     } catch {
       event.preventDefault()
       return
@@ -61,10 +67,15 @@ export function createMainWindow(): BrowserWindow {
     webPreferences.sandbox = true
     webPreferences.webSecurity = true
     webPreferences.allowRunningInsecureContent = false
-    webPreferences.preload = resourcePreloadPath
+    if (inlineShare) delete webPreferences.preload
+    else webPreferences.preload = resourcePreloadPath
   })
 
   win.webContents.on('did-attach-webview', (_event, guest) => {
+    if (guest.session === shareSession) {
+      configureShareWebview(guest)
+      return
+    }
     const allowedOrigin = pendingWebviewOrigins.shift()
     guest.setWindowOpenHandler(({ url }) => {
       try {

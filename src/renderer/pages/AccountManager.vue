@@ -19,21 +19,30 @@
 
     <!-- Account health summary -->
     <div v-if="accountStore.accounts.length > 0" class="stats-bar" aria-label="账号状态概览">
-      <div class="stat-chip stat-total">
+      <button type="button" class="stat-chip stat-total" :class="{ selected: statusFilter === 'all' }" :aria-pressed="statusFilter === 'all'" @click="statusFilter = 'all'">
         <Database :size="14" />
         <span><strong>{{ accountStore.accounts.length }}</strong> 个账号</span>
-      </div>
-      <div class="stat-chip stat-success">
+      </button>
+      <button type="button" class="stat-chip stat-success" :class="{ selected: statusFilter === 'active' }" :aria-pressed="statusFilter === 'active'" @click="statusFilter = 'active'">
         <CheckCircle2 :size="14" />
         <span><strong>{{ accountStore.accounts.filter(a => a.status === 'active').length }}</strong> 个状态正常</span>
-      </div>
-      <div
+      </button>
+      <button type="button"
         v-if="accountStore.accounts.filter(a => a.status !== 'active').length > 0"
         class="stat-chip stat-warning"
+        :class="{ selected: statusFilter === 'attention' }" :aria-pressed="statusFilter === 'attention'" @click="statusFilter = 'attention'"
       >
         <AlertCircle :size="14" />
         <span><strong>{{ accountStore.accounts.filter(a => a.status !== 'active').length }}</strong> 个需要处理</span>
-      </div>
+      </button>
+    </div>
+
+    <div v-if="accountStore.accounts.length" class="account-toolbar">
+      <el-input v-model="accountQuery" clearable placeholder="搜索账号名称" aria-label="搜索账号名称" class="account-search"><template #prefix><Search :size="16" /></template></el-input>
+      <el-select v-model="platformFilter" clearable placeholder="全部网盘" aria-label="筛选网盘平台" class="account-platform">
+        <el-option v-for="platform in accountPlatforms" :key="platform" :value="platform" :label="PLATFORM_LABELS[platform] || platform" />
+      </el-select>
+      <span class="account-count" role="status">{{ filteredAccounts.length }} / {{ accountStore.accounts.length }} 个账号</span>
     </div>
 
     <!-- Account cards -->
@@ -56,9 +65,13 @@
       </el-button>
     </div>
 
+    <div v-else-if="!filteredAccounts.length" class="empty-state filtered-empty">
+      <Search :size="32" /><h3>没有符合条件的账号</h3><p>试试其他名称、平台或授权状态。</p>
+      <el-button @click="clearAccountFilters">清除筛选</el-button>
+    </div>
     <div v-else class="account-list">
       <div
-        v-for="account in accountStore.accounts"
+        v-for="account in filteredAccounts"
         :key="account.id"
         class="account-card"
         :class="{ 'is-unhealthy': account.status !== 'active' }"
@@ -109,6 +122,7 @@
             <span class="status-hint">{{ statusHint(account.status) }}</span>
           </div>
           <div class="account-actions">
+            <button v-if="account.status === 'active'" class="action-btn action-open" type="button" :aria-label="`打开 ${account.nickname} 的文件`" @click="openAccountFiles(account)"><FolderOpen :size="14" /><span>文件</span></button>
             <button
               class="action-btn action-check"
               title="检测状态"
@@ -139,15 +153,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, markRaw } from 'vue'
+import { ref, onMounted, markRaw, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import {
   Users, UserPlus, UserX, Key, Clock, RefreshCw, Trash2,
   Database, CheckCircle2, AlertCircle, Loader2,
-  Cloud, HardDrive, XCircle, CircleDot, CalendarClock,
+  Cloud, HardDrive, XCircle, CircleDot, CalendarClock, Search, FolderOpen,
 } from 'lucide-vue-next'
 import { useAccountStore } from '../stores/account'
+import { useAppStore } from '../stores/app'
 import { PLATFORM_LABELS } from '@shared/constants'
 import { formatTimestamp } from '@shared/utils'
 import type { DriveAccount } from '@shared/types'
@@ -157,6 +173,19 @@ import { electronApi } from '../api/ipc'
 import AddAccountDialog from '../components/AddAccountDialog.vue'
 
 const accountStore = useAccountStore()
+const appStore = useAppStore()
+const router = useRouter()
+const accountQuery = ref('')
+const platformFilter = ref('')
+const statusFilter = ref<'all' | 'active' | 'attention'>('all')
+const accountPlatforms = computed(() => [...new Set(accountStore.accounts.map(account => account.platform))])
+const filteredAccounts = computed(() => accountStore.accounts.filter(account =>
+  (!platformFilter.value || account.platform === platformFilter.value) &&
+  (!accountQuery.value.trim() || account.nickname.toLocaleLowerCase().includes(accountQuery.value.trim().toLocaleLowerCase())) &&
+  (statusFilter.value === 'all' || (statusFilter.value === 'active' ? account.status === 'active' : account.status !== 'active'))
+).slice().sort((left, right) => Number(left.status === 'active') - Number(right.status === 'active')))
+function clearAccountFilters() { accountQuery.value = ''; platformFilter.value = ''; statusFilter.value = 'all' }
+function openAccountFiles(account: Omit<DriveAccount, 'credential'>) { appStore.setAccount(account); void router.push('/files') }
 const showAddAccount = ref(false)
 const checkingId = ref('')
 const memberships = ref<Record<string, MembershipInfo>>({})
@@ -166,6 +195,8 @@ const LOGIN_TYPE_LABELS: Record<string, string> = {
   cookie: 'Cookie',
   oauth: 'OAuth',
   token: 'Token',
+  password: '服务器账号',
+  api_key: '开放平台凭据',
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -201,6 +232,8 @@ async function loadMembership(accountId: string): Promise<void> {
   try {
     const result = await electronApi.getAccountMembership(accountId)
     if (result.success && result.membership) memberships.value[accountId] = result.membership
+  } catch {
+    // Membership is optional; a failed lookup must not hide the account list.
   } finally {
     membershipLoading.value[accountId] = false
   }
@@ -227,11 +260,13 @@ async function onCheck(account: Omit<DriveAccount, 'credential'>) {
       } else {
         ElMessage.warning(`账号 "${account.nickname}" 状态: ${STATUS_LABELS[result.status || ''] || result.status}`)
       }
-      accountStore.fetchAccounts()
-      void loadMembership(account.id)
+      await accountStore.fetchAccounts()
+      if (result.status === 'active') void loadMembership(account.id)
     } else {
       ElMessage.error(`检测失败：${result.error}`)
     }
+  } catch (error) {
+    ElMessage.error(`检测失败：${error instanceof Error ? error.message : String(error)}`)
   } finally {
     checkingId.value = ''
   }
@@ -913,4 +948,24 @@ onMounted(async () => {
     transition: none;
   }
 }
+.page-header { padding: 4px 0 12px; background: transparent; border: 0; box-shadow: none; border-radius: 0; }
+.header-info h2 { font-size: 22px; line-height: 1.35; }
+.header-info p { font-size: 13px; }
+.stats-bar { padding: 0; border: 0; background: transparent; box-shadow: none; flex-wrap: wrap; }
+.stat-chip { border: 1px solid var(--pl-border); cursor: pointer; font: inherit; font-size: 13px; }
+.stat-chip.selected { border-color: var(--pl-primary); box-shadow: 0 0 0 1px var(--pl-primary); }
+.account-toolbar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.account-search { max-width: 320px; }
+.account-platform { width: 170px; flex-shrink: 0; }
+.account-count { margin-left: auto; color: var(--pl-text-secondary); font-size: 12px; white-space: nowrap; }
+.account-card:hover, .account-card:focus-visible, .account-card:focus-within { transform: none; box-shadow: var(--pl-shadow-card); }
+.account-main, .account-info { min-width: 0; }
+.account-name { overflow-wrap: anywhere; }
+.account-avatar, .platform-tag { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.account-avatar.webdav, .platform-tag.webdav { background: var(--pl-surface-subtle); color: var(--pl-text-secondary); }
+.account-list { min-height: 0; }
+.filtered-empty { background: var(--pl-surface); color: var(--pl-text-secondary); }
+.status-hint { color: var(--pl-text-secondary); }
+@media (max-width: 960px) { .account-card { flex-wrap: wrap; gap: 14px; } .account-right { margin-left: auto; } }
+@media (max-width: 640px) { .page-header { padding: 0 0 10px; } .account-toolbar { flex-wrap: wrap; } .account-search { max-width: none; flex: 1 1 180px; } .account-platform { flex: 1 1 130px; } .account-count { width: 100%; margin-left: 0; } }
 </style>

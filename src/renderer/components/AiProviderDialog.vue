@@ -1,6 +1,7 @@
 <template>
-  <el-dialog :model-value="modelValue" title="AI 模型管理" class="ai-provider-dialog" width="820px" top="24px" :before-close="confirmClose" @update:model-value="$emit('update:modelValue', $event)">
+  <el-dialog :model-value="modelValue" title="AI 模型管理" class="ai-provider-dialog" width="min(880px, 96vw)" top="24px" :before-close="confirmClose" @update:model-value="$emit('update:modelValue', $event)">
     <div class="manager-summary"><span>当前使用：<strong>{{ activeConfig.name }}</strong></span><span v-if="isDirty" class="draft-note">有未保存的更改</span></div>
+    <p class="configuration-status">{{ activeConfig.model ? '已选择模型配置；连接是否可用请通过接口测试确认。' : '尚未配置问答模型，本地文档解析仍可使用。' }}</p>
     <div class="provider-manager">
       <aside>
         <div class="provider-title"><strong>模型配置</strong><button title="新增配置" :disabled="mutating" @click="newProfile"><Plus :size="14" /></button></div>
@@ -9,7 +10,7 @@
         </button>
       </aside>
       <fieldset class="provider-form" :disabled="mutating">
-        <div class="safe-note"><ShieldCheck :size="18" /><span>API Key 使用系统安全存储加密。图片、扫描件和音视频只会在主动解析时发送；启用 Embedding 后，文档片段也会发送给当前服务建立语义索引。</span></div>
+        <div class="safe-note"><ShieldCheck :size="18" /><span>API Key 使用系统安全存储加密。解析默认优先使用本地能力；允许模型补充识别后，内容可能发送到当前服务。启用语义索引后，文档片段会发送给嵌入服务。</span></div>
         <div class="preset-section">
           <span class="preset-label">服务商预设</span>
           <div class="preset-chips">
@@ -33,14 +34,17 @@
             <button class="refresh-btn" :disabled="loadingModels" title="从接口获取模型列表" type="button" @click="fetchModels"><RefreshCw :size="13" /></button>
           </div>
         </label>
+        <details class="advanced-section"><summary>转写与语义索引模型 <span>可选</span></summary><div class="advanced-content">
         <label v-if="supportsTranscription"><span>音视频转写模型 <small>可选，需服务商支持</small></span><el-input v-model="form.transcriptionModel" placeholder="填写服务商支持的转写模型" /></label>
         <label v-if="supportsEmbedding"><span>Embedding 模型 <small>可选，启用语义混合检索</small></span><el-input v-model="form.embeddingModel" placeholder="填写服务商支持的 Embedding 模型" /></label>
         <div v-if="!supportsEmbedding" class="capability-note">此协议目前接入问答和图像请求，暂不支持音视频转写与 Embedding。</div>
         <div v-else-if="!supportsTranscription" class="capability-note">Ollama 暂不支持音视频转写；图像识别需要具备视觉能力的模型。</div>
+        </div></details>
         <label>
           <span>API Key <small>{{ editing?.hasApiKey ? `已保存 ${editing.keyCount || 1} 个 Key，留空表示保留` : '本地 Ollama 可留空' }}</small></span>
           <el-input v-model="form.apiKey" type="password" show-password autocomplete="off" placeholder="输入新的 API Key（将替换现有 Key 池）" />
         </label>
+        <details class="advanced-section"><summary>高级 Key 池管理 <span>{{ editing?.keyCount || 0 }} 个已保存 Key</span></summary><div class="advanced-content">
         <div v-if="editing?.keyPreviews?.length" class="key-pool">
           <div v-for="(preview, index) in editing.keyPreviews" :key="`${preview}-${index}`" class="key-pool-item" :class="{ 'key-pending-delete': form.clearApiKey || form.removeKeyIndices.includes(index) }">
             <KeyRound :size="12" /><code>{{ preview }}</code><small v-if="form.clearApiKey || form.removeKeyIndices.includes(index)">待删除</small>
@@ -51,6 +55,7 @@
         <el-checkbox v-if="editing?.hasApiKey" v-model="form.clearApiKey">删除已保存的全部 Key</el-checkbox>
         <div class="capability-note">Key 的追加和删除在保存后生效；测试、模型列表与余额查询使用当前草稿。</div>
         <div v-if="editing?.hasApiKey" class="capability-note">更改协议或接口地址后，请输入或追加新的 Key，或明确清空 Key 池；原有 Key 不会自动带到新接口。</div>
+        </div></details>
         <div v-if="currentUsage" class="usage-card"><span><strong>{{ currentUsage.requestCount }}</strong>次请求</span><span><strong>{{ currentUsage.failureCount }}</strong>次失败</span><span><strong>{{ formatCharacters(currentUsage.inputCharacters + currentUsage.outputCharacters) }}</strong>处理字符</span><span><strong>{{ currentUsage.lastLatencyMs || 0 }} ms</strong>最近耗时</span></div>
         <div v-if="testMessage" class="test-result" role="status">{{ testMessage }}</div>
         <div v-if="balanceText" class="balance-line"><Wallet :size="13" /><span>{{ balanceText }}</span></div>
@@ -363,4 +368,5 @@ async function removeProfile() {
   :global(.ai-provider-dialog .el-dialog__body) { padding:12px; }
   :global(.ai-provider-dialog .el-dialog__footer) { padding:12px; }
 }
+.configuration-status{margin:0 0 12px;color:var(--pl-text-muted);font-size:var(--pl-font-xs);line-height:1.6;flex-shrink:0}.advanced-section{border:1px solid var(--pl-border);border-radius:8px;padding:10px 12px;background:var(--pl-surface-subtle)}.advanced-section summary{display:flex;align-items:center;gap:8px;font-size:var(--pl-font-sm);color:var(--pl-text-secondary);cursor:pointer}.advanced-section summary:before{content:'+';font-weight:600;color:var(--pl-primary)}.advanced-section[open] summary:before{content:'−'}.advanced-section summary>span{margin-left:auto;color:var(--pl-text-muted);font-size:var(--pl-font-xs)}.advanced-content{display:flex;flex-direction:column;gap:12px;margin-top:14px}.advanced-content :deep(.el-checkbox){white-space:normal;height:auto}.advanced-content .capability-note{line-height:1.7}
 </style>

@@ -1,5 +1,5 @@
 <template>
-  <el-dialog :model-value="modelValue" :title="resolvedCitation?.documentName || citation?.documentName || '引用原件'" width="min(1100px, 94vw)" top="4vh" destroy-on-close @close="close">
+  <component :is="embedded ? 'section' : ElDialog" :class="{ embedded, 'ai-citation-dialog':!embedded }" :model-value="modelValue" :title="resolvedCitation?.documentName || citation?.documentName || '引用原件'" width="min(1100px, 94vw)" top="4vh" destroy-on-close @close="close">
     <div class="citation-preview">
       <p v-if="loading" role="status">正在核验原件版本并准备引用位置…</p>
       <div v-if="error" role="alert" class="error">{{ error }} <el-button size="small" @click="load">重试</el-button></div>
@@ -34,10 +34,12 @@
         <p v-else class="notice">此附件暂不支持在引用窗口中展示。以上为索引中的引用原文。</p>
       </template>
     </div>
-  </el-dialog>
+  </component>
 </template>
 
 <script setup lang="ts">
+import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import 'element-plus/theme-chalk/el-dialog.css'
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type PDFDocumentLoadingTask, type RenderTask } from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
@@ -48,7 +50,7 @@ import { aiCitationPreviewApi } from '../api/ai-citation-preview'
 import { pdfCitationHighlights, pdfCitationMatchCount, type PdfHighlightBox, type PdfTextPosition } from './pdf-citation-highlight'
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
-const props = defineProps<{ modelValue: boolean; citation: AiCitation | null }>()
+const props = defineProps<{ modelValue: boolean; citation: AiCitation | null; embedded?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
 const preview = ref<FilePreviewSessionDto | null>(null), resolvedCitation = ref<AiCitation | null>(null)
 const loading = ref(false), rendering = ref(false), error = ref(''), pdfNotice = ref(''), mediaNotice = ref('')
@@ -108,7 +110,7 @@ async function setPage(value: number): Promise<void> {
     const page = await pdf.value.getPage(target)
     if (current !== renderGeneration) return
     pageNumber.value = target
-    const viewport = page.getViewport({ scale: Math.min(1.6, 930 / page.getViewport({ scale: 1 }).width) })
+    const viewport = page.getViewport({ scale: Math.min(1.6, (props.embedded ? 280 : 930) / page.getViewport({ scale: 1 }).width) })
     pageWidth.value = viewport.width; pageHeight.value = viewport.height
     await nextTick()
     if (!canvas.value || current !== renderGeneration) return
@@ -142,4 +144,6 @@ function mediaError(): void { mediaNotice.value = '当前浏览器无法播放�
 
 <style scoped>
 .citation-preview{min-height:160px;color:var(--pl-text);font-size:13px}.source-note,.notice{color:var(--pl-text-secondary);line-height:1.7}.error{color:var(--pl-danger)}blockquote{margin:12px 0;padding:10px 14px;border-left:3px solid var(--pl-primary);background:var(--pl-surface-subtle);white-space:pre-wrap;max-height:130px;overflow:auto}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0}.toolbar button,.toolbar select,.toolbar input{padding:5px 9px;border:1px solid var(--pl-border);border-radius:6px;color:inherit;background:var(--pl-surface)}.toolbar input{width:65px}.toolbar button{cursor:pointer}.toolbar button:disabled{opacity:.45;cursor:default}.pdf-scroll{max-height:65vh;overflow:auto;background:#e8eaed;padding:16px}.pdf-page{position:relative;margin:auto;background:white}.pdf-page canvas{display:block}.highlight{position:absolute;pointer-events:none;background:rgba(255,210,20,.34);outline:1px solid rgba(200,135,0,.5);mix-blend-mode:multiply}.media{display:block;width:100%;max-height:62vh}.image{display:block;max-width:100%;max-height:62vh;margin:auto}.text{white-space:pre-wrap;max-height:60vh;overflow:auto;padding:15px;background:var(--pl-surface-subtle)}
+.embedded{min-width:0}.embedded .pdf-scroll{padding:8px;max-height:52vh;background:var(--pl-hover)}.embedded .toolbar{gap:6px;font-size:var(--pl-font-xs)}.embedded .text{max-height:52vh;overflow-wrap:anywhere}.embedded .source-note{font-size:var(--pl-font-xs)}
+:global(.ai-citation-dialog.el-dialog){display:flex;flex-direction:column;max-height:92vh}:global(.ai-citation-dialog .el-dialog__body){flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}:global(.ai-citation-dialog .el-dialog__header){flex-shrink:0}
 </style>

@@ -3,14 +3,10 @@
  <div class="file-manager">
 
  <div class="page-heading">
-   <div>
-     <span class="page-eyebrow">云端文件</span>
-     <h1>文件管理</h1>
-     <p>浏览、整理和传输云端文件</p>
-   </div>
-   <div class="page-heading-meta">
-     <span v-if="appStore.hasAccount">{{ appStore.currentAccount?.nickname || '当前账号' }}</span>
-     <span v-else>未连接账号</span>
+   <div class="heading-title"><h1>文件管理</h1><span>浏览与整理云端文件</span></div>
+   <div class="density-control" role="group" aria-label="文件列表显示密度">
+     <button :class="{ active: tableDensity === 'comfortable' }" :aria-pressed="tableDensity === 'comfortable'" @click="tableDensity = 'comfortable'">舒适</button>
+     <button :class="{ active: tableDensity === 'compact' }" :aria-pressed="tableDensity === 'compact'" @click="tableDensity = 'compact'">紧凑</button>
    </div>
  </div>
 
@@ -54,7 +50,7 @@
 
  {{ appStore.searchKeyword }}
 
- <button class="search-clear" @click="onClearSearch">
+ <button class="search-clear" aria-label="清除文件搜索" title="清除文件搜索" @click="onClearSearch">
 
  <X :size="12" />
 
@@ -86,11 +82,13 @@
 
               <ChevronRight v-if="index > 0" class="crumb-sep" :size="12" />
 
-              <span
+              <button
 
                 class="crumb"
 
                 :class="{ active: index === appStore.pathStack.length - 1 }"
+                :aria-current="index === appStore.pathStack.length - 1 ? 'location' : undefined"
+                :title="item.name"
 
                 @click="onBreadcrumbClick(item, index)"
 
@@ -98,7 +96,7 @@
 
                 {{ item.name }}
 
-              </span>
+              </button>
 
             </template>
 
@@ -152,6 +150,8 @@
 
     <!-- Batch action bar -->
 
+    <div v-if="appStore.hasAccount" class="selection-slot">
+    <div v-if="selectedFiles.length === 0" class="selection-hint"><span>{{ appStore.isSearching ? '搜索结果' : '当前目录' }} · {{ fileList.length }} 项</span><span>点击名称打开文件或文件夹</span></div>
     <transition name="slide-fade">
 
       <div v-if="selectedFiles.length > 0" class="batch-bar">
@@ -222,6 +222,7 @@
       </div>
 
     </transition>
+    </div>
 
 
 
@@ -252,6 +253,9 @@
       <FileTable
 
         :files="fileList"
+        :density="tableDensity"
+        :empty-title="appStore.isSearching ? '未找到匹配文件' : '此文件夹为空'"
+        :empty-description="appStore.isSearching ? '尝试更换关键词或清除筛选条件' : '上传文件或新建文件夹后，内容会显示在这里'"
 
         :loading="loading"
 
@@ -275,9 +279,11 @@
 
       />
 
+      <div class="file-footer" role="status" aria-live="polite">
+        <span>{{ loading ? '正在加载文件…' : `已显示 ${fileList.length} 项` }}<span v-if="selectedFiles.length"> · 已选择 {{ selectedFiles.length }} 项</span></span>
+        <span>{{ isCached ? '离线缓存' : appStore.isSearching ? '网盘搜索结果' : '云端目录' }}</span>
+      </div>
     </div>
-
-
 
     <!-- New Folder Dialog -->
 
@@ -496,6 +502,16 @@ const capabilities = computed(() => getPlatformCapabilities(appStore.currentAcco
 const fileList = ref<FileItem[]>([])
 
 const selectedFiles = ref<FileItem[]>([])
+
+const tableDensity = ref<'comfortable' | 'compact'>(readTableDensity())
+function readTableDensity(): 'comfortable' | 'compact' {
+  try { return localStorage.getItem('panlite:file-density') === 'compact' ? 'compact' : 'comfortable' }
+  catch { return 'comfortable' }
+}
+watch(tableDensity, (value) => {
+  try { localStorage.setItem('panlite:file-density', value) } catch { /* 当前会话仍可使用密度设置 */ }
+})
+
 
 const aiImporting = ref(false)
 
@@ -1644,9 +1660,9 @@ watch(() => appStore.currentAccount?.id, () => {
 }
 
 /* Interaction refresh: keep the workbench light while making active states obvious. */
-.file-manager { gap: 14px; }
+.file-manager { gap: 10px; min-height: 0; }
 
-.page-heading { min-height: 52px; }
+.page-heading { min-height: 32px; flex: 0 0 auto; align-items: center; padding: 0; }
 .page-eyebrow {
   display: block;
   margin-bottom: 3px;
@@ -1753,9 +1769,30 @@ watch(() => appStore.currentAccount?.id, () => {
 .folder-create-field > span { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 
 @media (max-width: 1120px) {
-  .path-bar { align-items: flex-start; flex-direction: column; }
-  .path-bar-right { width: 100%; justify-content: flex-end; }
-  .batch-bar { align-items: flex-start; flex-direction: column; gap: 8px; }
-  .batch-actions { width: 100%; }
+  .path-bar { flex-wrap: wrap; }
+  .path-bar-right { margin-left: auto; }
+  .batch-bar { gap: 10px; }
+  .batch-actions { flex: 1; }
 }
+
+.heading-title { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.heading-title h1 { margin: 0; font-size: 20px; }
+.heading-title > span { color: var(--pl-text-muted); font-size: 12px; }
+.density-control { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--pl-border); background: var(--pl-surface); border-radius: 8px; }
+.density-control button { padding: 4px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--pl-text-secondary); font-size: 12px; cursor: pointer; }
+.density-control button.active { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.crumb { border: 0; background: transparent; font-family: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.path-bar { flex: 0 0 auto; padding: 9px 12px; box-shadow: none; }
+.selection-slot { min-height: 46px; flex: 0 0 auto; }
+.selection-hint { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 4px; font-size: 12px; color: var(--pl-text-muted); }
+.selection-hint > span:first-child { color: var(--pl-text-secondary); }
+.batch-bar { min-height: 46px; gap: 16px; padding: 6px 10px; border-radius: 8px; box-shadow: none; }
+.batch-check { width: 22px; height: 22px; border-radius: 6px; box-shadow: none; }
+.batch-actions { flex: 1; justify-content: flex-end; }
+.file-card { min-height: 160px; border-radius: 12px; box-shadow: none; }
+.file-card > :deep(.file-table-wrapper) { flex: 1; min-height: 0; height: auto; }
+.file-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 0 14px; flex: 0 0 auto; color: var(--pl-text-muted); font-size: 12px; border-top: 1px solid var(--pl-border); background: var(--pl-surface-subtle); }
+.cache-badge { flex: 0 0 auto; flex-wrap: wrap; }
+.path-btn:focus-visible, .crumb:focus-visible, .search-clear:focus-visible, .density-control button:focus-visible { outline: 2px solid var(--pl-primary); outline-offset: 2px; }
+@media (max-width: 820px) { .heading-title > span, .selection-hint > span:last-child { display: none; } .batch-info { font-size: 12px; } .batch-actions { justify-content: flex-start; } }
 </style>

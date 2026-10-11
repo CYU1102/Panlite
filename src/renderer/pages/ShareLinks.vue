@@ -1,6 +1,6 @@
 ﻿<template>
   <div class="share-links">
-    <div class="page-header">
+    <div class="page-header pl-page-heading">
       <div class="header-info">
         <div class="header-icon">
           <Share2 :size="20" :stroke-width="1.5" />
@@ -10,7 +10,7 @@
           <p>集中复制、打开和维护已创建的分享链接</p>
         </div>
       </div>
-      <div class="header-actions">
+      <div v-if="!openedShare" class="header-actions">
         <el-button size="small" type="primary" @click="$router.push('/batch-share')">
           <Plus :size="14" style="margin-right: 4px" />
           创建分享
@@ -27,7 +27,9 @@
     </div>
 
     <!-- Filters -->
-    <div class="filter-bar">
+    <ShareLinkBrowser v-if="openedShare" :key="`${openedShare.id}:${openedShare.share_url}`" :url="openedShare.share_url" :title="openedShare.title" :password="openedShare.password" @close="closeBrowser" @copy="onCopy(openedShare, true)" />
+
+    <div v-show="!openedShare" class="filter-bar">
       <div class="filter-group">
         <span class="filter-label">平台</span>
         <div class="filter-chips">
@@ -84,7 +86,7 @@
 
     <!-- Batch action bar -->
     <transition name="slide-fade">
-      <div v-if="selectedRows.length > 0" class="batch-bar">
+      <div v-if="!openedShare && selectedRows.length > 0" class="batch-bar">
         <div class="batch-info">
           <CheckCircle2 :size="16" />
           已选择 <strong>{{ selectedRows.length }}</strong> 条记录
@@ -99,7 +101,7 @@
     </transition>
 
     <!-- Table -->
-    <div class="table-card">
+    <div v-show="!openedShare" class="table-card">
       <el-table
         :data="links"
         style="width: 100%"
@@ -124,7 +126,7 @@
 
         <el-table-column label="分享链接" min-width="220">
           <template #default="{ row }">
-            <span class="cell-link">{{ row.share_url }}</span>
+            <button class="cell-link share-link-open" :title="row.share_url" @click="onOpen(row)">{{ row.share_url }}</button>
           </template>
         </el-table-column>
 
@@ -134,7 +136,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="状态" width="80" align="center">
+        <el-table-column label="状态" width="100" align="center">
           <template #default="{ row }">
             <span class="status-badge" :class="row.status">
               <span class="status-dot"></span>
@@ -149,7 +151,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="292" align="center" fixed="right">
+        <el-table-column label="操作" width="340" align="center" fixed="right">
           <template #default="{ row }">
             <div class="action-btns">
               <button class="action-btn action-primary" title="复制链接和提取码" :aria-label="`复制 ${row.title || '分享记录'} 的链接和提取码`" @click="onCopy(row, true)">
@@ -160,7 +162,7 @@
                 <Link :size="14" />
                 <span>仅链接</span>
               </button>
-              <button class="action-btn" title="在浏览器中打开链接" :aria-label="`打开 ${row.title || '分享记录'} 的链接`" @click="onOpen(row)">
+              <button class="action-btn" title="在当前页打开链接" :aria-label="`在当前页打开 ${row.title || '分享记录'} 的链接`" @click="onOpen(row)">
                 <ExternalLink :size="14" />
                 <span>打开</span>
               </button>
@@ -194,7 +196,7 @@
     </div>
 
     <!-- Stats bar -->
-    <div class="stats-bar">
+    <div v-show="!openedShare" class="stats-bar">
       <div class="stat-chip">
         <Share2 :size="12" />
         共 {{ links.length }} 条记录
@@ -204,13 +206,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { Share2, Download, RefreshCw, Search, Copy, Link, Link2Off, ExternalLink, Trash2, CheckCircle2, Plus, RotateCcw } from 'lucide-vue-next'
 import { PLATFORM_LABELS } from '@shared/constants'
 import { formatTimestamp } from '@shared/utils'
 import { electronApi } from '../api/ipc'
+import { getShareBrowserUrl } from '@shared/share-browser'
+import ShareLinkBrowser from '../components/ShareLinkBrowser.vue'
 
 interface ShareLinkRow {
   id: string
@@ -230,6 +234,8 @@ interface ShareLinkRow {
 const links = ref<ShareLinkRow[]>([])
 const exporting = ref(false)
 const selectedRows = ref<ShareLinkRow[]>([])
+const openedShare = ref<ShareLinkRow | null>(null)
+let browserTrigger: HTMLElement | null = null
 
 function onSelectionChange(rows: ShareLinkRow[]) {
   selectedRows.value = rows
@@ -337,7 +343,17 @@ function onCopy(row: ShareLinkRow, withPwd: boolean) {
 }
 
 function onOpen(row: ShareLinkRow) {
-  window.open(row.share_url, '_blank')
+  const url = getShareBrowserUrl(row.share_url)
+  if (!url) { ElMessage.error('分享链接无效，仅支持 HTTP(S) 链接'); return }
+  browserTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  openedShare.value = { ...row, share_url: url }
+}
+
+async function closeBrowser() {
+  openedShare.value = null
+  await nextTick()
+  if (browserTrigger?.isConnected) browserTrigger.focus()
+  browserTrigger = null
 }
 
 async function onCancel(row: ShareLinkRow) {
@@ -410,6 +426,8 @@ onMounted(() => loadData())
 </script>
 
 <style scoped>
+.share-link-open { display: block; max-width: 100%; border: 0; background: none; padding: 0; font: inherit; text-align: left; cursor: pointer; }
+.share-link-open:focus-visible { outline: 2px solid var(--pl-primary); outline-offset: 2px; }
 .share-links {
   height: 100%;
   display: flex;
@@ -894,11 +912,13 @@ onMounted(() => loadData())
   padding: 3px 8px;
   border-radius: 999px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .status-dot {
   width: 6px;
   height: 6px;
+  flex: none;
   border-radius: 50%;
   background: currentColor;
 }
@@ -910,12 +930,14 @@ onMounted(() => loadData())
 
 .action-btns {
   gap: 4px;
+  flex-wrap: nowrap;
 }
 
 .action-btn {
   width: auto;
   min-width: 52px;
   height: 30px;
+  flex: none;
   padding: 0 8px;
   gap: 5px;
   border: 1px solid transparent;
@@ -924,6 +946,7 @@ onMounted(() => loadData())
   border-radius: var(--pl-radius-sm);
   font-size: var(--pl-font-xs);
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .action-btn:hover,
@@ -953,6 +976,7 @@ onMounted(() => loadData())
 .action-divider {
   width: 1px;
   height: 18px;
+  flex: none;
   margin: 0 2px;
   background: var(--pl-border);
 }

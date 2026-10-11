@@ -73,7 +73,7 @@ function positiveInteger(value: number | undefined, fallback: number, minimum: n
 }
 
 function defaultTrayIcon(): NativeImage {
-  const image = nativeImage.createFromPath(join(process.cwd(), 'build', 'icon.png'))
+  const image = nativeImage.createFromPath(join(app.getAppPath(), 'build', 'icon.png'))
   return image.isEmpty() ? nativeImage.createEmpty() : image
 }
 

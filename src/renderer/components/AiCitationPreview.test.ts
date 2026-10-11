@@ -26,6 +26,16 @@ async function render() {
   await flushPromises(); return wrapper
 }
 describe('citation preview UI', () => {
+  it('embeds original media in the source panel and releases the session on unmount', async () => {
+    api.aiCitationPreview.mockResolvedValue(result())
+    wrapper = mount(AiCitationPreview, { props: { modelValue: true, citation, embedded: true } })
+    await flushPromises()
+    expect(wrapper.find('.embedded audio').exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'ElDialog' }).exists()).toBe(false)
+    wrapper.unmount(); wrapper = undefined
+    await flushPromises()
+    expect(api.aiCitationPreviewCleanup).toHaveBeenCalledWith(sessionId)
+  })
   it('seeks only after metadata loads, supports repeated jumps and applies playback rate', async () => {
     api.aiCitationPreview.mockResolvedValue(result())
     const view = await render(), audio = view.get('audio')

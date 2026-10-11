@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { shallowMount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { mount, shallowMount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ElMessage } from 'element-plus'
 import type { AiLocalToolStatus, AiProviderConfig } from '@shared/ai-types'
 
 const api = vi.hoisted(() => ({
-  aiLocalToolsGet: vi.fn(), aiProcessingPolicyGet: vi.fn(), aiDocumentList: vi.fn(), aiTaskList: vi.fn(), aiProviderGet: vi.fn(), aiConversationList: vi.fn(),
+  aiLocalToolsGet: vi.fn(), aiProcessingPolicyGet: vi.fn(), aiDocumentList: vi.fn(), aiTaskList: vi.fn(), aiProviderGet: vi.fn(), aiConversationList: vi.fn(), aiConversationMessages: vi.fn(),
   onAiProviderChanged: vi.fn(), onAiTaskUpdated: vi.fn(), onAiAskStreamEvent: vi.fn(),
 }))
 vi.mock('../api/ipc', () => ({ electronApi: api }))
@@ -30,8 +30,9 @@ beforeEach(() => {
 })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.restoreAllMocks(); vi.resetAllMocks() })
 
-async function render() {
-  wrapper = shallowMount(AiWorkspace, { global: { stubs: {
+async function render(attach = false) {
+  wrapper = shallowMount(AiWorkspace, { attachTo: attach ? document.body : undefined, global: { stubs: {
+    ElDrawer: { name: 'ElDrawer', props: ['modelValue'], emits: ['update:modelValue'], template: '<aside class="source-panel"><slot /></aside>' },
     AiDocumentWorkflow: { name: 'AiDocumentWorkflow', props: ['documents'], emits: ['citation'], template: '<div />' },
     AiCitationPreview: { name: 'AiCitationPreview', props: ['modelValue', 'citation'], template: '<div />' },
   } } })
@@ -46,6 +47,92 @@ function refreshButton(view: VueWrapper) {
 }
 
 describe('AI capability availability', () => {
+  it('filters the document library by status and real parsing notices without hiding data permanently', async () => {
+    const base = { sourceType: 'local', extension: 'pdf', size: 1000, createdAt: Date.now() }
+    api.aiDocumentList.mockResolvedValue({ success: true, documents: [
+      { ...base, id: 'ready', name: '合同.pdf', status: 'ready', parseMessage: '本地文字提取；第 3 页没有文字层' },
+      { ...base, id: 'failed', name: '扫描件.pdf', status: 'failed', errorMessage: '未安装中文 OCR 语言包' },
+    ] })
+    const view = await render()
+    await view.findAll('.workspace-tabs button').find(button => button.text().startsWith('文档库'))!.trigger('click')
+    expect(view.findAll('.document-row:not(.head)')).toHaveLength(2)
+    expect(view.text()).toContain('第 3 页没有文字层')
+    await view.get('select[aria-label="筛选文档状态"]').setValue('failed')
+    expect(view.findAll('.document-row:not(.head)')).toHaveLength(1)
+    expect(view.get('.document-row:not(.head)').text()).toContain('未安装中文 OCR 语言包')
+    await view.get('input[aria-label="搜索文档"]').setValue('合同')
+    expect(view.text()).toContain('没有匹配的文档')
+    await view.get('select[aria-label="筛选文档状态"]').setValue('all')
+    expect(view.get('.document-row:not(.head)').text()).toContain('合同.pdf')
+    await view.get('button[aria-label="清除文档搜索"]').trigger('click')
+    expect(view.findAll('.document-row:not(.head)')).toHaveLength(2)
+  })
+  it('does not claim default processing options are saved when their read fails', async () => {
+    api.aiProcessingPolicyGet.mockResolvedValue({ success: false, error: '读取失败' })
+    const view = await render()
+    expect(view.get('.processing-strip').text()).toContain('处理方式读取失败')
+    expect(view.get('.processing-strip').text()).not.toContain('模型补充识别关闭')
+    expect(view.get('.processing-strip').text()).not.toContain('本地关键词索引')
+  })
+  it('separates document scope from history and can collapse the source panel', async () => {
+    const view = await render()
+    await view.findAll('.workspace-tabs button').find(button => button.text() === '文档问答')!.trigger('click')
+    const toggle = view.findAll('.chat-tools button').find(button => button.text() === '文档与来源')!
+    await toggle.trigger('click')
+    expect(view.get('.source-panel').text()).toContain('全部可用文档')
+    expect(view.find('.history-panel .scope-title').exists()).toBe(false)
+    await view.get('button[aria-label="关闭文档与来源"]').trigger('click')
+    expect(view.find('.source-panel').exists()).toBe(false)
+  })
+  it('opens answer citations in the source panel and can expand the original without showing two previews', async () => {
+    const citation = { documentId: 'doc', documentName: '合同.pdf', pageNumber: 3, quote: '预算 42 万元' }
+    api.aiDocumentList.mockResolvedValue({ success: true, documents: [{ id: 'doc', name: '合同.pdf', extension: 'pdf', status: 'ready', size: 100, createdAt: Date.now() }] })
+    api.aiConversationList.mockResolvedValue({ success: true, conversations: [{ id: 'conversation', title: '预算核对', documentIds: ['doc'] }] })
+    api.aiConversationMessages.mockResolvedValue({ success: true, messages: [{ id: 'answer', role: 'assistant', content: '预算为 42 万元。', citations: [citation] }] })
+    const view = await render()
+    await view.findAll('.workspace-tabs button').find(button => button.text() === '文档问答')!.trigger('click')
+    await view.get('.citations summary').trigger('click'); await flushPromises()
+    expect(view.findComponent({ name: 'AiCitationPreview' }).props('citation')).toEqual(citation)
+    expect(view.get('.source-content').text()).toContain('合同.pdf')
+    await view.get('.expand-citation').trigger('click'); await flushPromises()
+    expect(view.findAllComponents({ name: 'AiCitationPreview' })).toHaveLength(1)
+    expect(view.get('.source-content').findComponent({ name: 'AiCitationPreview' }).exists()).toBe(false)
+    view.findComponent({ name: 'AiCitationPreview' }).vm.$emit('update:modelValue', false)
+    await flushPromises()
+    expect(view.get('.source-content').findComponent({ name: 'AiCitationPreview' }).exists()).toBe(true)
+    await view.findAll('.workspace-tabs button').find(button => button.text().startsWith('文档库'))!.trigger('click')
+    expect(view.findComponent({ name: 'AiCitationPreview' }).exists()).toBe(false)
+  })
+  it('moves keyboard focus into sources and restores the toolbar trigger after Escape', async () => {
+    const view = await render(true)
+    await view.findAll('.workspace-tabs button').find(button => button.text() === '文档问答')!.trigger('click')
+    const toggle = view.findAll('.chat-tools button').find(button => button.text() === '文档与来源')!
+    ;(toggle.element as HTMLElement).focus()
+    await toggle.trigger('click'); await flushPromises()
+    expect(document.activeElement).toBe(view.get('.source-body').element)
+    await view.get('.source-body').trigger('keydown', { key: 'Escape' }); await flushPromises()
+    expect(view.find('.source-body').exists()).toBe(false)
+    expect(document.activeElement).toBe(toggle.element)
+  })
+  it('uses a modal drawer at compact width and keeps Tab inside its controls', async () => {
+    wrapper = mount(AiWorkspace, { attachTo: document.body, global: { stubs: { ElDialog: { template: '<section><slot /></section>' }, Teleport: true } } })
+    await flushPromises()
+    const view = wrapper
+    await view.findAll('.workspace-tabs button').find(button => button.text() === '文档问答')!.trigger('click')
+    await view.findAll('.chat-tools button').find(button => button.text() === '文档与来源')!.trigger('click')
+    await flushPromises()
+    const drawer = view.findComponent({ name: 'ElDrawer' })
+    expect(drawer.exists()).toBe(true)
+    expect(drawer.props('modal')).toBe(true)
+    const controls = Array.from(view.get('.source-body').element.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+    controls[controls.length - 1].focus()
+    controls[controls.length - 1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(document.activeElement).toBe(controls[0])
+    controls[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(document.activeElement).toBe(controls[controls.length - 1])
+  })
   it('opens full-document processing with ready documents and routes its references to original preview', async () => {
     api.aiDocumentList.mockResolvedValue({ success: true, documents: [{ id: 'ready', name: '合同.pdf', status: 'ready' }, { id: 'pending', name: '解析中.pdf', status: 'processing' }] })
     const view = await render()

@@ -2,10 +2,10 @@
   <div class="resource-browser">
     <!-- 左侧资源站列表 -->
     <div class="sidebar" :class="{ collapsed: sidebarCollapsed }">
-      <div class="sidebar-toggle" @click="sidebarCollapsed = !sidebarCollapsed">
+      <button type="button" class="sidebar-toggle" :aria-expanded="!sidebarCollapsed" :aria-label="sidebarCollapsed ? '展开搜索来源' : '收起搜索来源'" @click="sidebarCollapsed = !sidebarCollapsed">
         <PanelLeftClose :size="16" v-if="!sidebarCollapsed" />
         <PanelLeftOpen :size="16" v-else />
-      </div>
+      </button>
       <div v-show="!sidebarCollapsed" class="sidebar-content">
         <div class="sidebar-header">
           <div>
@@ -30,10 +30,12 @@
               <span>{{ group.label }}</span>
               <small>{{ group.items.length }}</small>
             </div>
-          <div
+          <button
             v-for="site in group.items"
             :key="site.id"
             class="site-item"
+            type="button"
+            :aria-pressed="activeSite?.id === site.id"
             :class="{ active: activeSite?.id === site.id }"
             @click="selectSite(site)"
           >
@@ -46,7 +48,7 @@
               <span class="site-platform">{{ site.capabilities.slice(0, 2).join(' · ') || site.platform || '资源网站' }}</span>
             </div>
             <ChevronRight class="site-arrow" :size="15" />
-          </div>
+          </button>
           </section>
           <div v-if="sites.length === 0" class="empty-hint">
             <Layers3 :size="28" :stroke-width="1.4" />
@@ -69,8 +71,7 @@
           </div>
         </div>
         <span v-if="activeSite" class="context-site">
-          <span class="online-dot"></span>
-          已连接 · {{ activeSite.platform || '网页来源' }}
+          {{ loadError ? '加载失败' : loading ? '加载中' : '网页来源' }} · {{ activeSite.platform || '资源站' }}
         </span>
       </div>
       <div class="browser-toolbar">
@@ -118,7 +119,7 @@
           <span>{{ loadError }}</span>
           <el-button size="small" type="primary" @click="openLink(currentUrl || activeSite.url)">用系统浏览器打开</el-button>
         </div>
-        <div v-else class="welcome">
+        <div v-else-if="!activeSite" class="welcome">
           <div class="welcome-icon"><Globe :size="38" :stroke-width="1.3" /></div>
           <span class="welcome-kicker">内置资源浏览器</span>
           <h2>选择一个搜索来源</h2>
@@ -401,13 +402,15 @@ onMounted(() => {
 .sidebar.collapsed { width: 42px; }
 
 .sidebar-toggle {
+  border: 0;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 42px;
   height: 42px;
   cursor: pointer;
-  color: var(--pl-text-muted);
+  color: var(--pl-text-secondary);
   border-bottom: 1px solid var(--pl-border);
   flex-shrink: 0;
   transition: background 0.2s, color 0.2s;
@@ -505,6 +508,10 @@ onMounted(() => {
 }
 
 .site-item {
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -522,7 +529,7 @@ onMounted(() => {
 .site-item:hover {
   transform: translateX(2px);
   border-color: #d5e1f7;
-  background: #f8fbff;
+  background: var(--pl-hover);
   color: var(--pl-primary-hover);
 }
 

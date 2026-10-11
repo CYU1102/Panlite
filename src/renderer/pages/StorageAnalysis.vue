@@ -1,6 +1,6 @@
 <template>
   <div class="storage-page">
-    <header class="panel page-header"><div class="hero-icon"><ChartPie :size="24" /></div><div class="heading"><h1>空间分析</h1><p>从已索引文件看清占用，逐项核对重复候选。</p></div><button type="button" @click="router.push('/file-catalog')">管理索引范围</button><button type="button" :disabled="loading" @click="refresh">刷新分析</button></header>
+    <header class="panel page-header pl-page-heading"><div class="hero-icon"><ChartPie :size="24" /></div><div class="heading"><h1>空间分析</h1><p>从已索引文件看清占用，逐项核对重复候选。</p></div><button type="button" @click="router.push('/file-catalog')">管理索引范围</button><button type="button" :disabled="loading" @click="refresh">刷新分析</button></header>
     <form class="panel filters" @submit.prevent="applyFilters">
       <label>来源账号<select v-model="draft.accountId" aria-label="来源账号" @change="draft.scopeId = ''"><option value="">全部账号</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.name }}</option></select></label>
       <label>索引范围<select v-model="draft.scopeId" aria-label="索引范围"><option value="">全部范围</option><option v-for="scope in availableScopes" :key="scope.id" :value="scope.id">{{ scope.accountNickname }} · {{ scope.rootPath }}</option></select></label>

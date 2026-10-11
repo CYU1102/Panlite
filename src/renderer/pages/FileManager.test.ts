@@ -59,3 +59,14 @@ it('rejects unsupported files even if an entry point emits a preview request', a
   expect(view.findComponent({ name: 'FilePreviewDialog' }).exists()).toBe(false)
   expect(api.warning).toHaveBeenCalledWith('当前文件或网盘暂不支持在线预览')
 })
+
+
+it('restores and persists file table density across page visits', async () => {
+  localStorage.setItem('panlite:file-density', 'compact')
+  const { view } = await render()
+  expect(view.findComponent({ name: 'FileTable' }).props('density')).toBe('compact')
+  await view.findAll('.density-control button').find(button => button.text() === '舒适')!.trigger('click')
+  expect(localStorage.getItem('panlite:file-density')).toBe('comfortable')
+  expect(view.findComponent({ name: 'FileTable' }).props('density')).toBe('comfortable')
+  localStorage.removeItem('panlite:file-density')
+})

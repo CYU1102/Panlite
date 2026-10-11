@@ -1,5 +1,5 @@
 <template>
-  <el-dialog :model-value="modelValue" class="local-tools-dialog" title="本地 AI 能力包" width="min(720px, 94vw)" top="5vh" @update:model-value="$emit('update:modelValue', $event)" @open="load">
+  <el-dialog :model-value="modelValue" class="local-tools-dialog" title="本地能力与处理方式" width="min(720px, 94vw)" top="5vh" @update:model-value="$emit('update:modelValue', $event)" @open="load">
     <section class="processing-policy">
       <h3>模型使用方式</h3>
       <p>优先使用本地文本提取、OCR 和字幕。以下选项默认关闭；主动发起文档问答仍需调用你配置的模型。</p>
@@ -8,19 +8,19 @@
       <div class="policy-actions"><span v-if="policyLoading">正在读取处理方式…</span><span v-else-if="!policyLoaded">处理方式读取失败，请重新检测。</span><el-button :loading="policySaving" :disabled="policyLoading || !policyLoaded" @click="savePolicy">保存处理方式</el-button></div>
     </section>
     <div class="tool-note"><ShieldCheck :size="18" /><span>本地工具由你自行安装，PanLite 只调用已配置的可执行文件，不会自动安装这些工具。图片和扫描 PDF 可用 Tesseract 离线识别；本地语音转写仍需 Whisper 模型，Python Whisper 首次转写可能下载模型。</span></div>
-    <div class="tool-list">
+    <div class="tools-heading"><h3>本地解析工具</h3><span>{{ toolsLoaded ? `${statuses.filter(tool=>tool.ready).length} / ${toolRows.length} 项已就绪` : loading ? '正在检测…' : '尚未完成检测' }}</span></div><div class="tool-list">
       <article v-for="tool in toolRows" :key="tool.key">
         <span class="tool-icon"><component :is="tool.icon" :size="18" /></span>
         <div class="tool-copy"><strong>{{ tool.name }}</strong><small>{{ tool.description }}</small><small v-if="statusFor(tool.key)?.message">{{ statusFor(tool.key)?.message }}</small><code v-if="statusFor(tool.key)?.version">{{ statusFor(tool.key)?.version }}</code></div>
-        <span class="tool-state" :class="{ ready: statusFor(tool.key)?.ready }">{{ statusFor(tool.key)?.ready ? '工具已就绪' : statusFor(tool.key)?.resolvedPath ? '需配置或修复' : '未检测到' }}</span>
+        <span class="tool-state" :class="{ ready: statusFor(tool.key)?.ready }">{{ !toolsLoaded ? (loading ? '检测中' : '尚未完成检测') : statusFor(tool.key)?.ready ? '工具已就绪' : statusFor(tool.key)?.resolvedPath ? '需配置或修复' : '未检测到' }}</span>
         <div class="tool-path"><el-input v-model="config[tool.field]" clearable :placeholder="`留空则自动检测 ${tool.name}`" /><el-button @click="selectTool(tool.field)"><FolderOpen :size="14" />选择</el-button></div>
       </article>
     </div>
-    <div class="tool-options">
+    <details class="tool-advanced"><summary>OCR 语言与 Whisper 模型</summary><div class="tool-options">
       <label><span>OCR 语言</span><el-input v-model="config.ocrLanguage" placeholder="chi_sim+eng" /></label>
       <label><span>Whisper 模型名称</span><el-input v-model="config.whisperModel" placeholder="small" /></label>
       <label><span>whisper.cpp GGML 模型</span><div><el-input v-model="config.whisperModelPath" clearable /><el-button @click="selectTool('whisperModelPath')">选择</el-button></div></label>
-    </div>
+    </div></details>
     <template #footer><el-button :loading="loading || policyLoading" :disabled="saving || policySaving" @click="load">重新检测</el-button><el-button type="primary" :loading="saving" :disabled="loading" @click="save">保存工具配置</el-button></template>
   </el-dialog>
 </template>
@@ -35,6 +35,7 @@ import { electronApi } from '../api/ipc'
 
 defineProps<{ modelValue: boolean }>()
 const emit=defineEmits<{ 'update:modelValue': [value: boolean]; updated: [tools: AiLocalToolStatus[]]; policyUpdated: [policy: AiProcessingPolicy] }>()
+const toolsLoaded=ref(false)
 const loading = ref(false), saving = ref(false), statuses = ref<AiLocalToolStatus[]>([])
 const policy = reactive<AiProcessingPolicy>({ ...DEFAULT_AI_PROCESSING_POLICY })
 const policyLoading = ref(false), policySaving = ref(false), policyLoaded = ref(false)
@@ -48,7 +49,7 @@ const toolRows = [
 ]
 function statusFor(key: AiLocalToolKey) { return statuses.value.find(item => item.key === key) }
 async function load() { await Promise.all([loadTools(), loadPolicy()]) }
-async function loadTools() { if (loading.value || saving.value) return; loading.value = true; try { const result = await electronApi.aiLocalToolsGet(); if (!result.success) throw new Error(result.error || '检测失败'); if (result.config) Object.assign(config, result.config); statuses.value = result.tools || []; emit('updated', statuses.value) } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)) } finally { loading.value = false } }
+async function loadTools() { if (loading.value || saving.value) return; loading.value = true; toolsLoaded.value=false; try { const result = await electronApi.aiLocalToolsGet(); if (!result.success) throw new Error(result.error || '检测失败'); if (result.config) Object.assign(config, result.config); statuses.value = result.tools || []; toolsLoaded.value=true; emit('updated', statuses.value) } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)) } finally { loading.value = false } }
 async function loadPolicy() {
   if (policyLoading.value || policySaving.value) return
   policyLoading.value = true
@@ -75,7 +76,7 @@ async function savePolicy() {
   finally { policySaving.value = false }
 }
 async function selectTool(field: keyof AiLocalToolsConfig) { const result = await electronApi.aiLocalToolsSelect(field); if (result.success && result.filePath) config[field] = result.filePath }
-async function save() { if (saving.value || loading.value) return; saving.value = true; try { const result = await electronApi.aiLocalToolsSave({ ...config }); if (!result.success) throw new Error(result.error || '保存失败'); if (result.config) Object.assign(config, result.config); statuses.value = result.tools || []; emit('updated', statuses.value); ElMessage.success('本地能力配置已保存') } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)) } finally { saving.value = false } }
+async function save() { if (saving.value || loading.value) return; saving.value = true; try { const result = await electronApi.aiLocalToolsSave({ ...config }); if (!result.success) throw new Error(result.error || '保存失败'); if (result.config) Object.assign(config, result.config); statuses.value = result.tools || []; toolsLoaded.value=true; emit('updated', statuses.value); ElMessage.success('本地能力配置已保存') } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)) } finally { saving.value = false } }
 </script>
 
 <style scoped>
@@ -85,6 +86,8 @@ async function save() { if (saving.value || loading.value) return; saving.value 
 .tool-path :deep(.el-button),.tool-options label>div :deep(.el-button){flex-shrink:0}
 .processing-policy{margin-bottom:16px;padding:14px;border:1px solid var(--pl-border);border-radius:11px;background:var(--pl-surface)}.processing-policy h3{margin:0;font-size:14px;color:var(--pl-text)}.processing-policy p,.processing-policy small{color:var(--pl-text-secondary);font-size:12px;line-height:1.6}.processing-policy label{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-top:12px}.processing-policy label>span{display:flex;flex-direction:column;gap:4px}.processing-policy strong{font-size:12px}.policy-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:14px}.policy-actions>span{font-size:12px;color:var(--pl-text-muted)}
 .tool-note{display:flex;gap:8px;margin-bottom:13px;padding:10px;border-radius:9px;color:#527263;background:#edf7f3;font-size: var(--pl-font-xs);line-height:1.55}.tool-note svg{flex:none}.tool-list{display:flex;flex-direction:column;gap:8px}.tool-list article{display:grid;grid-template-columns:38px minmax(0,1fr) auto;align-items:center;gap:10px;padding:11px;border:1px solid #e3e8f0;border-radius:11px}.tool-icon{width:38px;height:38px;display:grid;place-items:center;border-radius:10px;color:#4773c8;background:#edf3ff}.tool-copy{display:flex;min-width:0;flex-direction:column}.tool-copy strong{font-size:12px}.tool-copy small{margin-top:3px;color:#7e899a;font-size: var(--pl-font-xs)}.tool-copy code{margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8390a2;font-size:8px}.tool-state{padding:3px 7px;border-radius:999px;color:#8a6d39;background: var(--pl-surface);font-size: var(--pl-font-xs);font-weight:700}.tool-state.ready{color:#33745c;background:#eaf7f1}.tool-path{grid-column:2/4;display:flex;gap:7px}.tool-path :deep(.el-button){display:flex;align-items:center;gap:5px}.tool-options{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:13px}.tool-options label{display:flex;flex-direction:column;gap:6px;color:#4f5c70;font-size: var(--pl-font-xs);font-weight:700}.tool-options label:last-child{grid-column:1/3}.tool-options label>div{display:flex;gap:7px}@media(max-width:700px){.tool-options{grid-template-columns:1fr}.tool-options label:last-child{grid-column:auto}.tool-list article{grid-template-columns:38px minmax(0,1fr)}.tool-state{grid-column:2}.tool-path{grid-column:1/3}}
+.tools-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:20px 0 12px}.tools-heading h3{margin:0;font-size:var(--pl-font-md);color:var(--pl-text)}.tools-heading span{color:var(--pl-text-muted);font-size:var(--pl-font-xs)}.tool-advanced{margin-top:16px;padding:12px;border:1px solid var(--pl-border);border-radius:8px;background:var(--pl-surface-subtle)}.tool-advanced summary{cursor:pointer;color:var(--pl-text-secondary);font-size:var(--pl-font-sm)}.tool-note{color:var(--pl-text-secondary);background:var(--pl-info-soft)}.tool-list article{border-color:var(--pl-border);background:var(--pl-surface)}.tool-icon{color:var(--pl-primary);background:var(--pl-primary-soft)}.tool-copy small,.tool-copy code{color:var(--pl-text-muted);font-size:var(--pl-font-xs)}.tool-state{color:var(--pl-warning);background:var(--pl-warning-soft)}.tool-state.ready{color:var(--pl-success);background:var(--pl-success-soft)}.tool-options label{color:var(--pl-text-secondary)}.tool-copy strong{font-size:var(--pl-font-sm)}
+:global(.local-tools-dialog.el-dialog){display:flex;flex-direction:column;max-height:calc(100vh - 48px)}:global(.local-tools-dialog .el-dialog__body){flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}:global(.local-tools-dialog .el-dialog__header),:global(.local-tools-dialog .el-dialog__footer){flex-shrink:0}
 </style>
 
 <style>

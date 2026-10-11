@@ -25,7 +25,7 @@ function deferred<T>() {
 }
 async function render() {
   wrapper = mount(FilePreviewDialog, { props: { modelValue: true, accountId: 'account', fileId: 'one', fileName: 'sample.txt' }, global: {
-    stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } },
+    stubs: { ElDialog: { props: ['fullscreen'], template: '<section :data-expanded="fullscreen"><slot name="header" titleId="preview-title" /><slot /><slot name="footer" /></section>' } },
   } })
   await flushPromises()
   return wrapper
@@ -125,5 +125,34 @@ describe('preview content and playback', () => {
     expect(view.findAll('a')).toHaveLength(1)
     expect(view.get('a').attributes('href')).toBe('https://example.com/')
     expect(view.find('img').exists()).toBe(false)
+  })
+})
+
+
+describe('image viewing controls', () => {
+  it('bounds zoom, restores fit and resets viewing state for a new file', async () => {
+    api.prepareFilePreview.mockResolvedValue(result('image', 'image', { assetUrl: 'panlite-preview://session/image' }))
+    const view = await render()
+    const image = view.get('img').element
+    Object.defineProperties(image, { naturalWidth: { value: 1600 }, naturalHeight: { value: 900 } })
+    await view.get('img').trigger('load')
+    const controls = () => view.findAll('.image-controls button')
+    await controls().find(button => button.text() === '原始尺寸')!.trigger('click')
+    expect(view.get('img').attributes('style')).toContain('width: 1600px')
+    for (let index = 0; index < 20; index++) await view.get('[aria-label="放大图片"]').trigger('click')
+    expect(view.get('.image-scale').text()).toBe('400%')
+    expect(view.get('[aria-label="放大图片"]').attributes('disabled')).toBeDefined()
+    for (let index = 0; index < 20; index++) await view.get('[aria-label="缩小图片"]').trigger('click')
+    expect(view.get('.image-scale').text()).toBe('10%')
+    expect(view.get('[aria-label="缩小图片"]').attributes('disabled')).toBeDefined()
+    await controls().find(button => button.text() === '适应窗口')!.trigger('click')
+    expect(view.get('.image-stage').classes()).toContain('image-fit')
+    await view.get('[aria-label="展开预览窗口"]').trigger('click')
+    expect(view.get('section').attributes('data-expanded')).toBe('true')
+    await view.setProps({ modelValue: false })
+    await view.setProps({ modelValue: true, fileId: 'next' })
+    await flushPromises()
+    expect(view.get('.image-scale').text()).toBe('自适应')
+    expect(view.get('section').attributes('data-expanded')).toBe('false')
   })
 })
