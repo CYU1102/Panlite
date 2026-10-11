@@ -1,0 +1,60 @@
+name: Windows quality and package smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:task-coverage
+      - run: npm run security:audit
+      - name: Save coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PanLite-task-coverage
+          path: coverage/**
+          if-no-files-found: warn
+
+  package-smoke:
+    needs: quality
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run pack
+      - run: node scripts/verify-package-content.mjs
+      - run: node scripts/verify-packaged-native.cjs
+      - run: node scripts/verify-packaged-imports.cjs
+      - run: npm run test:install
+      - run: npm run checksums
+      - name: Save unsigned installer and smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PanLite-windows-unsigned-smoke
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/*.json
+            release/*.txt
+            release/*.yml
+            dist/reports/**
+          if-no-files-found: warn

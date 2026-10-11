@@ -1,6 +1,6 @@
 <template>
   <div class="global-search-page">
-    <header class="page-header">
+    <header class="page-header pl-page-heading">
       <div class="header-icon"><Search :size="20" /></div>
       <div class="header-copy">
         <h2>全局搜索</h2>
@@ -22,10 +22,12 @@
         >
           <template #prefix><Search :size="16" /></template>
         </el-input>
-        <el-button type="primary" size="large" :loading="searching" @click="runSearch()">
-          搜索全部账号
+        <el-button type="primary" size="large" :loading="searching" :disabled="!keyword.trim() || searchTargetCount === 0" @click="runSearch()">
+          搜索 {{ searchTargetCount }} 个账号
         </el-button>
       </div>
+
+      <p class="search-scope" aria-live="polite">搜索范围：{{ selectedAccountIds.length || selectedPlatforms.length ? '当前筛选范围内' : '全部' }} {{ searchTargetCount }} 个有效网盘账号 · 按文件名称查找</p>
 
       <div class="filter-grid">
         <label class="filter-field">
@@ -81,13 +83,13 @@
             <span><Bookmark :size="14" />保存的搜索</span>
           </div>
           <div v-if="savedSearches.length === 0" class="collection-empty">还没有保存条件</div>
-          <button v-for="saved in savedSearches" :key="saved.id" class="collection-item" @click="applyAndSearch(saved.query)">
-            <span class="collection-copy">
+          <div v-for="saved in savedSearches" :key="saved.id" class="collection-item">
+            <button type="button" class="collection-open" @click="applyAndSearch(saved.query)"><span class="collection-copy">
               <strong>{{ saved.name }}</strong>
               <small>{{ describeQuery(saved.query) }}</small>
-            </span>
-            <span class="remove-button" title="删除" @click.stop="removeSavedSearch(saved.id)"><Trash2 :size="13" /></span>
-          </button>
+            </span></button>
+            <button type="button" class="remove-button" :aria-label="`删除搜索条件：${saved.name}`" title="删除" @click="removeSavedSearch(saved.id)"><Trash2 :size="13" /></button>
+          </div>
         </div>
 
         <div class="collection-section history-section">
@@ -212,6 +214,8 @@ onUnmounted(() => { searchVersion++ })
 const availableAccounts = computed(() => accountStore.accounts.filter((account) => (
   selectedPlatforms.value.length === 0 || selectedPlatforms.value.includes(account.platform)
 )))
+const searchTargetCount = computed(() => availableAccounts.value.filter(account => account.status === 'active'
+  && (!selectedAccountIds.value.length || selectedAccountIds.value.includes(account.id))).length)
 
 function readStoredArray<T>(key: string): T[] {
   try {
@@ -430,7 +434,9 @@ onMounted(async () => {
 .collection-copy strong, .collection-copy small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .collection-copy strong { font-size: 12px; font-weight: 600; }
 .collection-copy small { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
-.remove-button { width: 24px; height: 24px; display: grid; flex: 0 0 auto; place-items: center; color: var(--pl-text-muted); border-radius: 7px; }
+.collection-open { display: flex; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.search-scope { margin-top: 10px; font-size: var(--pl-font-xs); color: var(--pl-text-secondary); line-height: 1.5; }
+.remove-button { width: 24px; height: 24px; display: grid; flex: 0 0 auto; place-items: center; color: var(--pl-text-secondary); border: 0; background: transparent; cursor: pointer; border-radius: 7px; }
 .remove-button:hover { color: var(--pl-danger); background: var(--pl-danger-soft); }
 .collection-empty { padding: 14px 8px; color: var(--pl-text-muted); font-size: var(--pl-font-xs); text-align: center; }
 .results-panel { overflow: hidden; display: flex; flex-direction: column; }

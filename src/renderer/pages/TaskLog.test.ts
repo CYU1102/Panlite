@@ -102,3 +102,27 @@ it('clears previous logs when opening a task whose logs cannot be loaded', async
   api.getTaskLogs.mockResolvedValueOnce({ success: false, error: 'fixture log failure' })
   await vm.onViewLog(rows[1]); expect(vm.currentLogs).toEqual([]); expect(api.error).toHaveBeenCalledWith('fixture log failure')
 })
+
+it('keeps the last known tasks when refresh fails and exposes the failure', async () => {
+  const view = await render()
+  api.listTasks.mockResolvedValueOnce({ success: false, error: '网络暂时不可用' })
+  await (view.vm as unknown as { onRefresh: () => Promise<void> }).onRefresh()
+  await flushPromises()
+  expect(view.findAll('.task-row')).toHaveLength(3)
+  expect((view.vm as unknown as { loadError: string; refreshing: boolean }).loadError).toBe('网络暂时不可用')
+  expect((view.vm as unknown as { refreshing: boolean }).refreshing).toBe(false)
+})
+
+it('keeps newer task state when an earlier refresh arrives late', async () => {
+  const view = await render()
+  let finishEarlier!: (value: { success: boolean; tasks: Task[] }) => void
+  api.listTasks.mockReturnValueOnce(new Promise(resolve => { finishEarlier = resolve }))
+  const earlier = (view.vm as unknown as { onRefresh: () => Promise<void> }).onRefresh()
+  api.listTasks.mockResolvedValueOnce({ success: true, tasks: [rows[1]] })
+  await (view.vm as unknown as { onRefresh: () => Promise<void> }).onRefresh()
+  finishEarlier({ success: true, tasks: rows })
+  await earlier
+  await flushPromises()
+  expect(view.findAll('.task-row')).toHaveLength(1)
+  expect(view.get('.task-row').text()).toContain('下载资料')
+})

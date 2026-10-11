@@ -1,7 +1,8 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    width="640px"
+    width="min(680px, 94vw)"
+    top="6vh"
     :show-close="true"
     @close="onClose"
     class="add-account-dialog"
@@ -10,6 +11,7 @@
     <template #header>
       <div class="dialog-header">
         <h2>添加网盘账号</h2>
+        <p>选择网盘后，使用推荐方式登录或填写已有授权。</p>
       </div>
     </template>
 
@@ -35,6 +37,8 @@
         :key="m.key"
         class="method-btn"
         :class="{ active: activeMethod === m.key }"
+        type="button"
+        :aria-pressed="activeMethod === m.key"
         @click="activeMethod = m.key"
       >
         <component :is="m.icon" :size="16" />
@@ -569,18 +573,18 @@ type Step = 'idle' | 'logging' | 'success' | 'failed'
 // ── Login method definitions ──
 
 const quarkMethods = [
-  { key: 'auto', label: '自动获取 Cookie', icon: markRaw(Globe) },
+  { key: 'auto', label: '网页登录（推荐）', icon: markRaw(Globe) },
   { key: 'manual', label: '手动粘贴 Cookie', icon: markRaw(PenSquare) },
 ]
 
 const baiduMethods = [
-  { key: 'auto', label: '自动获取 Cookie', icon: markRaw(Globe) },
+  { key: 'auto', label: '网页登录（推荐）', icon: markRaw(Globe) },
   { key: 'oauth', label: 'OAuth 授权', icon: markRaw(KeyRound) },
   { key: 'manual', label: '手动粘贴 Cookie', icon: markRaw(PenSquare) },
 ]
 
 const ucMethods = [
-  { key: 'auto', label: '自动获取 Cookie', icon: markRaw(Globe) },
+  { key: 'auto', label: '网页登录（推荐）', icon: markRaw(Globe) },
   { key: 'manual', label: '手动粘贴 Cookie', icon: markRaw(PenSquare) },
 ]
 
@@ -779,7 +783,7 @@ async function copyBaiduAuthUrl() {
 
 async function openBaiduSettings() {
   emit('update:modelValue', false)
-  await router.push('/settings')
+  await router.push({ path: '/settings', query: { section: 'accounts' } })
 }
 
 async function exchangeBaiduCode() {
@@ -872,7 +876,7 @@ async function fetchPan123Token(): Promise<boolean> {
 
 async function openAliyunSettings() {
   emit('update:modelValue', false)
-  await router.push('/settings')
+  await router.push({ path: '/settings', query: { section: 'accounts' } })
 }
 
 async function exchangeAliyunCodeNow(): Promise<boolean> {
@@ -1167,6 +1171,8 @@ watch(aliyunCode, () => { aliyunTokens.value = null }, { flush: 'sync' })
 </script>
 
 <style scoped>
+.dialog-header p { margin-top: 6px; color: var(--pl-text-secondary); font-size: 13px; line-height: 1.6; }
+.method-selector { flex-wrap: wrap; }
 .dialog-header h2 {
   font-size: 18px;
   font-weight: 700;
@@ -1224,7 +1230,7 @@ watch(aliyunCode, () => { aliyunTokens.value = null }, { flush: 'sync' })
   transition: all 0.15s;
 }
 .method-btn:hover { border-color: var(--pl-border); background: var(--pl-surface-subtle); }
-.method-btn.active { background: #eff6ff; border-color: #93c5fd; color: #3b82f6; }
+.method-btn.active { background: var(--pl-primary-soft); border-color: var(--pl-primary); color: var(--pl-primary); }
 
 /* ── Method body ── */
 .method-body {
@@ -1267,11 +1273,11 @@ watch(aliyunCode, () => { aliyunTokens.value = null }, { flush: 'sync' })
   font-weight: 600;
   flex-shrink: 0;
 }
-.step-num.done { background: #22c55e; color: #ffffff; }
+.step-num.done { background: var(--pl-success); color: #ffffff; }
 
 .step-content { min-width: 0; }
 .step-title { font-size: 13px; font-weight: 600; color: var(--pl-text); }
-.step-desc { font-size: 12px; color: var(--pl-text-muted); margin-top: 2px; }
+.step-desc { font-size: 12px; color: var(--pl-text-secondary); margin-top: 2px; line-height: 1.6; }
 
 .action-panel {
   flex: 1;
@@ -1292,10 +1298,10 @@ watch(aliyunCode, () => { aliyunTokens.value = null }, { flush: 'sync' })
   color: var(--pl-text-secondary);
   align-self: flex-start;
 }
-.status-tag.logging { background: var(--pl-surface); color: #f59e0b; }
+.status-tag.logging { background: var(--pl-warning-soft); color: var(--pl-warning); }
 .status-tag.logging svg { animation: spin 1s linear infinite; }
-.status-tag.success { background: #f0fdf4; color: #22c55e; }
-.status-tag.failed { background: #fef2f2; color: #ef4444; }
+.status-tag.success { background: var(--pl-success-soft); color: var(--pl-success); }
+.status-tag.failed { background: var(--pl-danger-soft); color: var(--pl-danger); }
 
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
@@ -1307,8 +1313,8 @@ watch(aliyunCode, () => { aliyunTokens.value = null }, { flush: 'sync' })
   justify-content: center;
   gap: 12px;
 }
-.action-center.success { color: #22c55e; }
-.action-center.failed { color: #ef4444; }
+.action-center.success { color: var(--pl-success); }
+.action-center.failed { color: var(--pl-danger); }
 .nickname { font-size: 16px; font-weight: 600; color: var(--pl-text); }
 .action-hint { font-size: 13px; color: var(--pl-text-muted); }
 

@@ -45,8 +45,15 @@ try {
   $report | ConvertTo-Json | Set-Content -LiteralPath $reportPath -Encoding utf8
   # A failed installation remains available for diagnostics on the disposable VM.
   if ($report.passed) {
-    $resolved = (Resolve-Path -LiteralPath $testRoot).Path
-    if (-not $resolved.StartsWith($tempRoot + '\panlite-install-smoke-', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe cleanup target.' }
-    Remove-Item -LiteralPath $resolved -Recurse -Force
+    # Resolve both sides through the same provider: Windows runners may expose
+    # the same temp directory through short (8.3) and long path aliases.
+    $resolvedTempRoot = (Resolve-Path -LiteralPath $tempRoot).ProviderPath.TrimEnd('\')
+    $resolvedTestRoot = (Resolve-Path -LiteralPath $testRoot).ProviderPath
+    $testName = [IO.Path]::GetFileName($resolvedTestRoot)
+    if ([IO.Path]::GetDirectoryName($resolvedTestRoot) -ine $resolvedTempRoot -or
+        $testName -notmatch '^panlite-install-smoke-[0-9a-f]{32}$') {
+      throw 'Unsafe cleanup target.'
+    }
+    Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
   }
 }

@@ -4,11 +4,29 @@
     width="min(1100px, 92vw)"
     top="5vh"
     :title="fileName || '文件预览'"
+    :fullscreen="expanded"
+    class="file-preview-dialog"
     :close-on-click-modal="false"
     destroy-on-close
     @close="closeDialog"
   >
-    <div class="preview-shell">
+    <template #header="{ titleId }">
+      <div class="preview-heading">
+        <div class="preview-heading-title"><span>文件预览</span><h2 :id="titleId" :title="fileName">{{ fileName || '文件预览' }}</h2></div>
+        <button class="preview-expand" :aria-label="expanded ? '恢复预览窗口' : '展开预览窗口'" :title="expanded ? '恢复预览窗口' : '展开预览窗口'" :aria-pressed="expanded" @click="expanded = !expanded"><Minimize2 v-if="expanded" :size="17" /><Maximize2 v-else :size="17" /></button>
+      </div>
+    </template>
+    <div class="preview-shell" :class="{ 'is-expanded': expanded }">
+      <div v-if="preview && !error && !loading" class="preview-toolbar">
+        <span class="preview-format">{{ preview.mimeType }} · {{ formatSize(preview.size) }}</span>
+        <div v-if="preview.kind === 'image'" class="image-controls" role="group" aria-label="图片缩放">
+          <button :aria-pressed="imageFit" @click="imageFit = true">适应窗口</button>
+          <button :aria-pressed="!imageFit && imageScale === 1" @click="setImageScale(1)">原始尺寸</button>
+          <button title="缩小图片" aria-label="缩小图片" :disabled="!imageFit && imageScale <= 0.1" @click="zoomImage(-0.25)"><ZoomOut :size="16" /></button>
+          <span class="image-scale">{{ imageFit ? '自适应' : `${Math.round(imageScale * 100)}%` }}</span>
+          <button title="放大图片" aria-label="放大图片" :disabled="!imageFit && imageScale >= 4" @click="zoomImage(0.25)"><ZoomIn :size="16" /></button>
+        </div>
+      </div>
       <div v-if="loading" class="preview-state">
         <el-icon class="is-loading"><Loader2 /></el-icon>
         <span>正在连接网盘并准备预览...</span>
@@ -29,8 +47,8 @@
           文本较大，仅显示前 {{ formatSize(maxTextBytes) }}。
         </div>
 
-        <div v-if="preview.kind === 'image'" class="media-stage image-stage">
-          <img v-if="safeAssetUrl" :key="preview.sessionId" :src="safeAssetUrl" :alt="preview.fileName" @error="onAssetError(preview.sessionId)">
+        <div v-if="preview.kind === 'image'" ref="imageStage" class="media-stage image-stage" :class="{ 'image-fit': imageFit }">
+          <div class="image-canvas"><img v-if="safeAssetUrl" :key="preview.sessionId" :src="safeAssetUrl" :alt="preview.fileName" :style="imageStyle" @load="onImageLoad" @error="onAssetError(preview.sessionId)"></div>
         </div>
 
         <div v-else-if="preview.kind === 'video'" class="media-stage">
@@ -99,7 +117,7 @@
 
     <template #footer>
       <div class="dialog-footer">
-        <span v-if="preview" class="preview-meta">{{ preview.mimeType }} · {{ formatSize(preview.size) }}</span>
+        <span class="preview-meta">{{ preview ? '预览缓存将在关闭后清理' : '在线预览' }}</span>
         <el-button
           v-if="preview?.kind === 'archive' && canOpenArchive"
           type="primary"
@@ -115,7 +133,7 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, onBeforeUnmount, ref, watch } from 'vue'
-import { Loader2, Music } from 'lucide-vue-next'
+import { Loader2, Music, Maximize2, Minimize2, ZoomIn, ZoomOut } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
 import type { FilePreviewSessionDto, FilePreviewKind, FilePreviewIpcResult } from '@shared/file-preview'
 
@@ -158,6 +176,29 @@ const error = ref('')
 const preview = ref<FilePreviewSessionDto | null>(null)
 const mediaElement = ref<HTMLMediaElement | null>(null)
 const playbackRate = ref(1)
+const expanded = ref(false)
+const imageFit = ref(true)
+const imageScale = ref(1)
+const imageNaturalSize = ref({ width: 0, height: 0 })
+const imageStage = ref<HTMLElement | null>(null)
+const imageStyle = computed(() => imageFit.value || !imageNaturalSize.value.width
+  ? {}
+  : { width: `${imageNaturalSize.value.width * imageScale.value}px`, maxWidth: 'none', maxHeight: 'none' })
+function onImageLoad(event: Event): void {
+  const image = event.currentTarget as HTMLImageElement
+  imageNaturalSize.value = { width: image.naturalWidth, height: image.naturalHeight }
+}
+function setImageScale(value: number): void {
+  imageFit.value = false
+  imageScale.value = Math.max(0.1, Math.min(4, value))
+}
+function zoomImage(delta: number): void {
+  let current = imageScale.value
+  if (imageFit.value && imageStage.value && imageNaturalSize.value.width && imageNaturalSize.value.height) {
+    current = Math.min(1, imageStage.value.clientWidth / imageNaturalSize.value.width, imageStage.value.clientHeight / imageNaturalSize.value.height)
+  }
+  setImageScale(current + delta)
+}
 let loadGeneration = 0
 
 const safeAssetUrl = computed(() => {
@@ -194,6 +235,7 @@ watch(() => [props.modelValue, props.accountId, props.fileId, props.fileName, pr
   else {
     loadGeneration++
     loading.value = false
+    expanded.value = false
     void cleanupPreview()
   }
 }, { immediate: true })
@@ -209,6 +251,9 @@ async function loadPreview(): Promise<void> {
   loading.value = false
   error.value = ''
   playbackRate.value = 1
+  imageFit.value = true
+  imageScale.value = 1
+  imageNaturalSize.value = { width: 0, height: 0 }
   if (!props.modelValue) return
   if (!props.accountId || !props.fileId || !props.fileName) {
     error.value = '缺少预览文件信息'
@@ -258,6 +303,7 @@ async function cleanupSession(sessionId: string): Promise<void> {
 function closeDialog(): void {
   loadGeneration++
   loading.value = false
+  expanded.value = false
   emit('update:modelValue', false)
   void cleanupPreview()
 }
@@ -381,27 +427,52 @@ function safeExternalLink(value: string): string {
 </script>
 
 <style scoped>
-.preview-shell { min-height: 360px; max-height: 72vh; overflow: auto; }
-.preview-state { min-height: 360px; display: flex; align-items: center; justify-content: center; gap: 10px; color: #909399; }
-.limit-tip { margin-bottom: 12px; padding: 8px 12px; color: #8a5b00; background: var(--pl-surface); border-radius: 6px; }
-.media-stage { min-height: 420px; display: flex; align-items: center; justify-content: center; background: var(--pl-text); border-radius: 8px; overflow: hidden; }
-.media-stage img, .media-stage video { max-width: 100%; max-height: 68vh; object-fit: contain; }
-.image-stage { background-image: linear-gradient(45deg, #e8eaed 25%, transparent 25%), linear-gradient(-45deg, #e8eaed 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e8eaed 75%), linear-gradient(-45deg, transparent 75%, #e8eaed 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
-.audio-stage { min-height: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; color: #606266; }
+.preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-right: 30px; }
+.preview-heading-title { min-width: 0; }
+.preview-heading-title > span { color: var(--pl-text-muted); font-size: 12px; }
+.preview-heading h2 { margin: 3px 0 0; color: var(--pl-text); font-size: 16px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.preview-expand, .image-controls button { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; border: 1px solid var(--pl-border); border-radius: 6px; background: var(--pl-surface); color: var(--pl-text-secondary); cursor: pointer; }
+.preview-expand { width: 32px; flex-shrink: 0; }
+.preview-expand:hover, .image-controls button:hover { background: var(--pl-hover); color: var(--pl-primary); }
+.preview-expand:focus-visible, .image-controls button:focus-visible { outline: 2px solid var(--pl-primary); outline-offset: 2px; }
+.preview-shell { min-height: min(360px, max(120px, calc(100vh - 260px))); max-height: max(120px, min(72vh, calc(100vh - 260px))); overflow: auto; }
+.preview-shell.is-expanded { min-height: min(360px, max(120px, calc(100vh - 230px))); max-height: max(120px, calc(100vh - 230px)); }
+.preview-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.preview-format { color: var(--pl-text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.image-controls { display: flex; align-items: center; gap: 6px; }
+.image-controls button { padding: 4px 8px; font-size: 12px; }
+.image-controls button[aria-pressed="true"] { background: var(--pl-primary-soft); color: var(--pl-primary); border-color: var(--pl-border-strong); }
+.image-controls button:disabled { opacity: .4; cursor: not-allowed; }
+.image-scale { min-width: 48px; color: var(--pl-text-muted); font-size: 12px; text-align: center; }
+.preview-state { min-height: 360px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--pl-text-muted); }
+.limit-tip { margin-bottom: 12px; padding: 10px 12px; color: var(--pl-warning); background: var(--pl-warning-soft); border: 1px solid var(--pl-border); border-radius: 8px; font-size: 13px; line-height: 1.6; }
+.media-stage { min-height: min(360px, max(120px, calc(100vh - 310px))); display: flex; align-items: center; justify-content: center; background: #111827; border-radius: 10px; overflow: hidden; }
+.media-stage video { width: 100%; max-height: max(120px, min(60vh, calc(100vh - 350px))); object-fit: contain; }
+.image-stage { min-height: 0; height: max(120px, min(56vh, calc(100vh - 310px))); overflow: auto; display: block; background-color: var(--pl-surface-subtle); background-image: linear-gradient(45deg, var(--pl-hover) 25%, transparent 25%), linear-gradient(-45deg, var(--pl-hover) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, var(--pl-hover) 75%), linear-gradient(-45deg, transparent 75%, var(--pl-hover) 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
+.image-canvas { display: flex; align-items: center; justify-content: center; width: max-content; min-width: 100%; min-height: 100%; }
+.image-canvas img { display: block; flex-shrink: 0; }
+.image-fit .image-canvas { width: 100%; height: 100%; }
+.image-fit img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.is-expanded .image-stage { height: max(120px, calc(100vh - 275px)); }
+.audio-stage { min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; color: var(--pl-text-secondary); background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); border-radius: 10px; padding: 20px; }
+.audio-stage > svg { color: var(--pl-primary); }
+.audio-stage strong { overflow-wrap: anywhere; text-align: center; }
 .audio-stage audio { width: min(620px, 90%); }
 .playback-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 0; color: var(--pl-text-secondary); font-size: 12px; }
-.playback-toolbar label { display: flex; align-items: center; gap: 8px; }
+.playback-toolbar label { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .playback-toolbar select { padding: 5px 8px; border: 1px solid var(--pl-border); border-radius: 6px; background: var(--pl-surface); color: var(--pl-text); }
-.pdf-stage object { display: block; width: 100%; height: 68vh; border: 0; }
-.text-preview, .markdown-preview pre { margin: 0; padding: 18px; white-space: pre-wrap; overflow-wrap: anywhere; color: #d4d4d4; background: #1e1e1e; border-radius: 8px; font: 13px/1.65 Consolas, Monaco, monospace; }
-.markdown-preview { padding: 8px 20px 28px; color: #303133; line-height: 1.7; overflow-wrap: anywhere; }
-.markdown-preview :deep(a) { color: #409eff; }
-.markdown-preview :deep(code) { padding: 2px 5px; background: #f0f2f5; border-radius: 4px; font-family: Consolas, Monaco, monospace; }
+.pdf-stage object { display: block; width: 100%; height: max(120px, min(60vh, calc(100vh - 310px))); border: 1px solid var(--pl-border); border-radius: 8px; }
+.is-expanded .pdf-stage object { height: max(120px, calc(100vh - 275px)); }
+.text-preview, .markdown-preview pre { margin: 0; padding: 20px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--pl-text); background: var(--pl-surface-subtle); border: 1px solid var(--pl-border); border-radius: 8px; font: 13px/1.75 Consolas, Monaco, monospace; }
+.markdown-preview { padding: 8px 20px 28px; max-width: 860px; margin: 0 auto; color: var(--pl-text); line-height: 1.8; overflow-wrap: anywhere; }
+.markdown-preview :deep(a) { color: var(--pl-primary); }
+.markdown-preview :deep(code) { padding: 2px 5px; background: var(--pl-hover); border-radius: 4px; font-family: Consolas, Monaco, monospace; }
 .markdown-preview pre :deep(code) { padding: 0; color: inherit; background: transparent; }
-.markdown-preview blockquote { margin: 12px 0; padding: 4px 14px; color: #606266; border-left: 4px solid #dcdfe6; }
+.markdown-preview blockquote { margin: 12px 0; padding: 4px 14px; color: var(--pl-text-secondary); border-left: 3px solid var(--pl-border-strong); }
 .markdown-list-row { display: flex; gap: 9px; margin: 5px 0 5px 16px; }
-.markdown-marker { min-width: 22px; color: #606266; }
-.archive-summary { display: flex; align-items: center; gap: 18px; margin-bottom: 14px; color: #606266; }
+.markdown-marker { min-width: 22px; color: var(--pl-text-secondary); }
+.archive-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; margin-bottom: 14px; color: var(--pl-text-secondary); }
 .dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
-.preview-meta { margin-right: auto; color: #909399; font-size: 12px; }
+.preview-meta { margin-right: auto; color: var(--pl-text-muted); font-size: 12px; }
+@media (max-width: 640px) { .preview-meta { display: none; } .image-controls { flex-wrap: wrap; } .preview-heading { padding-right: 22px; } }
 </style>

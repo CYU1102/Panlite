@@ -45,3 +45,10 @@ module.exports = async context => {
     rmSync(checked, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   }
 }
+
+if (require.main === module) {
+  const appOutDir = path.resolve(process.argv[2] || 'release/win-unpacked')
+  const productFilename = process.argv[3] || 'PanLite'
+  module.exports({ electronPlatformName: 'win32', appOutDir, packager: { appInfo: { productFilename } } })
+    .catch(error => { console.error(error); process.exitCode = 1 })
+}

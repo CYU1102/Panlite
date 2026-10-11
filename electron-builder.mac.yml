@@ -4,7 +4,9 @@ directories:
   output: release-macos
   buildResources: build
 files:
-  - "dist/**/*"
+  - "dist/main/**/*"
+  - "dist/renderer/**/*"
+  - "build/icon.png"
   - "package.json"
   - "!**/*.map"
   - "!node_modules/better-sqlite3/deps/**/*"

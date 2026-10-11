@@ -1,6 +1,6 @@
 <template>
   <div class="cloud-transfer">
-    <div class="page-header">
+    <div class="page-header pl-page-heading">
       <div class="header-icon"><ArrowRightLeft :size="20" :stroke-width="1.6" /></div>
       <div>
         <h2>云端迁移</h2>

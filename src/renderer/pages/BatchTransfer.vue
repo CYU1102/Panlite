@@ -4,7 +4,7 @@
 
  <!-- Page header -->
 
- <div class="page-header">
+ <div class="page-header pl-page-heading">
 
  <div class="header-info">
 

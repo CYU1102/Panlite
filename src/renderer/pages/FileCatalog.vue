@@ -1,6 +1,6 @@
 <template>
   <div class="catalog-page">
-    <header class="page-header panel">
+    <header class="page-header panel pl-page-heading">
       <div class="header-icon"><Library :size="23" /></div>
       <div class="header-copy"><h1>统一文件目录</h1><p>搜索已索引的跨盘文件，离线也能查找位置。</p></div>
       <button type="button" class="button" @click="router.push('/global-search')"><Search :size="15" />在线搜索</button>

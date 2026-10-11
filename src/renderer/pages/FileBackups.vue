@@ -1,6 +1,6 @@
 <template>
   <main class="file-backups-page">
-    <header class="backup-page-heading"><div><h1>文件版本备份</h1><p>将本地目录备份到 WebDAV，按版本找回文件，并在清理前核对引用。</p></div><button class="backup-button primary" type="button" @click="selectPlan(null)">新建备份计划</button></header>
+    <header class="backup-page-heading pl-page-heading"><div><h1>文件版本备份</h1><p>将本地目录备份到 WebDAV，按版本找回文件，并在清理前核对引用。</p></div><button class="backup-button primary" type="button" @click="selectPlan(null)">新建备份计划</button></header>
     <div class="backup-notice">文件版本保存于所选 WebDAV 目录，应用数据库保存版本清单。请同时保留应用快照；仅保留远端对象不能在此界面重建版本。</div>
     <p v-if="listError" class="backup-error" role="alert">{{ listError }} <button class="backup-text-button" type="button" @click="loadPlans">重试计划列表</button></p>
     <div class="backup-layout">

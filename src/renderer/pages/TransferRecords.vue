@@ -1,6 +1,6 @@
 <template>
   <div class="transfer-records">
-    <div class="page-header">
+    <div class="page-header pl-page-heading">
       <div class="header-info">
         <div class="header-icon">
           <ArrowDownToLine :size="20" :stroke-width="1.5" />

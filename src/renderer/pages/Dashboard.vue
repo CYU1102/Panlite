@@ -1,7 +1,7 @@
 <template>
   <div class="dashboard">
     <!-- 页面头部 -->
-    <div class="page-header">
+    <div class="page-header pl-page-heading">
       <div class="header-left">
         <div class="header-icon">
           <BarChart3 :size="20" />

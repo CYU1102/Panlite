@@ -175,6 +175,50 @@ describe('records and search', () => {
 })
 
 describe('settings and account overview', () => {
+  it('retains unsaved settings when switching categories and stays dirty after a failed save', async () => {
+    const vm = model(render(Settings)); await flushPromises()
+    expect(vm.hasChanges).toBe(false)
+    vm.form.transferParallelChunks = 6
+    vm.activeCategory = 'accounts'; await flushPromises()
+    expect(vm.hasChanges).toBe(true)
+    expect(vm.form.transferParallelChunks).toBe(6)
+    api.setSetting.mockResolvedValueOnce({ success: false, error: 'fixture rejected' })
+    await vm.onSave()
+    expect(vm.hasChanges).toBe(true)
+    expect(vm.lastSaveError).toContain('保存失败')
+    await vm.onSave()
+    expect(api.setSetting).toHaveBeenCalledWith('transferParallelChunks', '6')
+    expect(vm.hasChanges).toBe(false)
+    expect(vm.lastSaveError).toBe('')
+  })
+
+  it('keeps edits made during a save marked as unsaved', async () => {
+    const vm = model(render(Settings)); await flushPromises()
+    vm.form.requestDelayMs = 400
+    const pending = deferred<{ success: boolean }>()
+    api.setSetting.mockReturnValueOnce(pending.promise)
+    const save = vm.onSave()
+    vm.form.requestDelayMs = 500
+    pending.resolve({ success: true }); await save
+    expect(api.setSetting).toHaveBeenCalledWith('requestDelayMs', '400')
+    expect(vm.hasChanges).toBe(true)
+  })
+
+  it('allows retrying a partial save after the form is restored to its old values', async () => {
+    const view = render(Settings); await flushPromises(); const vm = model(view)
+    vm.form.baiduClientId = 'draft-client'
+    api.setSetting.mockResolvedValueOnce({ success: true }).mockResolvedValueOnce({ success: false, error: 'fixture partial save' })
+    await vm.onSave()
+    vm.form.baiduClientId = ''; await flushPromises()
+    expect(vm.hasChanges).toBe(false)
+    expect(vm.lastSaveError).toContain('保存失败')
+    const saveButton = view.findAllComponents({ name: 'ElButton' }).find(button => button.element.closest('.save-bar'))!
+    expect(saveButton.props('disabled')).toBe(false)
+    await vm.onSave()
+    expect(api.setSetting).toHaveBeenLastCalledWith('shareSubscriptionIntervalMinutes', '15')
+    expect(vm.lastSaveError).toBe('')
+  })
+
   it('never reports success when saving a setting is rejected by IPC', async () => {
     const vm = model(render(Settings)); await flushPromises()
     api.setSetting.mockResolvedValueOnce({ success: false, error: 'fixture disk error' })
