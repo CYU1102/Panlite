@@ -12,9 +12,14 @@ const cleanup: Array<() => void> = []
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn() })
 function ok<T extends object>(result: AppSnapshotResult<T>): T { if (result.success === false) throw new Error(`${result.code}: ${result.error}`); return result }
 const digest = (value: Buffer | string): string => createHash('sha256').update(value).digest('hex')
-function fixture() {
+function fixture(aliasAiSource = false) {
   const profilePath = fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-app-snapshot-test-'))
   cleanup.push(() => fs.rmSync(profilePath, { recursive: true, force: true }))
+  const aliasPath = `${profilePath}-alias`
+  if (aliasAiSource) {
+    fs.symlinkSync(profilePath, aliasPath, process.platform === 'win32' ? 'junction' : 'dir')
+    cleanup.push(() => process.platform === 'win32' ? fs.rmdirSync(aliasPath) : fs.unlinkSync(aliasPath))
+  }
   const databasePath = path.join(profilePath, 'panlite.db')
   // Exit without db.close(): the subsequent backup must include committed WAL
   // pages. The profile has no open writer when the bootstrap operation starts.
@@ -22,7 +27,7 @@ function fixture() {
     db.pragma('journal_mode=WAL'); db.pragma('wal_autocheckpoint=0');
     db.exec("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT); CREATE TABLE _migrations(id TEXT PRIMARY KEY); CREATE TABLE catalog_schema(version INTEGER); CREATE TABLE ai_documents(id TEXT,source_path TEXT); INSERT INTO catalog_schema VALUES(1); INSERT INTO _migrations VALUES('001_base'); INSERT INTO settings VALUES('fixture','before'); INSERT INTO settings VALUES('credential','DPAPI-ENCRYPTED-BYTES');");
     db.prepare('INSERT INTO ai_documents VALUES(?,?)').run('managed',process.argv[2]);
-    db.prepare('INSERT INTO ai_documents VALUES(?,?)').run('external','D:/outside/user-original.pdf'); process.exit(0);`, databasePath, path.join(profilePath, 'ai-attachments', 'documents', 'note.txt')], { cwd: process.cwd(), env: process.env, encoding: 'utf8' })
+    db.prepare('INSERT INTO ai_documents VALUES(?,?)').run('external','D:/outside/user-original.pdf'); process.exit(0);`, databasePath, path.join(aliasAiSource ? aliasPath : profilePath, 'ai-attachments', 'documents', 'note.txt')], { cwd: process.cwd(), env: process.env, encoding: 'utf8' })
   if (setup.status !== 0) throw new Error(setup.stderr)
   expect(fs.existsSync(databasePath + '-wal')).toBe(true)
   fs.mkdirSync(path.join(profilePath, 'ai-attachments', 'documents'), { recursive: true })
@@ -70,6 +75,18 @@ describe('application snapshots before database initialization', () => {
     expect(fs.existsSync(path.join(snapshotRoot, 'data', 'ai-attachments', 'empty'))).toBe(true)
     expect(fs.existsSync(path.join(snapshotRoot, 'data', 'Cookies'))).toBe(false)
     expect(ok(await f.service.getPendingOperation()).pending).toBeNull()
+  })
+  it('recognizes an aliased profile path and still rejects its missing managed attachment', async () => {
+    const f = fixture(true), id = await f.snapshot()
+    const inspected = ok(await f.service.inspectSnapshot(id))
+    expect(inspected.snapshot.externalAiSources).toBe(1)
+    const manifest = JSON.parse(fs.readFileSync(path.join(f.profilePath, 'app-snapshots', id, 'manifest.json'), 'utf8'))
+    expect(manifest.managedAiReferences).toEqual(['ai-attachments/documents/note.txt'])
+
+    fs.unlinkSync(path.join(f.profilePath, 'ai-attachments', 'documents', 'note.txt'))
+    ok(await f.service.requestSnapshot('别名路径的附件已删除'))
+    await expect(processPendingAppSnapshotOperation(f.profilePath, f.options)).rejects.toThrow('持久 AI 附件缺失')
+    expect(ok(await f.service.listSnapshots()).snapshots).toHaveLength(1)
   })
   it('only records a restart request while the running application can continue using its database', async () => {
     const f = fixture(), db = new Database(f.databasePath)

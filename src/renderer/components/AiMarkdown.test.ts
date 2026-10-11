@@ -8,14 +8,14 @@ import { aiMarkdownBlocks, safeAiLink } from './ai-markdown'
 
 describe('AI answer Markdown', () => {
   it('keeps model supplied HTML and unsafe links inert while safely opening allowed links', async () => {
-    const view = mount(AiMarkdown, { props: { content: '# 回答\n<img src=x onerror=alert(1)>\n[危险](javascript:alert) [原文](https://example.com/source)\n<script>alert(1)</script>' } })
+    const view = mount(AiMarkdown, { props: { content: '# 回答\n<img src=x onerror=alert(1)>\n[危险](javascript:alert) [邮箱](mailto:example@example.com) [原文](https://example.com/source)\n<script>alert(1)</script>' } })
     expect(view.find('img').exists()).toBe(false)
     expect(view.find('script').exists()).toBe(false)
     expect(view.text()).toContain('<img src=x onerror=alert(1)>')
     expect(view.findAll('.inline-link')).toHaveLength(1)
     await view.get('.inline-link').trigger('click')
     expect(api.openExternal).toHaveBeenCalledWith('https://example.com/source')
-    for (const link of ['file:///C:/secret', 'data:text/html,evil', 'javascript:alert(1)', 'panlite-preview://session/secret']) expect(safeAiLink(link)).toBe('')
+    for (const link of ['file:///C:/secret', 'data:text/html,evil', 'javascript:alert(1)', 'mailto:example@example.com', 'panlite-preview://session/secret']) expect(safeAiLink(link)).toBe('')
     view.unmount()
   })
   it('renders a readable table and list, and preserves code while a streamed fence is incomplete', async () => {

@@ -11,7 +11,7 @@ export interface AiMarkdownBlock {
 }
 
 export function safeAiLink(value: string): string {
-  try { const url = new URL(value); return ['https:', 'http:', 'mailto:'].includes(url.protocol) ? url.href : '' } catch { return '' }
+  try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : '' } catch { return '' }
 }
 
 export function aiInlineTokens(text: string): AiInlineToken[] {

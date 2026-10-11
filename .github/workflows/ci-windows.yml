@@ -52,7 +52,9 @@ jobs:
           name: PanLite-windows-unsigned-smoke
           path: |
             release/*.exe
+            release/*.blockmap
             release/*.json
             release/*.txt
+            release/*.yml
             dist/reports/**
           if-no-files-found: warn

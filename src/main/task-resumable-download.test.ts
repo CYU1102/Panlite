@@ -76,7 +76,8 @@ describe('task download integration with real loopback HTTP and owned disk cache
     options.fetch = ordinary
     options.adapter = { getDownloadSource: vi.fn(async () => ({ url, headers: { Authorization: 'Bearer HEADER_SECRET' }, fetch: custom })), getDownloadUrl: vi.fn(async () => { throw new Error('must not call direct URL getter') }) }
     const result = await downloadTaskResumable(options)
-    expect(result).toMatchObject({ kind: 'downloaded', localPath: options.targetPath, fileSize: content.length, reusedBytes: 0, sha256: hash(content) })
+    expect(result).toMatchObject({ kind: 'downloaded', fileSize: content.length, reusedBytes: 0, sha256: hash(content) })
+    if (result.kind === 'downloaded') expect(await fsp.realpath(result.localPath)).toBe(await fsp.realpath(options.targetPath))
     expect(fs.readFileSync(options.targetPath).equals(content)).toBe(true)
     expect(headers.every(item => item.authorization === 'Bearer HEADER_SECRET' && item['x-custom-transport'] === 'yes')).toBe(true)
     expect(custom).toHaveBeenCalled(); expect(ordinary).not.toHaveBeenCalled(); expect(options.adapter.getDownloadUrl).not.toHaveBeenCalled()
@@ -227,9 +228,10 @@ describe('task download integration with real loopback HTTP and owned disk cache
 
   it('preserves the original file and verified cache when publication fails after downloading the complete temporary file', async () => {
     fs.writeFileSync(options.targetPath, 'original')
+    const canonicalTarget = await fsp.realpath(options.targetPath)
     const originalRename = fsp.rename.bind(fsp)
     vi.spyOn(fsp, 'rename').mockImplementation(async (source, target) => {
-      if (String(source).includes('.panlite-task-download-') && String(target) === options.targetPath) throw new Error('simulated atomic publish failure')
+      if (String(source).includes('.panlite-task-download-') && String(target) === canonicalTarget) throw new Error('simulated atomic publish failure')
       return originalRename(source, target)
     })
     await expect(downloadTaskResumable({ ...options, overwrite: true })).rejects.toThrow('simulated atomic publish failure')

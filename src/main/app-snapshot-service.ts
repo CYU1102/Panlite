@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import { realpathSync } from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
@@ -76,13 +77,30 @@ function integrity(database: Database.Database): void {
   const rows = database.pragma('integrity_check') as Array<{ integrity_check: string }>
   if (rows.length !== 1 || rows[0].integrity_check !== 'ok') throw new AppSnapshotError('数据库完整性检查失败')
 }
+function resolvedAiSourcePath(source: string): string {
+  const resolved = path.resolve(source)
+  let ancestor = resolved
+  const missing: string[] = []
+  for (;;) {
+    try { return path.join(realpathSync.native(ancestor), ...missing.reverse()) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return resolved
+      const parent = path.dirname(ancestor)
+      if (parent === ancestor) return resolved
+      missing.push(path.basename(ancestor))
+      ancestor = parent
+    }
+  }
+}
 function aiReferences(database: Database.Database, profile: string): { managed: string[]; external: number } {
   const present = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_documents'").get()
   if (!present || !(database.prepare('PRAGMA table_info(ai_documents)').all() as { name: string }[]).some(column => column.name === 'source_path')) return { managed: [], external: 0 }
   const rows = database.prepare("SELECT source_path FROM ai_documents WHERE source_path IS NOT NULL AND source_path<>''").all() as { source_path: string }[]
   const managed = new Set<string>(); let external = 0
   for (const row of rows) {
-    const relative = path.relative(profile, path.resolve(row.source_path)).split(path.sep).join('/')
+    // realpath() in layout expands Windows 8.3 profile names. Resolve the
+    // source's existing parent too, including when the attachment was deleted.
+    const relative = path.relative(profile, resolvedAiSourcePath(row.source_path)).split(path.sep).join('/')
     if (relative.startsWith('ai-attachments/')) managed.add(safeRelative(relative))
     else external++
   }
