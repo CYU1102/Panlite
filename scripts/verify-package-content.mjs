@@ -13,8 +13,9 @@ const walk = directory => fs.readdirSync(directory, { withFileTypes: true }).fla
   const file = path.join(directory, entry.name)
   return entry.isDirectory() ? walk(file) : entry.isFile() && !file.endsWith('.map') ? [file] : []
 })
-const files = ['dist/main', 'dist/renderer'].flatMap(directory => walk(path.join(buildRoot, directory)))
-if (!files.length) throw new Error('No production build files found')
+const buildFiles = ['dist/main', 'dist/renderer'].flatMap(directory => walk(path.join(buildRoot, directory)))
+if (!buildFiles.length) throw new Error('No production build files found')
+const files = [...buildFiles, path.join(buildRoot, 'build/icon.png')]
 const results = files.map(file => {
   const relative = path.relative(buildRoot, file)
   const expected = digest(fs.readFileSync(file))
@@ -24,8 +25,10 @@ const results = files.map(file => {
   } catch (error) { return { path: relative.replaceAll('\\', '/'), expected, matchesBuild: false, error: error.message } }
 })
 const unintended = asar.listPackage(archive).filter(file => /[/\\](?:\.local-tools|output|reports|quality|fixtures|ocr-acceptance)[/\\]/.test(file))
-const report = { createdAt: new Date().toISOString(), buildRoot, buildFilesVerified: results.length,
+const report = { createdAt: new Date().toISOString(), buildRoot, buildFilesVerified: buildFiles.length,
+  windowIconVerified: results.at(-1).matchesBuild,
   allMatch: results.every(file => file.matchesBuild), unintendedFiles: unintended, files: results }
 fs.writeFileSync(path.join(output, 'packaged-content-verification.json'), `${JSON.stringify(report, null, 2)}\n`)
-console.log(JSON.stringify({ buildFilesVerified: report.buildFilesVerified, allMatch: report.allMatch, unintendedFiles: unintended.length }))
+console.log(JSON.stringify({ buildFilesVerified: report.buildFilesVerified, windowIconVerified: report.windowIconVerified,
+  allMatch: report.allMatch, unintendedFiles: unintended.length }))
 if (!report.allMatch || unintended.length) process.exitCode = 1

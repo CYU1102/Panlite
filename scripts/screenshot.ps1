@@ -4,7 +4,7 @@ $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $bitmap = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-$savePath = 'D:\27199\Documents\PanLite\scripts\screen.png'
+$savePath = Join-Path $PSScriptRoot 'screen.png'
 $bitmap.Save($savePath, [System.Drawing.Imaging.ImageFormat]::Png)
 $graphics.Dispose()
 $bitmap.Dispose()

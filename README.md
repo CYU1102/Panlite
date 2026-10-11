@@ -98,10 +98,12 @@ PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨
 810297db7e0bbe788e1fffe3f48e40be2d583c2b8f45bc860cd0a180575f41bc  PanLite-Setup-0.2.2.exe
 ```
 
+当前源码版本 `0.2.3-rc.1` 是内部发布候选，尚未替代上述 `0.2.2` 正式发布包。候选版的安装、升级和回滚门禁见 [发布指南](docs/RELEASE.md)。
+
 ### 环境要求
 
 - Windows 10/11 x64
-- Node.js 22.13.x，或 Node.js 24 及更高版本
+- 从源码运行需要 Node.js `>=22.13.0 <23` 或 `>=24`
 - npm 10 或更高版本
 
 ### 从源码运行
@@ -123,6 +125,9 @@ npm run check
 npm run lint
 npm run typecheck
 npm test
+
+# 发布前依赖审计
+npm run security:audit
 ```
 
 ### 构建 Windows 安装包
@@ -131,11 +136,13 @@ npm test
 npm run pack
 ```
 
-正式发布构建也可以运行：
+签名发布构建需先配置代码签名证书和 `PANLITE_PUBLISHER_NAME`，然后运行：
 
 ```bash
 npm run pack:release
 ```
+
+正式发布还需完成包内容、签名、校验和及隔离环境安装验收，详见 [发布指南](docs/RELEASE.md)。
 
 输出位于 `release/`。当前构建配置采用最高压缩等级，仅保留简体中文和英文回退语言，并排除原生依赖的编译源码与无关平台文件。0.2.2 安装包约 108 MB，解压目录约 360 MB；实际大小会随 Electron 和依赖版本变化。
 
