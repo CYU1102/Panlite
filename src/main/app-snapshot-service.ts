@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { canonicalPathWithMissingTail } from './path-identity'
 import type { AppSnapshotInfo, AppSnapshotInspection, AppSnapshotResult, AppSnapshotsApi, PendingAppSnapshotOperation } from '../shared/app-snapshots'
 import { AppSnapshotError, SNAPSHOT_FORMAT, SNAPSHOT_ROOTS, RESTORE_ROOTS, UUID_PATTERN, copyVerified, durableJson, exists, fileDigest, ownedDirectory, readJson, regular, removeOwnedChild, safeRelative, sha256Text, syncDirectory, syncFile, tree } from './app-snapshot-files'
 export { AppSnapshotError } from './app-snapshot-files'
@@ -76,13 +77,17 @@ function integrity(database: Database.Database): void {
   const rows = database.pragma('integrity_check') as Array<{ integrity_check: string }>
   if (rows.length !== 1 || rows[0].integrity_check !== 'ok') throw new AppSnapshotError('数据库完整性检查失败')
 }
-function aiReferences(database: Database.Database, profile: string): { managed: string[]; external: number } {
+async function aiReferences(database: Database.Database, profile: string): Promise<{ managed: string[]; external: number }> {
   const present = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_documents'").get()
   if (!present || !(database.prepare('PRAGMA table_info(ai_documents)').all() as { name: string }[]).some(column => column.name === 'source_path')) return { managed: [], external: 0 }
   const rows = database.prepare("SELECT source_path FROM ai_documents WHERE source_path IS NOT NULL AND source_path<>''").all() as { source_path: string }[]
   const managed = new Set<string>(); let external = 0
   for (const row of rows) {
-    const relative = path.relative(profile, path.resolve(row.source_path)).split(path.sep).join('/')
+    // layout() canonicalizes the profile already. Stored paths may still use a
+    // Windows 8.3 ancestor or another alias, including for a missing attachment.
+    // tree() separately rejects links inside managed roots before copying data.
+    const identity = await canonicalPathWithMissingTail(row.source_path)
+    const relative = path.relative(profile, identity).split(path.sep).join('/')
     if (relative.startsWith('ai-attachments/')) managed.add(safeRelative(relative))
     else external++
   }
@@ -156,8 +161,8 @@ async function capture(paths: Layout, options: AppSnapshotOptions, snapshotId: s
   try { integrity(database); await database.backup(path.join(data, 'panlite.db')) } finally { database.close() }
   const backedUp = new Database(path.join(data, 'panlite.db'))
   let metadata: ReturnType<typeof databaseMetadata>
-  let references: ReturnType<typeof aiReferences>
-  try { backedUp.pragma('journal_mode=DELETE'); integrity(backedUp); metadata = databaseMetadata(backedUp); references = aiReferences(backedUp, paths.profile) } finally { backedUp.close() }
+  let references: Awaited<ReturnType<typeof aiReferences>>
+  try { backedUp.pragma('journal_mode=DELETE'); integrity(backedUp); metadata = databaseMetadata(backedUp); references = await aiReferences(backedUp, paths.profile) } finally { backedUp.close() }
   await syncFile(path.join(data, 'panlite.db'))
   const before = await tree(paths.profile)
   for (const directory of before.directories) await fsp.mkdir(path.join(data, ...directory.split('/')), { recursive: true })

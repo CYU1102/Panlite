@@ -54,6 +54,23 @@ function rewriteManifest(directory: string, change: (manifest: Record<string, an
   fs.writeFileSync(file, data); fs.writeFileSync(path.join(directory, 'READY'), JSON.stringify({ manifestSha256: digest(data) }))
 }
 
+/** A real ancestor alias reproduces the same lexical/canonical mismatch as 8.3 TEMP paths. */
+function aliasedProfile(profile: string): string {
+  const owner = fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-snapshot-alias-'))
+  const alias = path.join(owner, 'ancestor')
+  fs.symlinkSync(path.dirname(profile), alias, process.platform === 'win32' ? 'junction' : 'dir')
+  cleanup.push(() => { fs.unlinkSync(alias); fs.rmdirSync(owner) })
+  const result = path.join(alias, path.basename(profile))
+  expect(fs.realpathSync(result)).toBe(fs.realpathSync(profile))
+  expect(path.relative(fs.realpathSync(profile), result)).toMatch(/^\.\./)
+  return result
+}
+function changeManagedReference(databasePath: string, source: string): void {
+  const database = new Database(databasePath)
+  try { database.prepare("UPDATE ai_documents SET source_path=? WHERE id='managed'").run(source) }
+  finally { database.close() }
+}
+
 describe('application snapshots before database initialization', () => {
   it('captures committed WAL data, protected keys, AI attachments and empty directories in an explicit scope', async () => {
     const f = fixture(), id = await f.snapshot()
@@ -121,6 +138,45 @@ describe('application snapshots before database initialization', () => {
     expect(ok(await f.service.getPendingOperation()).pending).toMatchObject({ status: 'failed', canCancel: true })
     ok(await f.service.cancelPendingOperation())
     expect(f.readValue()).toBe('before')
+  })
+  it('recognizes an existing managed attachment referenced through a different ancestor alias', async () => {
+    const f = fixture(), alias = aliasedProfile(f.profilePath)
+    changeManagedReference(f.databasePath, path.join(alias, 'ai-attachments', 'documents', 'note.txt'))
+    const id = await f.snapshot()
+    expect(ok(await f.service.inspectSnapshot(id)).snapshot.externalAiSources).toBe(1)
+    const manifest = JSON.parse(fs.readFileSync(path.join(f.profilePath, 'app-snapshots', id, 'manifest.json'), 'utf8'))
+    expect(manifest.managedAiReferences).toEqual(['ai-attachments/documents/note.txt'])
+  })
+  it('refuses a missing managed file and missing parent reached through an ancestor alias', async () => {
+    const f = fixture(), alias = aliasedProfile(f.profilePath)
+    changeManagedReference(f.databasePath, path.join(alias, 'ai-attachments', 'documents', 'missing', 'note.txt'))
+    fs.unlinkSync(path.join(f.profilePath, 'ai-attachments', 'documents', 'note.txt'))
+    fs.rmdirSync(path.join(f.profilePath, 'ai-attachments', 'documents'))
+    ok(await f.service.requestSnapshot('不能漏掉别名路径中的缺失附件'))
+    await expect(processPendingAppSnapshotOperation(f.profilePath, f.options)).rejects.toThrow('持久 AI 附件缺失')
+    expect(ok(await f.service.listSnapshots()).snapshots).toHaveLength(0)
+    expect(f.readValue()).toBe('before')
+  })
+  it('does not include external data whose aliased path contains an ai-attachments name', async () => {
+    const f = fixture(), alias = aliasedProfile(f.profilePath)
+    const external = path.join(f.profilePath, 'Cache', 'ai-attachments', 'external.txt')
+    fs.mkdirSync(path.dirname(external)); fs.writeFileSync(external, 'external bytes must stay outside the snapshot')
+    const database = new Database(f.databasePath)
+    try { database.prepare('INSERT INTO ai_documents VALUES(?,?)').run('aliased-external', path.join(alias, 'Cache', 'ai-attachments', 'external.txt')) }
+    finally { database.close() }
+    const id = await f.snapshot(), inspection = ok(await f.service.inspectSnapshot(id))
+    expect(inspection.snapshot.externalAiSources).toBe(2)
+    expect(inspection.files.map(file => file.path)).toEqual(['ai-attachments/documents/note.txt', 'panlite.db', 'url-crypto.key'])
+    expect(fs.readFileSync(external, 'utf8')).toBe('external bytes must stay outside the snapshot')
+  })
+  it.each(['temporary', 'missing/source.txt'])('still rejects an aliased managed tree that escapes through a junction at %s', async suffix => {
+    const f = fixture(), alias = aliasedProfile(f.profilePath)
+    fs.symlinkSync(path.join(f.profilePath, 'Cache'), path.join(f.profilePath, 'ai-attachments', 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
+    changeManagedReference(f.databasePath, path.join(alias, 'ai-attachments', 'escape', ...suffix.split('/')))
+    ok(await f.service.requestSnapshot('不能通过符号链接扩大快照范围'))
+    await expect(processPendingAppSnapshotOperation(f.profilePath, f.options)).rejects.toThrow('符号链接')
+    expect(ok(await f.service.listSnapshots()).snapshots).toHaveLength(0)
+    expect(fs.readFileSync(path.join(f.profilePath, 'Cache', 'temporary'), 'utf8')).toBe('excluded')
   })
   it('rejects corrupted or missing snapshot files before touching the live profile', async () => {
     const f = fixture(), id = await f.snapshot(), snapshot = path.join(f.profilePath, 'app-snapshots', id)

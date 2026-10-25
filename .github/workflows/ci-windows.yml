@@ -47,7 +47,7 @@ jobs:
         run: npm audit --audit-level=high --json > dist/reports/dependency-audit.json
       - name: Save coverage evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: PanLite-task-coverage
           path: |
@@ -105,7 +105,7 @@ jobs:
       - run: npm run checksums
       - name: Save unsigned installer and smoke reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: PanLite-windows-unsigned-smoke
           path: |

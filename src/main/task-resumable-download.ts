@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { DriveAdapter, DriveDownloadSource } from '../adapters/base'
 import type { DriveAccount, FileItem, TaskStatus } from '../shared/types'
 import { extractSourceHash } from '../shared/cloud-transfer'
+import { canonicalPathWithMissingTail } from './path-identity'
 import {
   discardResumableDownload, resumableDownloadTo, ResumableDownloadBusyError, ResumableFallbackError, ResumableSourceChangedError,
   type ResumableDownloadOptions, type ResumableDownloadResult, type ResumableFetch,
@@ -173,7 +174,7 @@ export async function downloadTaskResumable(options: TaskResumableDownloadOption
   await fsp.mkdir(requestedParent, { recursive: true })
   if ((await fsp.lstat(requestedParent)).isSymbolicLink()) throw new Error('下载目标目录不能是符号链接')
   const parent = await fsp.realpath(requestedParent), target = path.join(parent, path.basename(options.targetPath))
-  if (inside(root, target)) throw new Error('下载目标不能位于续传缓存目录内')
+  if (inside(await canonicalPathWithMissingTail(root), target)) throw new Error('下载目标不能位于续传缓存目录内')
   await targetFile(target, options.overwrite === true)
   const directory = (await taskDirectory(root, record.taskDigest, true))!
   const key = path.join(directory, digest(record.resumeKey))

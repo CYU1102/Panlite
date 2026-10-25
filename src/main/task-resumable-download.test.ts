@@ -19,7 +19,8 @@ let options: TaskResumableDownloadOptions
 let status: TaskStatus
 
 beforeEach(async () => {
-  directory = fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-task-resume-test-'))
+  // CI's TEMP can use an 8.3 alias; publication intentionally returns realpath.
+  directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-task-resume-test-')))
   bytes = content; etag = '"original"'; rangeSupported = true; headStatus = 200; ranges = []; methods = []; headers = []; override = undefined; status = 'running'
   server = http.createServer((request, response) => {
     methods.push(request.method ?? 'GET'); headers.push(request.headers)
@@ -67,6 +68,32 @@ function freshFile(raw: Record<string, unknown>): FileItem {
 }
 
 describe('task download integration with real loopback HTTP and owned disk cache', () => {
+  it('publishes through an ancestor alias and returns the physical target identity', async () => {
+    const physical = path.join(directory, 'physical'), alias = path.join(directory, 'alias')
+    fs.mkdirSync(path.join(physical, 'downloads'), { recursive: true })
+    fs.symlinkSync(physical, alias, 'junction')
+    try {
+      const target = path.join(alias, 'downloads', 'output.bin')
+      const result = await downloadTaskResumable({ ...options, targetPath: target })
+      expect(result).toMatchObject({ kind: 'downloaded', localPath: path.join(fs.realpathSync(physical), 'downloads', 'output.bin') })
+      expect(fs.readFileSync(target).equals(content)).toBe(true)
+    } finally { fs.unlinkSync(alias) }
+  })
+
+  it('rejects a target within the same cache when its root is supplied through an ancestor alias', async () => {
+    const physical = path.join(directory, 'physical'), alias = path.join(directory, 'alias')
+    const cache = path.join(physical, 'cache')
+    fs.mkdirSync(path.join(cache, 'downloads'), { recursive: true })
+    fs.symlinkSync(physical, alias, 'junction')
+    try {
+      const target = path.join(cache, 'downloads', 'output.bin')
+      await expect(downloadTaskResumable({ ...options, cacheRoot: path.join(alias, 'cache'), targetPath: target }))
+        .rejects.toThrow('下载目标不能位于续传缓存目录内')
+      expect(fs.existsSync(target)).toBe(false)
+      expect(methods).toEqual([])
+    } finally { fs.unlinkSync(alias) }
+  })
+
   it('prefers authenticated custom getDownloadSource transport for HEAD, Range and verify; publishes complete bytes', async () => {
     const custom = vi.fn(async (address: string, init?: RequestInit) => {
       const requestHeaders = new Headers(init?.headers); requestHeaders.set('X-Custom-Transport', 'yes')

@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import fs, { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({ getDb: vi.fn(), parse: vi.fn(), config: vi.fn(), embed: vi.fn(), policy: vi.fn(), call: vi.fn(), stream: vi.fn() }))
@@ -59,6 +60,45 @@ function fixture(name = 'document.txt', text = 'Unchanged original bytes'): stri
 }
 
 describe('AI document accuracy persistence', () => {
+  it('waits for the hash reader to close before parsing or completing the import', async () => {
+    const source = fixture()
+    const reader = new Readable({ autoDestroy: false, read() { this.push(Buffer.from('Unchanged original bytes')); this.push(null) } })
+    const ended = new Promise<void>(resolve => reader.once('end', resolve))
+    const spy = vi.spyOn(fs, 'createReadStream').mockReturnValueOnce(reader as unknown as fs.ReadStream)
+    let completed = false
+    const pending = importAiFiles([{ localPath: source }]).then(result => { completed = true; return result })
+    try {
+      await ended
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(completed).toBe(false)
+      expect(mocks.parse).not.toHaveBeenCalled()
+    } finally {
+      reader.emit('close')
+      await pending
+      spy.mockRestore()
+    }
+    expect((await pending).success).toBe(true)
+  })
+  it('waits for a failed hash reader to close before reporting the import failure', async () => {
+    const source = fixture()
+    const reader = new Readable({ autoDestroy: false, read() {} })
+    const spy = vi.spyOn(fs, 'createReadStream').mockReturnValueOnce(reader as unknown as fs.ReadStream)
+    let completed = false
+    const pending = importAiFiles([{ localPath: source }]).then(result => { completed = true; return result })
+    try {
+      reader.emit('error', new Error('Synthetic source read failure'))
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(completed).toBe(false)
+      expect(mocks.parse).not.toHaveBeenCalled()
+    } finally {
+      reader.emit('close')
+      await pending
+      spy.mockRestore()
+    }
+    expect((await pending).success).toBe(false)
+    expect(listAiTasks()[0].errorMessage).toBe('Synthetic source read failure')
+  })
+
   it('explicitly reparses an unchanged ready document and replaces its old index', async () => {
     const imported = await importAiFiles([{ localPath: fixture() }])
     const original = imported.documents[0]

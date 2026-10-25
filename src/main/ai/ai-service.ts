@@ -132,9 +132,18 @@ async function sha256File(filePath: string): Promise<string> {
   return await new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256')
     const stream = fs.createReadStream(filePath)
+    let digest: string | undefined
+    let readError: unknown
     stream.on('data', chunk => hash.update(chunk))
-    stream.on('error', reject)
-    stream.on('end', () => resolve(hash.digest('hex')))
+    stream.once('error', error => { readError = error })
+    stream.once('end', () => { digest = hash.digest('hex') })
+    // EOF precedes automatic fd closure. Do not finish the import/reindex while
+    // its source file is still held open, particularly on Windows.
+    stream.once('close', () => {
+      if (readError) reject(readError)
+      else if (digest !== undefined) resolve(digest)
+      else reject(new Error('文件读取在计算校验和完成前已关闭'))
+    })
   })
 }
 
