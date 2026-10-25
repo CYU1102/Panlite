@@ -57,6 +57,79 @@ jobs:
             output/ci-file-table/*.png
           if-no-files-found: warn
 
+  install-wizard:
+    needs: package-smoke
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Retrieve the installer built by this workflow run
+        uses: actions/download-artifact@v5
+        with:
+          name: PanLite-windows-unsigned-smoke
+          path: output/ci-package
+      - name: Bind wizard acceptance to the clean source and installer hash
+        run: |
+          node scripts/write-build-provenance.mjs output/ci-package/release/build-provenance.json --require-clean --verify
+          if ($LASTEXITCODE -ne 0) { throw 'Downloaded installer provenance does not match this checkout.' }
+          $report = Get-Content -LiteralPath output/ci-package/dist/reports/install-smoke.json -Raw | ConvertFrom-Json
+          $candidateVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if (-not $report.passed -or -not $report.releaseUpgradeGatePassed -or $report.candidateVersion -ne $candidateVersion) { throw 'The same-run installer did not pass its automated upgrade gate.' }
+          $installer = Join-Path $env:GITHUB_WORKSPACE "output/ci-package/release/PanLite-Setup-$candidateVersion.exe"
+          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $report.candidateSha256) { throw 'Downloaded installer checksum does not match the smoke-tested candidate.' }
+          & powershell.exe -NoProfile -File scripts/smoke-install-wizard.ps1 -InstallerPath $installer -InstallerSha256 $report.candidateSha256 -ExpectedVersion $candidateVersion
+          if ($LASTEXITCODE -ne 0) { throw 'Non-silent wizard acceptance failed or is unsupported; inspect wizard-report.json.' }
+      - name: Save non-silent wizard control and startup evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: PanLite-windows-install-wizard
+          path: dist/reports/install-wizard/**
+          if-no-files-found: warn
+
+  release-startup-comparison:
+    needs: package-smoke
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Retrieve the same-run candidate installer
+        uses: actions/download-artifact@v5
+        with:
+          name: PanLite-windows-unsigned-smoke
+          path: output/ci-package
+      - name: Download the fixed published startup baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.2.2 --repo CYU1102/Panlite --pattern PanLite-Setup-0.2.2.exe --dir output/ci-release-baseline
+          if ($LASTEXITCODE -ne 0) { throw 'Published startup baseline download failed.' }
+      - name: Record alternating published-payload startup samples
+        run: |
+          node scripts/write-build-provenance.mjs output/ci-package/release/build-provenance.json --require-clean --verify
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate provenance does not match this checkout.' }
+          $smoke = Get-Content -LiteralPath output/ci-package/dist/reports/install-smoke.json -Raw | ConvertFrom-Json
+          $version = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if (-not $smoke.passed -or $smoke.candidateVersion -ne $version) { throw 'Candidate did not pass its same-run installation smoke.' }
+          node scripts/benchmark-release-startup.mjs --baseline-installer output/ci-release-baseline/PanLite-Setup-0.2.2.exe --baseline-sha256 810297db7e0bbe788e1fffe3f48e40be2d583c2b8f45bc860cd0a180575f41bc --candidate-installer "output/ci-package/release/PanLite-Setup-$version.exe" --candidate-sha256 $smoke.candidateSha256 --candidate-manifest output/ci-package/release/build-provenance.json --output output/ci-release-startup
+          if ($LASTEXITCODE -ne 0) { throw 'Published-payload startup comparison did not complete.' }
+          'Startup samples compare released application payloads, including runtime/display differences. Review flags in the report remain open; completing this job does not establish performance equivalence.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Save all startup samples and scoped comparison
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: PanLite-windows-release-startup
+          path: output/ci-release-startup/**
+          if-no-files-found: warn
+
   package-smoke:
     needs: quality
     runs-on: windows-2022
