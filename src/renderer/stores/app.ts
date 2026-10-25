@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Platform, DriveAccount } from '@shared/types'
+import { electronApi } from '../api/ipc'
+
+export type AppTheme = 'light' | 'dark'
 
 export const useAppStore = defineStore('app', () => {
   const currentPlatform = ref<Platform>('quark')
@@ -31,11 +34,13 @@ export const useAppStore = defineStore('app', () => {
 
   function setAccount(account: Omit<DriveAccount, 'credential'> | null) {
     currentAccount.value = account
+    if (account) currentPlatform.value = account.platform
     resetPath()
     clearSearch()
   }
 
   function resetPath() {
+    selectedCount.value = 0
     currentPath.value = '0'
     currentPathName.value = '根目录'
     pathStack.value = [{ id: '0', name: '根目录' }]
@@ -68,6 +73,34 @@ export const useAppStore = defineStore('app', () => {
     isSearching.value = false
   }
 
+  // ── Theme ──
+  const theme = ref<AppTheme>('light')
+
+  function applyTheme(value: AppTheme) {
+    document.documentElement.classList.toggle('dark', value === 'dark')
+  }
+
+  async function loadTheme() {
+    try {
+      const result = await electronApi.getSetting('theme')
+      const saved = result.success && result.value === 'dark' ? 'dark' : 'light'
+      theme.value = saved
+      applyTheme(saved)
+    } catch {
+      applyTheme(theme.value)
+    }
+  }
+
+  async function setTheme(value: AppTheme) {
+    theme.value = value
+    applyTheme(value)
+    try { await electronApi.setSetting('theme', value) } catch { /* 持久化失败不影响本次会话 */ }
+  }
+
+  async function toggleTheme() {
+    await setTheme(theme.value === 'dark' ? 'light' : 'dark')
+  }
+
   return {
     currentPlatform,
     currentAccount,
@@ -86,5 +119,9 @@ export const useAppStore = defineStore('app', () => {
     navigateBack,
     startSearch,
     clearSearch,
+    theme,
+    loadTheme,
+    setTheme,
+    toggleTheme,
   }
 })

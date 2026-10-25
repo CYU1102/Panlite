@@ -24,29 +24,29 @@ defineProps<{
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .placeholder-icon {
   width: 80px;
   height: 80px;
-  background: #f3f4f6;
+  background: var(--pl-hover);
   border-radius: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #d1d5db;
+  color: var(--pl-border);
   margin-bottom: 4px;
 }
 
 .placeholder-page h3 {
   font-size: 16px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 .placeholder-page p {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 </style>

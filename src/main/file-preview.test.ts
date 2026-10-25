@@ -39,6 +39,9 @@ describe('preview type detection', () => {
     ['manual.pdf', 'pdf'],
     ['README.md', 'markdown'],
     ['config.json', 'text'],
+    ['report.docx', 'office'],
+    ['budget.xlsx', 'office'],
+    ['slides.pptx', 'office'],
     ['backup.tar.gz', 'archive'],
     ['backup.7z', 'archive'],
   ] as const)('detects %s as %s', (fileName, kind) => {
@@ -77,6 +80,19 @@ describe('path and text safety', () => {
     const binaryPath = path.join(root, 'binary.txt')
     writeFileSync(binaryPath, Buffer.from([0, 0, 0, 1, 2, 3]))
     expect(() => readTextPreview(binaryPath, 100)).toThrow(/不是可安全预览的文本/)
+  })
+
+  it('decodes GB18030 and avoids replacement characters when truncation splits a Unicode character', () => {
+    const root = temporaryRoot()
+    const gbPath = path.join(root, 'gb.txt')
+    writeFileSync(gbPath, Buffer.from([0xc4, 0xe3, 0xba, 0xc3]))
+    expect(readTextPreview(gbPath, 100).content).toBe('你好')
+    const utf8Path = path.join(root, 'utf8.txt')
+    writeFileSync(utf8Path, '你好世界')
+    expect(readTextPreview(utf8Path, 4)).toEqual({ content: '你', truncated: true })
+    const utf16Path = path.join(root, 'utf16.txt')
+    writeFileSync(utf16Path, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('你好', 'utf16le')]))
+    expect(readTextPreview(utf16Path, 5)).toEqual({ content: '你', truncated: true })
   })
 })
 
@@ -157,5 +173,20 @@ describe('preview sessions', () => {
     const handlers = createFilePreviewIpcHandlers(service, async () => ({ success: false, error: 'network failed' }))
     await expect(handlers.create(request)).resolves.toEqual({ success: false, error: 'network failed' })
     expect(handlers.cleanup('missing')).toEqual({ success: true, cleaned: false })
+  })
+
+  it('does not resurrect a pending session after application/window cleanup', async () => {
+    const service = new FilePreviewService({ tempRoot: temporaryRoot() })
+    let resolveDownload!: () => void
+    const gate = new Promise<void>(resolve => { resolveDownload = resolve })
+    const creating = service.createSession(request, async (_source, context) => {
+      await gate
+      const localPath = path.join(context.directory, context.fileName)
+      writeFileSync(localPath, 'content')
+      return { success: true, localPath }
+    })
+    service.cleanupAll()
+    resolveDownload()
+    await expect(creating).rejects.toThrow('预览已取消')
   })
 })

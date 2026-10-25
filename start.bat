@@ -1,3 +1,5 @@
 @echo off
-cd /d d:\27199\Documents\PanLite
-npm run dev
+setlocal
+cd /d "%~dp0"
+call npm run dev
+exit /b %ERRORLEVEL%

@@ -19,21 +19,30 @@
 
     <!-- Account health summary -->
     <div v-if="accountStore.accounts.length > 0" class="stats-bar" aria-label="账号状态概览">
-      <div class="stat-chip stat-total">
+      <button type="button" class="stat-chip stat-total" :class="{ selected: statusFilter === 'all' }" :aria-pressed="statusFilter === 'all'" @click="statusFilter = 'all'">
         <Database :size="14" />
         <span><strong>{{ accountStore.accounts.length }}</strong> 个账号</span>
-      </div>
-      <div class="stat-chip stat-success">
+      </button>
+      <button type="button" class="stat-chip stat-success" :class="{ selected: statusFilter === 'active' }" :aria-pressed="statusFilter === 'active'" @click="statusFilter = 'active'">
         <CheckCircle2 :size="14" />
         <span><strong>{{ accountStore.accounts.filter(a => a.status === 'active').length }}</strong> 个状态正常</span>
-      </div>
-      <div
+      </button>
+      <button type="button"
         v-if="accountStore.accounts.filter(a => a.status !== 'active').length > 0"
         class="stat-chip stat-warning"
+        :class="{ selected: statusFilter === 'attention' }" :aria-pressed="statusFilter === 'attention'" @click="statusFilter = 'attention'"
       >
         <AlertCircle :size="14" />
         <span><strong>{{ accountStore.accounts.filter(a => a.status !== 'active').length }}</strong> 个需要处理</span>
-      </div>
+      </button>
+    </div>
+
+    <div v-if="accountStore.accounts.length" class="account-toolbar">
+      <el-input v-model="accountQuery" clearable placeholder="搜索账号名称" aria-label="搜索账号名称" class="account-search"><template #prefix><Search :size="16" /></template></el-input>
+      <el-select v-model="platformFilter" clearable placeholder="全部网盘" aria-label="筛选网盘平台" class="account-platform">
+        <el-option v-for="platform in accountPlatforms" :key="platform" :value="platform" :label="PLATFORM_LABELS[platform] || platform" />
+      </el-select>
+      <span class="account-count" role="status">{{ filteredAccounts.length }} / {{ accountStore.accounts.length }} 个账号</span>
     </div>
 
     <!-- Account cards -->
@@ -56,9 +65,13 @@
       </el-button>
     </div>
 
+    <div v-else-if="!filteredAccounts.length" class="empty-state filtered-empty">
+      <Search :size="32" /><h3>没有符合条件的账号</h3><p>试试其他名称、平台或授权状态。</p>
+      <el-button @click="clearAccountFilters">清除筛选</el-button>
+    </div>
     <div v-else class="account-list">
       <div
-        v-for="account in accountStore.accounts"
+        v-for="account in filteredAccounts"
         :key="account.id"
         class="account-card"
         :class="{ 'is-unhealthy': account.status !== 'active' }"
@@ -109,15 +122,16 @@
             <span class="status-hint">{{ statusHint(account.status) }}</span>
           </div>
           <div class="account-actions">
+            <button v-if="account.status === 'active'" class="action-btn action-open" type="button" :aria-label="`打开 ${account.nickname} 的文件`" @click="openAccountFiles(account)"><FolderOpen :size="14" /><span>文件</span></button>
             <button
               class="action-btn action-check"
               title="检测状态"
               :aria-label="`检测 ${account.nickname} 的账号状态`"
               @click="onCheck(account)"
-              :disabled="checkingId === account.id"
+              :disabled="checkingIds.has(account.id)"
             >
-              <RefreshCw :size="14" :class="{ spinning: checkingId === account.id }" />
-              <span>{{ checkingId === account.id ? '检测中' : '检测' }}</span>
+              <RefreshCw :size="14" :class="{ spinning: checkingIds.has(account.id) }" />
+              <span>{{ checkingIds.has(account.id) ? '检测中' : '检测' }}</span>
             </button>
             <span class="action-divider" aria-hidden="true"></span>
             <button
@@ -139,15 +153,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, markRaw } from 'vue'
+import { ref, onMounted, markRaw, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import {
   Users, UserPlus, UserX, Key, Clock, RefreshCw, Trash2,
   Database, CheckCircle2, AlertCircle, Loader2,
-  Cloud, HardDrive, XCircle, CircleDot, CalendarClock,
+  Cloud, HardDrive, XCircle, CircleDot, CalendarClock, Search, FolderOpen,
 } from 'lucide-vue-next'
 import { useAccountStore } from '../stores/account'
+import { useAppStore } from '../stores/app'
 import { PLATFORM_LABELS } from '@shared/constants'
 import { formatTimestamp } from '@shared/utils'
 import type { DriveAccount } from '@shared/types'
@@ -157,8 +173,22 @@ import { electronApi } from '../api/ipc'
 import AddAccountDialog from '../components/AddAccountDialog.vue'
 
 const accountStore = useAccountStore()
+const appStore = useAppStore()
+const router = useRouter()
+const accountQuery = ref('')
+const platformFilter = ref('')
+const statusFilter = ref<'all' | 'active' | 'attention'>('all')
+const accountPlatforms = computed(() => [...new Set(accountStore.accounts.map(account => account.platform))])
+const filteredAccounts = computed(() => accountStore.accounts.filter(account =>
+  (!platformFilter.value || account.platform === platformFilter.value) &&
+  (!accountQuery.value.trim() || account.nickname.toLocaleLowerCase().includes(accountQuery.value.trim().toLocaleLowerCase())) &&
+  (statusFilter.value === 'all' || (statusFilter.value === 'active' ? account.status === 'active' : account.status !== 'active'))
+).slice().sort((left, right) => Number(left.status === 'active') - Number(right.status === 'active')))
+function clearAccountFilters() { accountQuery.value = ''; platformFilter.value = ''; statusFilter.value = 'all' }
+function openAccountFiles(account: Omit<DriveAccount, 'credential'>) { appStore.setAccount(account); void router.push('/files') }
 const showAddAccount = ref(false)
-const checkingId = ref('')
+const checkingIds = ref(new Set<string>())
+const deletingIds = new Set<string>()
 const memberships = ref<Record<string, MembershipInfo>>({})
 const membershipLoading = ref<Record<string, boolean>>({})
 
@@ -166,6 +196,8 @@ const LOGIN_TYPE_LABELS: Record<string, string> = {
   cookie: 'Cookie',
   oauth: 'OAuth',
   token: 'Token',
+  password: '服务器账号',
+  api_key: '开放平台凭据',
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -175,7 +207,7 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 function platformIcon(platform: string) {
-  return platform === 'quark' ? markRaw(Cloud) : markRaw(HardDrive)
+  return platform === 'quark' || platform === 'aliyun' ? markRaw(Cloud) : markRaw(HardDrive)
 }
 
 function statusIcon(status: string) {
@@ -201,6 +233,8 @@ async function loadMembership(accountId: string): Promise<void> {
   try {
     const result = await electronApi.getAccountMembership(accountId)
     if (result.success && result.membership) memberships.value[accountId] = result.membership
+  } catch {
+    // Membership is optional; a failed lookup must not hide the account list.
   } finally {
     membershipLoading.value[accountId] = false
   }
@@ -218,7 +252,8 @@ async function onAccountAdded() {
 }
 
 async function onCheck(account: Omit<DriveAccount, 'credential'>) {
-  checkingId.value = account.id
+  if (checkingIds.value.has(account.id)) return
+  checkingIds.value.add(account.id)
   try {
     const result = await accountStore.checkAccount(account.id)
     if (result.success) {
@@ -227,31 +262,39 @@ async function onCheck(account: Omit<DriveAccount, 'credential'>) {
       } else {
         ElMessage.warning(`账号 "${account.nickname}" 状态: ${STATUS_LABELS[result.status || ''] || result.status}`)
       }
-      accountStore.fetchAccounts()
-      void loadMembership(account.id)
+      await accountStore.fetchAccounts()
+      if (result.status === 'active') void loadMembership(account.id)
     } else {
       ElMessage.error(`检测失败：${result.error}`)
     }
+  } catch (error) {
+    ElMessage.error(`检测失败：${error instanceof Error ? error.message : String(error)}`)
   } finally {
-    checkingId.value = ''
+    checkingIds.value.delete(account.id)
   }
 }
 
-function onDelete(account: Omit<DriveAccount, 'credential'>) {
-  ElMessageBox.confirm(
-    `确定要删除账号 "${account.nickname}" 吗？此操作将清除本地数据库记录和登录会话。`,
-    '删除账号',
-    { type: 'warning', confirmButtonText: '确定删除', cancelButtonText: '取消' },
-  )
-    .then(async () => {
-      const result = await accountStore.deleteAccount(account.id)
-      if (result.success) {
-        ElMessage.success('账号已删除')
-      } else {
-        ElMessage.error(result.error || '删除失败')
-      }
-    })
-    .catch(() => {})
+async function onDelete(account: Omit<DriveAccount, 'credential'>) {
+  if (deletingIds.has(account.id)) return
+  deletingIds.add(account.id)
+  try {
+    try {
+      await ElMessageBox.confirm(
+        `确定要删除账号 "${account.nickname}" 吗？此操作将清除本地数据库记录和登录会话。`,
+        '删除账号',
+        { type: 'warning', confirmButtonText: '确定删除', cancelButtonText: '取消' },
+      )
+    } catch { return }
+    const result = await accountStore.deleteAccount(account.id)
+    if (result.success) {
+      delete memberships.value[account.id]
+      ElMessage.success('账号已删除')
+    } else {
+      ElMessage.error(result.error || '删除失败')
+    }
+  } catch (error) {
+    ElMessage.error('删除失败: ' + String(error))
+  } finally { deletingIds.delete(account.id) }
 }
 
 onMounted(async () => {
@@ -274,9 +317,9 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
   padding: 20px 24px;
-  background: #ffffff;
+  background: var(--pl-surface);
   border-radius: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--pl-border);
 }
 
 .header-info {
@@ -289,8 +332,8 @@ onMounted(async () => {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: #eff6ff;
-  color: #3b82f6;
+  background: var(--pl-primary-soft);
+  color: var(--pl-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -299,13 +342,13 @@ onMounted(async () => {
 .header-info h2 {
   font-size: 16px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--pl-text);
   margin-bottom: 2px;
 }
 
 .header-info p {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 /* ── Account list ── */
@@ -320,14 +363,14 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
+  background: var(--pl-surface);
+  border: 1px solid var(--pl-border);
   border-radius: 12px;
   transition: all 0.15s;
 }
 
 .account-card:hover {
-  border-color: #d1d5db;
+  border-color: var(--pl-border);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
@@ -348,8 +391,8 @@ onMounted(async () => {
 }
 
 .account-avatar.quark {
-  background: #eff6ff;
-  color: #3b82f6;
+  background: var(--pl-primary-soft);
+  color: var(--pl-primary);
 }
 
 .account-avatar.baidu {
@@ -366,7 +409,7 @@ onMounted(async () => {
 .account-name {
   font-size: 14px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--pl-text);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -377,13 +420,13 @@ onMounted(async () => {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 500;
 }
 
 .platform-tag.quark {
-  background: #eff6ff;
-  color: #3b82f6;
+  background: var(--pl-primary-soft);
+  color: var(--pl-primary);
 }
 
 .platform-tag.baidu {
@@ -402,7 +445,7 @@ onMounted(async () => {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .account-right {
@@ -428,7 +471,7 @@ onMounted(async () => {
 }
 
 .status-badge.expired {
-  background: #fffbeb;
+  background: var(--pl-surface);
   color: #f59e0b;
 }
 
@@ -450,18 +493,18 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
+  border: 1px solid var(--pl-border);
+  background: var(--pl-surface);
   border-radius: 8px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .action-btn:hover:not(:disabled) {
-  background: #f9fafb;
-  border-color: #d1d5db;
-  color: #374151;
+  background: var(--pl-surface-subtle);
+  border-color: var(--pl-border);
+  color: var(--pl-text);
 }
 
 .action-btn:disabled {
@@ -498,24 +541,24 @@ onMounted(async () => {
 .empty-icon {
   width: 80px;
   height: 80px;
-  background: #f3f4f6;
+  background: var(--pl-hover);
   border-radius: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #d1d5db;
+  color: var(--pl-border);
   margin-bottom: 4px;
 }
 
 .empty-state h3 {
   font-size: 16px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 .empty-state p {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   margin-bottom: 8px;
 }
 
@@ -527,11 +570,11 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .loading-spinner {
-  color: #3b82f6;
+  color: var(--pl-primary);
 }
 
 /* ── Stats bar ── */
@@ -540,9 +583,9 @@ onMounted(async () => {
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
   border-radius: 8px;
-  border: 1px solid #f3f4f6;
+  border: 1px solid var(--pl-hover);
 }
 
 .stat-chip {
@@ -550,7 +593,7 @@ onMounted(async () => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 .stat-chip.warn {
@@ -727,14 +770,14 @@ onMounted(async () => {
   gap: 4px;
   padding: 2px 7px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 700;
   white-space: nowrap;
 }
 
 .membership-tag.is-active {
   color: #9a6700;
-  background: #fff7d6;
+  background: var(--pl-surface);
   border: 1px solid #f6dc83;
 }
 
@@ -775,7 +818,7 @@ onMounted(async () => {
 .status-badge.error { background: var(--pl-danger-soft); color: var(--pl-danger); }
 
 .status-hint {
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   color: var(--pl-text-muted);
   white-space: nowrap;
 }
@@ -913,4 +956,24 @@ onMounted(async () => {
     transition: none;
   }
 }
+.page-header { padding: 4px 0 12px; background: transparent; border: 0; box-shadow: none; border-radius: 0; }
+.header-info h2 { font-size: 22px; line-height: 1.35; }
+.header-info p { font-size: 13px; }
+.stats-bar { padding: 0; border: 0; background: transparent; box-shadow: none; flex-wrap: wrap; }
+.stat-chip { border: 1px solid var(--pl-border); cursor: pointer; font: inherit; font-size: 13px; }
+.stat-chip.selected { border-color: var(--pl-primary); box-shadow: 0 0 0 1px var(--pl-primary); }
+.account-toolbar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.account-search { max-width: 320px; }
+.account-platform { width: 170px; flex-shrink: 0; }
+.account-count { margin-left: auto; color: var(--pl-text-secondary); font-size: 12px; white-space: nowrap; }
+.account-card:hover, .account-card:focus-visible, .account-card:focus-within { transform: none; box-shadow: var(--pl-shadow-card); }
+.account-main, .account-info { min-width: 0; }
+.account-name { overflow-wrap: anywhere; }
+.account-avatar, .platform-tag { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.account-avatar.webdav, .platform-tag.webdav { background: var(--pl-surface-subtle); color: var(--pl-text-secondary); }
+.account-list { min-height: 0; }
+.filtered-empty { background: var(--pl-surface); color: var(--pl-text-secondary); }
+.status-hint { color: var(--pl-text-secondary); }
+@media (max-width: 960px) { .account-card { flex-wrap: wrap; gap: 14px; } .account-right { margin-left: auto; } }
+@media (max-width: 640px) { .page-header { padding: 0 0 10px; } .account-toolbar { flex-wrap: wrap; } .account-search { max-width: none; flex: 1 1 180px; } .account-platform { flex: 1 1 130px; } .account-count { width: 100%; margin-left: 0; } }
 </style>

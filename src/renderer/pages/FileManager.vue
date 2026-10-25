@@ -3,14 +3,10 @@
  <div class="file-manager">
 
  <div class="page-heading">
-   <div>
-     <span class="page-eyebrow">云端文件</span>
-     <h1>文件管理</h1>
-     <p>浏览、整理和传输云端文件</p>
-   </div>
-   <div class="page-heading-meta">
-     <span v-if="appStore.hasAccount">{{ appStore.currentAccount?.nickname || '当前账号' }}</span>
-     <span v-else>未连接账号</span>
+   <div class="heading-title"><h1>文件管理</h1><span>浏览与整理云端文件</span></div>
+   <div class="density-control" role="group" aria-label="文件列表显示密度">
+     <button :class="{ active: tableDensity === 'comfortable' }" :aria-pressed="tableDensity === 'comfortable'" @click="tableDensity = 'comfortable'">舒适</button>
+     <button :class="{ active: tableDensity === 'compact' }" :aria-pressed="tableDensity === 'compact'" @click="tableDensity = 'compact'">紧凑</button>
    </div>
  </div>
 
@@ -54,7 +50,7 @@
 
  {{ appStore.searchKeyword }}
 
- <button class="search-clear" @click="onClearSearch">
+ <button class="search-clear" aria-label="清除文件搜索" title="清除文件搜索" @click="onClearSearch">
 
  <X :size="12" />
 
@@ -86,11 +82,13 @@
 
               <ChevronRight v-if="index > 0" class="crumb-sep" :size="12" />
 
-              <span
+              <button
 
                 class="crumb"
 
                 :class="{ active: index === appStore.pathStack.length - 1 }"
+                :aria-current="index === appStore.pathStack.length - 1 ? 'location' : undefined"
+                :title="item.name"
 
                 @click="onBreadcrumbClick(item, index)"
 
@@ -98,7 +96,7 @@
 
                 {{ item.name }}
 
-              </span>
+              </button>
 
             </template>
 
@@ -131,6 +129,11 @@
 
     </div>
     <!-- Cache status badge -->
+    <div v-if="catalogNavigationMessage" class="cache-badge" role="status">
+      <Database :size="14" />
+      <span>{{ catalogNavigationMessage }}</span>
+      <el-button size="small" text @click="router.push('/file-catalog')">返回文件目录</el-button>
+    </div>
     <div v-if="isCached && appStore.hasAccount && !appStore.isSearching" class="cache-badge">
       <Database :size="14" />
       <span>离线缓存数据 · {{ formatCacheTime(cacheTime) }}</span>
@@ -147,6 +150,8 @@
 
     <!-- Batch action bar -->
 
+    <div v-if="appStore.hasAccount" class="selection-slot">
+    <div v-if="selectedFiles.length === 0" class="selection-hint"><span>{{ appStore.isSearching ? '搜索结果' : '当前目录' }} · {{ fileList.length }} 项</span><span>点击名称打开文件或文件夹</span></div>
     <transition name="slide-fade">
 
       <div v-if="selectedFiles.length > 0" class="batch-bar">
@@ -176,6 +181,12 @@
 
             <Share2 :size="14" style="margin-right: 4px" />
             批量分享
+          </el-button>
+
+          <el-button size="small" :disabled="!capabilities.downloadFile || selectedCloudFiles.length === 0" :loading="aiImporting" title="把选中文件下载并导入 AI 工作台问答" @click="importSelectionToAi">
+
+            <Sparkles :size="14" style="margin-right: 4px" />
+            AI 问答{{ selectedCloudFiles.length ? `（${selectedCloudFiles.length}）` : '' }}
           </el-button>
 
           <el-button size="small" type="danger" plain :disabled="!capabilities.delete" :title="capabilityTitle('delete', '批量删除')" @click="onBatchDelete">
@@ -211,6 +222,7 @@
       </div>
 
     </transition>
+    </div>
 
 
 
@@ -241,6 +253,11 @@
       <FileTable
 
         :files="fileList"
+        :selected-files="selectedFiles"
+        :selection-context="fileQueryKey"
+        :density="tableDensity"
+        :empty-title="appStore.isSearching ? '未找到匹配文件' : '此文件夹为空'"
+        :empty-description="appStore.isSearching ? '尝试更换关键词或清除筛选条件' : '上传文件或新建文件夹后，内容会显示在这里'"
 
         :loading="loading"
 
@@ -264,9 +281,11 @@
 
       />
 
+      <div class="file-footer" role="status" aria-live="polite">
+        <span>{{ loading ? '正在加载文件…' : `共 ${fileList.length} 项` }}<span v-if="selectedFiles.length"> · 已选择 {{ selectedFiles.length }} 项</span></span>
+        <span>{{ isCached ? '离线缓存' : appStore.isSearching ? '网盘搜索结果' : '云端目录' }}</span>
+      </div>
     </div>
-
-
 
     <!-- New Folder Dialog -->
 
@@ -303,7 +322,7 @@
 
     <RenameDialog
 
-      v-model="showBatchRename"
+      v-if="showBatchRename" v-model="showBatchRename"
 
       :files="selectedFiles"
 
@@ -317,7 +336,7 @@
 
     <RenameDialog
 
-      v-model="showSingleRename"
+      v-if="showSingleRename" v-model="showSingleRename"
 
       :files="renameTarget ? [renameTarget] : []"
 
@@ -331,7 +350,7 @@
 
     <MoveDialog
 
-      v-model="showBatchMove"
+      v-if="showBatchMove" v-model="showBatchMove"
 
       :files="selectedFiles"
 
@@ -344,7 +363,7 @@
 
     <DownloadDialog
 
-      v-model="showDownloadDialog"
+      v-if="showDownloadDialog" v-model="showDownloadDialog"
 
       :account="appStore.currentAccount"
 
@@ -358,7 +377,7 @@
 
     <CopyDialog
 
-      v-model="showCopyDialog"
+      v-if="showCopyDialog" v-model="showCopyDialog"
 
       :account="appStore.currentAccount"
 
@@ -374,7 +393,7 @@
 
     <ArchiveDialog
 
-      v-model="showArchiveDialog"
+      v-if="showArchiveDialog" v-model="showArchiveDialog"
 
       :account="appStore.currentAccount"
 
@@ -390,7 +409,7 @@
 
     <CompressDialog
 
-      v-model="showCompressDialog"
+      v-if="showCompressDialog" v-model="showCompressDialog"
 
       :account="appStore.currentAccount"
 
@@ -406,7 +425,7 @@
 
     <SearchFilterDialog
 
-      v-model="showSearchFilter"
+      v-if="showSearchFilter" v-model="showSearchFilter"
 
       :filters="searchFilters"
 
@@ -415,11 +434,12 @@
     />
 
     <FilePreviewDialog
-      v-model="showPreviewDialog"
+      v-if="showPreviewDialog" v-model="showPreviewDialog"
       :account-id="appStore.currentAccount?.id || ''"
       :file-id="previewTarget?.id || ''"
       :file-name="previewTarget?.name || ''"
       :file-size="previewTarget?.size"
+      :can-open-archive="capabilities.browseArchive"
       @open-archive="onArchivePreview"
     />
 
@@ -431,7 +451,7 @@
 
 <script setup lang="ts">
 
-import { ref, watch, computed } from 'vue'
+import { defineAsyncComponent, ref, watch, computed, onBeforeUnmount } from 'vue'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
@@ -442,31 +462,36 @@ import {
 
   FolderPlus, Download, CheckCircle2, PenSquare, Database,
 
-  FolderInput, Trash2, HardDrive, Share2, Filter, Copy, FolderArchive,
+  FolderInput, Trash2, HardDrive, Share2, Filter, Copy, FolderArchive, Sparkles,
 
 } from 'lucide-vue-next'
+
+import { useRouter } from 'vue-router'
 
 import { useAppStore } from '../stores/app'
 
 import type { FileItem } from '@shared/types'
 import { getPlatformCapabilities } from '@shared/capabilities'
+import { detectFilePreviewType } from '@shared/file-preview'
 import type { PlatformCapabilities } from '@shared/capabilities'
 
 import { electronApi } from '../api/ipc'
+import { catalogApi } from '../api/catalog'
+import { resolveCatalogLocation, confirmCatalogLocation, type CatalogLocation } from '../catalog-navigation'
 
 import FileTable from '../components/FileTable.vue'
 
-import RenameDialog from '../components/RenameDialog.vue'
+const RenameDialog = defineAsyncComponent(() => import('../components/RenameDialog.vue'))
 
-import MoveDialog from '../components/MoveDialog.vue'
+const MoveDialog = defineAsyncComponent(() => import('../components/MoveDialog.vue'))
 
-import DownloadDialog from '../components/DownloadDialog.vue'
-import CopyDialog from '../components/CopyDialog.vue'
-import ArchiveDialog from '../components/ArchiveDialog.vue'
-import CompressDialog from '../components/CompressDialog.vue'
-import SearchFilterDialog from '../components/SearchFilterDialog.vue'
+const DownloadDialog = defineAsyncComponent(() => import('../components/DownloadDialog.vue'))
+const CopyDialog = defineAsyncComponent(() => import('../components/CopyDialog.vue'))
+const ArchiveDialog = defineAsyncComponent(() => import('../components/ArchiveDialog.vue'))
+const CompressDialog = defineAsyncComponent(() => import('../components/CompressDialog.vue'))
+const SearchFilterDialog = defineAsyncComponent(() => import('../components/SearchFilterDialog.vue'))
 import type { SearchFilterOptions } from '../components/SearchFilterDialog.vue'
-import FilePreviewDialog from '../components/FilePreviewDialog.vue'
+const FilePreviewDialog = defineAsyncComponent(() => import('../components/FilePreviewDialog.vue'))
 
 
 
@@ -477,8 +502,52 @@ const capabilities = computed(() => getPlatformCapabilities(appStore.currentAcco
 
 
 const fileList = ref<FileItem[]>([])
+const currentFileIndex = computed(() => new Map(fileList.value.map(file => [file.id, file])))
 
 const selectedFiles = ref<FileItem[]>([])
+
+const tableDensity = ref<'comfortable' | 'compact'>(readTableDensity())
+function readTableDensity(): 'comfortable' | 'compact' {
+  try { return localStorage.getItem('panlite:file-density') === 'compact' ? 'compact' : 'comfortable' }
+  catch { return 'comfortable' }
+}
+watch(tableDensity, (value) => {
+  try { localStorage.setItem('panlite:file-density', value) } catch { /* 当前会话仍可使用密度设置 */ }
+})
+
+
+const aiImporting = ref(false)
+
+const selectedCloudFiles = computed(() => selectedFiles.value.filter((item) => !item.isDir))
+
+const router = useRouter()
+const catalogLocation = ref<CatalogLocation | null>(null)
+const catalogNavigationMessage = ref('')
+const catalogNavigating = ref(false)
+let catalogNavigationVersion = 0
+let fileLoadVersion = 0
+let disposed = false
+
+async function importSelectionToAi() {
+  const targets = selectedCloudFiles.value.slice(0, 20)
+  if (!targets.length) { ElMessage.warning('请选择要导入的文件'); return }
+  const operation = captureFileOperation(targets)
+  if (!operation) return
+  aiImporting.value = true
+  try {
+    const result = await electronApi.aiImportCloudFiles(targets.map((file) => ({ accountId: operation.accountId, fileId: file.id, fileName: file.name })))
+    if (!operation.isCurrent()) return
+    if (!result.success) throw new Error(result.error || '导入失败')
+    const count = result.documents?.length || 0
+    const failed = targets.length - count
+    ElMessage.success(`已导入 ${count} 个文件到 AI 工作台${failed ? `，${failed} 个失败` : ''}`)
+    void router.push('/ai-workspace')
+  } catch (error) {
+    if (operation.isCurrent()) ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    aiImporting.value = false
+  }
+}
 
 const loading = ref(false)
 
@@ -551,18 +620,56 @@ function capabilityTitle(feature: keyof PlatformCapabilities, action: string): s
 
 
 
+function clearSelection() {
+  selectedFiles.value = []
+  appStore.selectedCount = 0
+}
+
+function clearFileState() {
+  fileList.value = []
+  clearSelection()
+  isCached.value = false
+  cacheTime.value = null
+  offlineReason.value = ''
+}
+
+// Directory listings and searches share one request generation so either mode
+// can invalidate the other, including account switches and leaving the page.
 async function loadFiles() {
-  if (!appStore.currentAccount) {
-    fileList.value = []
-    appStore.selectedCount = 0
-    isCached.value = false
-    cacheTime.value = null
-    offlineReason.value = ''
-    return
-  }
+  if (disposed || catalogNavigating.value) return
+  const requestVersion = ++fileLoadVersion
+  const queryKey = fileQueryKey.value
+  const accountId = appStore.currentAccount?.id
+  const parentId = appStore.currentPath
+  const searching = appStore.isSearching
+  const keyword = appStore.searchKeyword
+  const filters: SearchFilterOptions = JSON.parse(JSON.stringify(searchFilters.value))
+  const isCurrent = () => !disposed && requestVersion === fileLoadVersion && queryKey === fileQueryKey.value
+  clearFileState()
+  loading.value = false
+  if (!accountId || (searching && !keyword)) return
   loading.value = true
   try {
-    const result = await electronApi.listFiles(appStore.currentAccount.id, appStore.currentPath)
+    if (searching) {
+      const result = await electronApi.searchFiles(accountId, keyword, filters)
+      if (!isCurrent()) return
+      if (!result.success) throw new Error(result.error || '搜索失败')
+      fileList.value = result.files
+      isCached.value = !!result.fromCache
+      ElMessage.success(`找到 ${result.files.length} 个文件${result.fromCache ? '（来自缓存）' : ''}`)
+      return
+    }
+    const result = await electronApi.listFiles(accountId, parentId, false)
+    if (!isCurrent()) return
+    const location = catalogLocation.value
+    if (location && location.account.id === accountId && location.entry.parentId === parentId) {
+      fileList.value = confirmCatalogLocation(location.entry, result)
+      catalogNavigationMessage.value = `已在线确认：${fileList.value[0].name}（列表首项）`
+      isCached.value = false
+      cacheTime.value = null
+      offlineReason.value = ''
+      return
+    }
     if (result.success) {
       fileList.value = result.files
       isCached.value = !!result.cached
@@ -576,86 +683,31 @@ async function loadFiles() {
       offlineReason.value = ''
     }
   } catch (err) {
-    ElMessage.error('\u52a0\u8f7d\u6587\u4ef6\u5217\u8868\u5931\u8d25: ' + String(err))
-    fileList.value = []
-    isCached.value = false
-    cacheTime.value = null
-    offlineReason.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
-
-
-async function searchFiles() {
-
-  if (!appStore.currentAccount || !appStore.searchKeyword) {
-
-    fileList.value = []
-
-    return
-
-  }
-
-  loading.value = true
-
-  try {
-
-    const result = await electronApi.searchFiles(
-      appStore.currentAccount.id,
-      appStore.searchKeyword,
-      searchFilters.value
-    )
-
-    if (result.success) {
-
-      fileList.value = result.files
-
-      // 显示搜索结果摘要
-      if (result.fromCache) {
-        ElMessage.success(`找到 ${result.files.length} 个文件（来自缓存）`)
-      } else {
-        ElMessage.success(`找到 ${result.files.length} 个文件`)
-      }
-
-    } else {
-
-      ElMessage.error(result.error || '搜索失败')
-
-      fileList.value = []
-
+    if (!isCurrent()) return
+    if (!searching && catalogLocation.value && catalogLocation.value.account.id === accountId && catalogLocation.value.entry.parentId === parentId) {
+      catalogNavigationMessage.value = err instanceof Error ? err.message : '无法在线确认目标文件'
     }
-
-  } catch (err) {
-
-    ElMessage.error('搜索失败: ' + String(err))
-
-    fileList.value = []
-
+    ElMessage.error((searching ? '搜索失败: ' : '加载文件列表失败: ') + String(err))
+    clearFileState()
   } finally {
-
-    loading.value = false
-
+    if (isCurrent()) loading.value = false
   }
-
 }
 
 
 
 function onBack() { appStore.navigateBack() }
 
-function onRefresh() {
-  if (appStore.isSearching) searchFiles()
-  else loadFiles()
-}
+function onRefresh() { return loadFiles() }
 
 function formatCacheTime(timestamp: number | null): string {
   if (!timestamp) return '缓存时间未知'
   return `缓存于 ${new Date(timestamp).toLocaleString()}`
 }
 
-function onEnterDir(file: FileItem) { appStore.navigateTo(file.id, file.name) }
+function onEnterDir(file: FileItem) {
+  if (captureFileOperation([file])) appStore.navigateTo(file.id, file.name)
+}
 
 
 
@@ -675,7 +727,27 @@ function onBreadcrumbClick(item: { id: string; name: string }, index: number) {
 
 function onClearSearch() { appStore.clearSearch() }
 
+function isCurrentFile(file: FileItem): boolean {
+  const accountId = appStore.currentAccount?.id
+  return !!accountId && file.accountId === accountId
+    && currentFileIndex.value.get(file.id)?.accountId === accountId
+}
+
+function captureFileOperation(files: FileItem[]) {
+  const accountId = appStore.currentAccount?.id
+  if (disposed || loading.value || catalogNavigating.value || !accountId || !files.length || !files.every(isCurrentFile)) {
+    ElMessage.warning('文件列表或账号已变化，请重新选择文件')
+    return null
+  }
+  const version = fileLoadVersion
+  return {
+    accountId,
+    isCurrent: () => !disposed && version === fileLoadVersion && accountId === appStore.currentAccount?.id,
+  }
+}
+
 function onRenameFile(file: FileItem) {
+  if (!captureFileOperation([file])) return
 
   if (!capabilities.value.rename) {
     ElMessage.warning('当前网盘暂不支持重命名')
@@ -691,9 +763,8 @@ function onRenameFile(file: FileItem) {
 
 
 async function onDeleteFile(file: FileItem) {
-
-  if (!appStore.currentAccount) return
-
+  const operation = captureFileOperation([file])
+  if (!operation) return
   if (!capabilities.value.delete) {
     ElMessage.warning('当前网盘暂不支持删除')
     return
@@ -712,17 +783,14 @@ async function onDeleteFile(file: FileItem) {
     })
 
   } catch { return }
-
-
-
+  if (!operation.isCurrent()) return
   try {
-
-    const result = await electronApi.deleteFiles(appStore.currentAccount.id, [file.id])
-
+    const result = await electronApi.deleteFiles(operation.accountId, [file.id])
+    if (!operation.isCurrent()) return
     if (result.success) {
-
       fileList.value = fileList.value.filter((f) => f.id !== file.id)
-
+      selectedFiles.value = selectedFiles.value.filter((f) => f.id !== file.id)
+      appStore.selectedCount = selectedFiles.value.length
       ElMessage.success('删除成功')
 
     } else {
@@ -732,9 +800,7 @@ async function onDeleteFile(file: FileItem) {
     }
 
   } catch (err) {
-
-    ElMessage.error('删除失败: ' + String(err))
-
+    if (operation.isCurrent()) ElMessage.error('删除失败: ' + String(err))
   }
 
 }
@@ -742,14 +808,12 @@ async function onDeleteFile(file: FileItem) {
 
 
 function onSelectionChange(files: FileItem[]) {
-
-  selectedFiles.value = files
-
-  appStore.selectedCount = files.length
-
+  selectedFiles.value = !disposed && !loading.value ? files.filter(isCurrentFile) : []
+  appStore.selectedCount = selectedFiles.value.length
 }
 
 function onCopyFile(file: FileItem) {
+  if (!captureFileOperation([file])) return
   if (!capabilities.value.copy) {
     ElMessage.warning('当前网盘暂不支持服务端复制')
     return
@@ -759,11 +823,13 @@ function onCopyFile(file: FileItem) {
 }
 
 function onBatchCopy() {
+  if (!captureFileOperation(selectedFiles.value)) return
   copyTarget.value = null
   showCopyDialog.value = true
 }
 
 function onArchiveFile(file: FileItem) {
+  if (!captureFileOperation([file])) return
   if (!capabilities.value.browseArchive) {
     ElMessage.warning('当前网盘暂不支持浏览压缩包')
     return
@@ -773,6 +839,7 @@ function onArchiveFile(file: FileItem) {
 }
 
 function onCompressFile(file: FileItem) {
+  if (!captureFileOperation([file])) return
   if (!capabilities.value.createArchive) {
     ElMessage.warning('当前网盘暂不支持创建压缩包')
     return
@@ -786,18 +853,25 @@ function onCompressFile(file: FileItem) {
 }
 
 function onPreviewFile(file: FileItem) {
-  if (!appStore.currentAccount || file.isDir) return
+  if (file.isDir || !captureFileOperation([file])) return
+  if (!capabilities.value.downloadFile || !detectFilePreviewType(file.name).supported) {
+    ElMessage.warning('当前文件或网盘暂不支持在线预览')
+    return
+  }
   previewTarget.value = file
   showPreviewDialog.value = true
 }
 
 function onArchivePreview(payload: { fileId: string; fileName: string }) {
-  previewTarget.value = { id: payload.fileId, name: payload.fileName } as FileItem
+  if (!capabilities.value.browseArchive || previewTarget.value?.id !== payload.fileId) return
+  if (!captureFileOperation([previewTarget.value])) return
+  archiveTarget.value = previewTarget.value
   showPreviewDialog.value = false
   showArchiveDialog.value = true
 }
 
 function onBatchCompress() {
+  if (!captureFileOperation(selectedFiles.value)) return
   if (!canCompressSelection.value) {
     ElMessage.warning(compressSelectionTitle.value)
     return
@@ -808,18 +882,10 @@ function onBatchCompress() {
 
 function onApplySearchFilters(filters: SearchFilterOptions) {
   searchFilters.value = filters
-  // 重新搜索
-  if (appStore.isSearching) {
-    searchFiles()
-  }
 }
 
 function onClearSearchFilters() {
   searchFilters.value = {}
-  // 重新搜索
-  if (appStore.isSearching) {
-    searchFiles()
-  }
 }
 
 
@@ -883,9 +949,10 @@ async function onCreateFolder() {
 
 
 async function onBatchDelete() {
-
-  if (!appStore.currentAccount) return
-
+  const targets = [...selectedFiles.value]
+  const operation = captureFileOperation(targets)
+  if (!operation) return
+  const fileIds = targets.map(file => file.id)
   if (!capabilities.value.delete) {
     ElMessage.warning('当前网盘暂不支持删除')
     return
@@ -895,7 +962,7 @@ async function onBatchDelete() {
 
     await ElMessageBox.confirm(
 
-      `确定要删除选中的${selectedFiles.value.length} 个文件吗？`,
+      `确定要删除选中的${targets.length} 个文件吗？`,
 
       '批量删除',
 
@@ -904,22 +971,17 @@ async function onBatchDelete() {
     )
 
   } catch { return }
-
-
-
-  const fileIds = selectedFiles.value.map((f) => f.id)
-
+  if (!operation.isCurrent()) return
   try {
-
-    const result = await electronApi.deleteFiles(appStore.currentAccount.id, fileIds)
-
+    const result = await electronApi.deleteFiles(operation.accountId, fileIds)
+    if (!operation.isCurrent()) return
     if (result.success) {
 
       const ids = new Set(fileIds)
 
       fileList.value = fileList.value.filter((f) => !ids.has(f.id))
 
-      selectedFiles.value = []
+      clearSelection()
 
       ElMessage.success('删除成功')
 
@@ -930,9 +992,7 @@ async function onBatchDelete() {
     }
 
   } catch (err) {
-
-    ElMessage.error('删除失败: ' + String(err))
-
+    if (operation.isCurrent()) ElMessage.error('删除失败: ' + String(err))
   }
 
 }
@@ -968,37 +1028,86 @@ async function onExportCsv() {
 
 
 
-watch(
+watch(() => router.currentRoute?.value?.query, async query => {
+  if (query?.from !== 'catalog') {
+    catalogNavigationVersion++
+    catalogNavigating.value = false
+    catalogLocation.value = null
+    catalogNavigationMessage.value = ''
+    return
+  }
+  const version = ++catalogNavigationVersion
+  fileLoadVersion++
+  catalogNavigating.value = true
+  loading.value = true
+  fileList.value = []
+  selectedFiles.value = []
+  appStore.selectedCount = 0
+  catalogLocation.value = null
+  catalogNavigationMessage.value = '正在在线确认索引文件…'
+  try {
+    const location = await resolveCatalogLocation(query, catalogApi, () => electronApi.listAccounts())
+    if (version !== catalogNavigationVersion) return
+    catalogLocation.value = location
+    catalogNavigating.value = false
+    appStore.setAccount(location.account)
+    const parentPath = location.entry.path.replace(/\/[^/]*$/, '') || '/'
+    if (location.entry.parentId !== '0') appStore.navigateTo(location.entry.parentId, parentPath)
+    // Batch the account/path changes into the same load, even when locating a
+    // different indexed file in the already open directory.
+    appStore.refreshKey++
+  } catch (error) {
+    if (version !== catalogNavigationVersion) return
+    catalogNavigationMessage.value = error instanceof Error ? error.message : '文件定位失败'
+    catalogNavigating.value = false
+    loading.value = false
+    fileList.value = []
+  }
+}, { immediate: true })
 
-  () => [appStore.currentAccount?.id, appStore.currentPath],
+onBeforeUnmount(() => {
+  disposed = true
+  catalogNavigationVersion++
+  fileLoadVersion++
+  clearSelection()
+})
 
-  ([accountId]) => {
+const fileQueryKey = computed(() => JSON.stringify([
+  appStore.currentAccount?.id, appStore.currentPath,
+  appStore.isSearching, appStore.searchKeyword, searchFilters.value, appStore.refreshKey,
+]))
 
-    if (accountId && !appStore.isSearching) loadFiles()
+// Invalidate immediately, then load once after a batched store update. This
+// also reloads the directory on clear-search and resumes searches on remount.
+watch(fileQueryKey, () => {
+  fileLoadVersion++
+  clearFileState()
+  loading.value = false
+}, { flush: 'sync' })
+watch(fileQueryKey, onRefresh, { immediate: true })
 
-  },
-
-  { immediate: true },
-
-)
-
-
-
-watch(
-
-  () => [appStore.isSearching, appStore.searchKeyword],
-
-  ([searching, keyword]) => {
-
-    if (searching && keyword) searchFiles()
-
-  },
-
-)
-
-
-
-watch(() => appStore.refreshKey, () => onRefresh())
+watch(() => appStore.currentAccount?.id, () => {
+  if (catalogNavigating.value) {
+    catalogNavigationVersion++
+    catalogNavigating.value = false
+    loading.value = false
+    catalogNavigationMessage.value = '已取消文件定位'
+  }
+  showPreviewDialog.value = false
+  previewTarget.value = null
+  showArchiveDialog.value = false
+  archiveTarget.value = null
+  showBatchRename.value = false
+  showSingleRename.value = false
+  renameTarget.value = null
+  showBatchMove.value = false
+  showDownloadDialog.value = false
+  showCopyDialog.value = false
+  copyTarget.value = null
+  showCompressDialog.value = false
+  compressTarget.value = null
+  showNewFolder.value = false
+}, { flush: 'sync' })
 
 </script>
 
@@ -1131,7 +1240,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   border-radius: 9px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
   cursor: pointer;
 
@@ -1163,7 +1272,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   height: 20px;
 
-  background: #e5e7eb;
+  background: var(--pl-border);
 
   margin: 0 4px;
 
@@ -1207,7 +1316,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   font-size: 13px;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
   cursor: pointer;
 
@@ -1223,15 +1332,15 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
 .crumb:hover {
 
-  background: #f3f4f6;
+  background: var(--pl-hover);
 
-  color: #3b82f6;
+  color: var(--pl-primary);
 
 }
 
 .crumb.active {
 
-  color: #1f2937;
+  color: var(--pl-text);
 
   font-weight: 600;
 
@@ -1243,7 +1352,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   background: transparent;
 
-  color: #1f2937;
+  color: var(--pl-text);
 
 }
 
@@ -1251,7 +1360,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
 .crumb-sep {
 
-  color: #d1d5db;
+  color: var(--pl-border);
 
   flex-shrink: 0;
 
@@ -1271,7 +1380,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   padding: 4px 10px;
 
-  background: #eff6ff;
+  background: var(--pl-primary-soft);
 
   border: 1px solid #bfdbfe;
 
@@ -1279,7 +1388,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   font-size: 13px;
 
-  color: #3b82f6;
+  color: var(--pl-primary);
 
 }
 
@@ -1305,7 +1414,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
 .search-clear:hover {
 
-  color: #3b82f6;
+  color: var(--pl-primary);
 
 }
 
@@ -1323,9 +1432,9 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   padding: 10px 14px;
 
-  background: linear-gradient(90deg, var(--pl-primary-soft) 0%, #f5f8ff 100%);
+  background: var(--pl-primary-soft);
 
-  border: 1px solid #cfe0ff;
+  border: 1px solid var(--pl-border-strong);
 
   border-radius: 12px;
 
@@ -1345,7 +1454,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   font-size: 13px;
 
-  color: #3b82f6;
+  color: var(--pl-primary);
 
 }
 
@@ -1405,7 +1514,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   border-radius: 16px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
 }
 
@@ -1427,7 +1536,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   justify-content: center;
 
-  color: #d1d5db;
+  color: var(--pl-border);
 
   margin-bottom: 4px;
 
@@ -1441,7 +1550,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   font-weight: 600;
 
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 
 }
 
@@ -1451,7 +1560,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   font-size: 13px;
 
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 
   margin-bottom: 8px;
 
@@ -1467,7 +1576,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   overflow: hidden;
 
-  background: #ffffff;
+  background: var(--pl-surface);
 
   border-radius: 14px;
 
@@ -1491,7 +1600,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 
   padding: 8px 0 12px;
 
-  border-top: 1px solid #f3f4f6;
+  border-top: 1px solid var(--pl-hover);
 
 }
 
@@ -1501,7 +1610,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: #fffaf0;
+  background: var(--pl-surface);
   border: 1px solid #f8df9c;
   border-radius: 10px;
   font-size: 12px;
@@ -1517,14 +1626,14 @@ watch(() => appStore.refreshKey, () => onRefresh())
 }
 
 /* Interaction refresh: keep the workbench light while making active states obvious. */
-.file-manager { gap: 14px; }
+.file-manager { gap: 10px; min-height: 0; }
 
-.page-heading { min-height: 52px; }
+.page-heading { min-height: 32px; flex: 0 0 auto; align-items: center; padding: 0; }
 .page-eyebrow {
   display: block;
   margin-bottom: 3px;
   color: var(--pl-primary);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
 }
@@ -1532,7 +1641,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
   padding: 7px 11px;
   color: var(--pl-primary-hover);
   background: var(--pl-primary-soft);
-  border-color: #d5e3ff;
+  border-color: var(--pl-border-strong);
   border-radius: 999px;
 }
 
@@ -1548,7 +1657,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 .path-btn:hover:not(:disabled) {
   color: var(--pl-primary-hover);
   background: var(--pl-primary-soft);
-  border-color: #d5e3ff;
+  border-color: var(--pl-border-strong);
   transform: translateY(-1px);
 }
 .path-btn:active:not(:disabled) { transform: translateY(0) scale(0.95); }
@@ -1562,7 +1671,7 @@ watch(() => appStore.refreshKey, () => onRefresh())
 .search-tag {
   color: var(--pl-primary);
   background: var(--pl-primary-soft);
-  border-color: #cfe0ff;
+  border-color: var(--pl-border-strong);
   border-radius: 8px;
 }
 
@@ -1623,13 +1732,33 @@ watch(() => appStore.refreshKey, () => onRefresh())
   gap: 7px;
 }
 .folder-create-field label { color: var(--pl-text); font-size: 13px; font-weight: 600; }
-.folder-create-field > span { color: var(--pl-text-muted); font-size: 11px; }
+.folder-create-field > span { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 
 @media (max-width: 1120px) {
-  .path-bar { align-items: flex-start; flex-direction: column; }
-  .path-bar-right { width: 100%; justify-content: flex-end; }
-  .batch-bar { align-items: flex-start; flex-direction: column; gap: 8px; }
-  .batch-actions { width: 100%; }
+  .path-bar { flex-wrap: wrap; }
+  .path-bar-right { margin-left: auto; }
+  .batch-bar { gap: 10px; }
+  .batch-actions { flex: 1; }
 }
-</style>
 
+.heading-title { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.heading-title h1 { margin: 0; font-size: 20px; }
+.heading-title > span { color: var(--pl-text-muted); font-size: 12px; }
+.density-control { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--pl-border); background: var(--pl-surface); border-radius: 8px; }
+.density-control button { padding: 4px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--pl-text-secondary); font-size: 12px; cursor: pointer; }
+.density-control button.active { background: var(--pl-primary-soft); color: var(--pl-primary); }
+.crumb { border: 0; background: transparent; font-family: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.path-bar { flex: 0 0 auto; padding: 9px 12px; box-shadow: none; }
+.selection-slot { min-height: 46px; flex: 0 0 auto; }
+.selection-hint { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 4px; font-size: 12px; color: var(--pl-text-muted); }
+.selection-hint > span:first-child { color: var(--pl-text-secondary); }
+.batch-bar { min-height: 46px; gap: 16px; padding: 6px 10px; border-radius: 8px; box-shadow: none; }
+.batch-check { width: 22px; height: 22px; border-radius: 6px; box-shadow: none; }
+.batch-actions { flex: 1; justify-content: flex-end; }
+.file-card { min-height: 160px; border-radius: 12px; box-shadow: none; }
+.file-card > :deep(.file-table-wrapper) { flex: 1; min-height: 0; height: auto; }
+.file-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 0 14px; flex: 0 0 auto; color: var(--pl-text-muted); font-size: 12px; border-top: 1px solid var(--pl-border); background: var(--pl-surface-subtle); }
+.cache-badge { flex: 0 0 auto; flex-wrap: wrap; }
+.path-btn:focus-visible, .crumb:focus-visible, .search-clear:focus-visible, .density-control button:focus-visible { outline: 2px solid var(--pl-primary); outline-offset: 2px; }
+@media (max-width: 820px) { .heading-title > span, .selection-hint > span:last-child { display: none; } .batch-info { font-size: 12px; } .batch-actions { justify-content: flex-start; } }
+</style>

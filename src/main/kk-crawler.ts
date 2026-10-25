@@ -1,4 +1,4 @@
-import { net } from 'electron'
+import { fetchSearchText, type SearchRequestOptions } from './crawler-utils'
 import type { SearchResultItem } from '../shared/types'
 import log from 'electron-log'
 
@@ -30,53 +30,11 @@ const KK_API_LIST: Record<number, string> = {
 
 // ── 网络请求 ──
 
-async function fetchJson(url: string, options: { method?: string; headers?: Record<string, string>; body?: string; timeout?: number } = {}): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const method = options.method || 'GET'
-    const timeout = options.timeout || 5000
-
-    const request = net.request({ method, url })
-    request.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-
-    if (options.headers) {
-      for (const [k, v] of Object.entries(options.headers)) {
-        request.setHeader(k, v)
-      }
-    }
-
-    if (options.body) {
-      request.setHeader('Content-Type', 'application/json')
-      request.setHeader('Content-Length', String(Buffer.byteLength(options.body)))
-      request.write(options.body)
-    }
-
-    const timer = setTimeout(() => {
-      request.abort()
-      reject(new Error('Request timeout'))
-    }, timeout)
-
-    let responseData = ''
-    request.on('response', (response) => {
-      response.on('data', (chunk) => { responseData += chunk.toString() })
-      response.on('end', () => {
-        clearTimeout(timer)
-        try {
-          resolve(JSON.parse(responseData))
-        } catch {
-          resolve(null)
-        }
-      })
-      response.on('error', (err) => {
-        clearTimeout(timer)
-        reject(err)
-      })
-    })
-    request.on('error', (err) => {
-      clearTimeout(timer)
-      reject(err)
-    })
-    request.end()
+async function fetchJson(url: string, options: SearchRequestOptions = {}): Promise<any> {
+  const text = await fetchSearchText(url, { ...options, timeout: options.timeout || 5000,
+    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
   })
+  return JSON.parse(text)
 }
 
 // ── KK搜索配置接口 ──
@@ -112,7 +70,6 @@ async function getKkToken(): Promise<string | null> {
  */
 export async function searchKk(config: KkSearchConfig, keyword: string): Promise<SearchResultItem[]> {
   try {
-    const type = config.platform === 'quark' ? 0 : config.platform === 'baidu' ? 2 : -1
     const maxCount = config.maxCount || 20
     const apiType = config.apiType || 0
 
@@ -180,8 +137,8 @@ export async function searchKk(config: KkSearchConfig, keyword: string): Promise
 
             // 提取提取码（与xinyue-search完全一致）
             const codeMatch = answer.match(/提取码[:：]?\s*([a-zA-Z0-9]{4})/)
-            if (codeMatch) {
-              link += '?pwd=' + codeMatch[1]
+            if (codeMatch && !new URL(link).searchParams.has('pwd')) {
+              link += (link.includes('?') ? '&' : '?') + 'pwd=' + codeMatch[1]
             }
 
             // 提取标题（与xinyue-search完全一致）

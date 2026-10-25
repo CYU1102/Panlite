@@ -1,6 +1,11 @@
-import { BrowserWindow, ipcMain, shell } from 'electron'
-import { IPC_CHANNELS } from '../shared/constants'
-import log from 'electron-log'
+import { BrowserWindow, ipcMain as electronIpcMain, shell } from 'electron'
+import { wrapTrustedIpcHandler, type TrustedIpcHandler } from './ipc-security'
+
+const ipcMain = {
+  handle(channel: string, listener: TrustedIpcHandler): void {
+    electronIpcMain.handle(channel, wrapTrustedIpcHandler(listener))
+  },
+}
 
 /**
  * 内嵌浏览器模块

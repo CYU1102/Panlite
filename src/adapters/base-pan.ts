@@ -1,6 +1,6 @@
 import { session } from 'electron'
 import type { DriveAdapter } from './base'
-import type { DriveAccount, FileItem, FileListResult, ShareInfo, ShareOptions, ShareDetail, ShareTaskPayload, TransferLinkInput, TransferResult } from '../shared/types'
+import type { DriveAccount, FileItem, FileListResult } from '../shared/types'
 import { fatal, retryable } from './errors'
 import log from 'electron-log'
 

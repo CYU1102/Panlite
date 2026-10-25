@@ -19,6 +19,8 @@ export interface AiDocument {
   sha256: string
   status: AiDocumentStatus
   contentPreview?: string
+  /** Last completed parsing result, including omissions and indexing limitations. */
+  parseMessage?: string
   errorMessage?: string
   createdAt: number
   updatedAt: number
@@ -41,6 +43,9 @@ export interface AiTask {
 export interface AiImportFileInput {
   localPath: string
   fileName?: string
+  /** 从网盘导入时标记来源 */
+  sourceAccountId?: string
+  sourceFileId?: string
 }
 
 export interface AiSelectFilesResult {
@@ -61,7 +66,7 @@ export interface AiTaskListResult {
   error?: string
 }
 
-export type AiProviderType = 'openai-compatible' | 'ollama'
+export type AiProviderType = 'openai-compatible' | 'openai-responses' | 'anthropic' | 'gemini' | 'ollama'
 
 export interface AiProviderConfig {
   id: string
@@ -72,6 +77,10 @@ export interface AiProviderConfig {
   transcriptionModel: string
   embeddingModel: string
   hasApiKey: boolean
+  /** 已保存的 Key 池数量 */
+  keyCount?: number
+  /** 掩码后的 Key 预览（不回传明文） */
+  keyPreviews?: string[]
 }
 
 export interface AiProviderSaveInput {
@@ -83,7 +92,36 @@ export interface AiProviderSaveInput {
   transcriptionModel?: string
   embeddingModel?: string
   apiKey?: string
+  /** 追加到 Key 池的 Key（每行一个由调用方拆好） */
+  appendKeys?: string[]
+  /** 从 Key 池中移除指定下标 */
+  removeKeyAt?: number
+  /** 从原 Key 池中移除多个指定下标 */
+  removeKeyIndices?: number[]
   clearApiKey?: boolean
+  /** 默认保存后启用；false 仅保存，不切换当前配置。 */
+  activate?: boolean
+}
+
+export interface AiProviderDraftInput {
+  type: AiProviderType
+  baseUrl: string
+  model?: string
+  apiKey?: string
+  clearApiKey?: boolean
+  appendKeys?: string[]
+  removeKeyAt?: number
+  removeKeyIndices?: number[]
+  /** 已保存配置的 ID；仅协议和规范化接口地址均相同时可复用原密钥。 */
+  profileId?: string
+}
+
+export interface AiProviderBalance {
+  total?: number
+  used?: number
+  remaining?: number
+  unlimited?: boolean
+  currency: string
 }
 
 export interface AiProviderUsage {
@@ -112,6 +150,10 @@ export interface AiAskInput {
 export interface AiCitation {
   documentId: string
   documentName: string
+  chunkId?: string
+  sourceSha256?: string
+  startSeconds?: number
+  endSeconds?: number
   pageNumber?: number
   section?: string
   quote: string
@@ -124,13 +166,14 @@ export interface AiConversationSearchHit {
   updatedAt: number
 }
 
-export type AiLocalToolKey = 'tesseract' | 'ffmpeg' | 'whisper' | 'libreoffice'
+export type AiLocalToolKey = 'tesseract' | 'ffmpeg' | 'whisper' | 'libreoffice' | 'pdftoppm'
 
 export interface AiLocalToolsConfig {
   tesseractPath: string
   ffmpegPath: string
   whisperPath: string
   libreOfficePath: string
+  pdftoppmPath: string
   ocrLanguage: string
   whisperModel: string
   whisperModelPath: string
@@ -140,6 +183,9 @@ export interface AiLocalToolStatus {
   key: AiLocalToolKey
   name: string
   available: boolean
+  /** Executable and required local dependencies have passed detection; not an accuracy guarantee. */
+  ready?: boolean
+  subtitleAvailable?: boolean
   resolvedPath?: string
   version?: string
   message: string

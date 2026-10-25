@@ -1,14 +1,14 @@
 ﻿<template>
   <div class="task-log">
     <!-- Page header -->
-    <div class="page-header">
+    <div class="page-header pl-page-heading">
       <div class="header-info">
         <div class="header-icon">
           <ListTodo :size="20" :stroke-width="1.5" />
         </div>
         <div>
-          <h2>任务日志</h2>
-          <p>查看任务执行状态和日志</p>
+          <h2>任务中心</h2>
+          <p>查看执行进度、失败原因与任务日志</p>
         </div>
       </div>
       <div class="header-actions">
@@ -18,6 +18,8 @@
             :key="filter.value"
             class="filter-chip"
             :class="{ active: statusFilter === filter.value }"
+            :aria-pressed="statusFilter === filter.value"
+            type="button"
             @click="statusFilter = filter.value"
           >
             <component :is="filter.icon" :size="12" />
@@ -31,20 +33,31 @@
             :key="filter.value"
             class="filter-chip"
             :class="{ active: taskTypeFilter === filter.value }"
+            :aria-pressed="taskTypeFilter === filter.value"
+            type="button"
             @click="taskTypeFilter = filter.value"
           >
             {{ filter.label }}
           </button>
         </div>
-        <el-button size="small" @click="onRefresh">
+        <el-button size="small" :loading="refreshing" @click="onRefresh">
           <RefreshCw :size="14" style="margin-right: 4px" />
           刷新
         </el-button>
       </div>
     </div>
 
+    <div v-if="locatedTaskId" class="task-location" role="status">
+      <span>{{ tasks.some(task => task.id === locatedTaskId) ? '正在查看关联任务' : '该任务记录不存在或已被删除' }} · {{ locatedTaskId }}</span>
+      <router-link to="/tasks">显示全部任务</router-link>
+      <router-link :to="sourcePage.path">返回{{ sourcePage.label }}</router-link>
+    </div>
+
+    <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon>
+      <el-button link type="primary" @click="onRefresh">重新读取任务</el-button>
+    </el-alert>
     <!-- Task cards -->
-    <div class="task-card">
+    <div class="task-card" :aria-busy="refreshing">
       <div v-if="filteredTasks.length > 0" class="task-list">
         <article
           v-for="row in filteredTasks"
@@ -59,11 +72,14 @@
             </div>
             <div class="task-info">
               <div class="task-title-row">
-                <span class="task-title">{{ row.title }}</span>
+                <button type="button" class="task-title" :title="row.title" @click.stop="onViewLog(row)">{{ row.title }}</button>
                 <span class="task-type-label">{{ TASK_TYPE_LABELS[row.taskType] || row.taskType }}</span>
               </div>
+              <p v-if="row.errorMessage && ['failed', 'partial_success'].includes(row.status)" class="task-error" :title="row.errorMessage">{{ row.errorMessage }}</p>
               <div class="task-meta">
                 {{ formatTimestamp(row.createdAt) }} · 重试 {{ row.retryCount }} 次
+                <span v-if="row.schedule && row.schedule.priority !== 'normal'"> · {{ row.schedule.priority === 'high' ? '高优先级' : '低优先级' }}</span>
+                <span v-if="row.status === 'pending' && row.schedule?.nextEligibleAt"> · 最早 {{ formatTimestamp(row.schedule.nextEligibleAt) }}</span>
                 <span v-if="row.status === 'running'"> · {{ progressMetrics(row) }}</span>
               </div>
             </div>
@@ -72,10 +88,10 @@
           <div class="task-row-progress">
             <div class="task-status-badge" :class="row.status">
               <component :is="taskStatusIcon(row.status)" :size="12" />
-              {{ TASK_STATUS_LABELS[row.status] || row.status }}
+              {{ row.status === 'pending' && row.schedule?.waitReason ? row.schedule.waitReason : TASK_STATUS_LABELS[row.status] || row.status }}
             </div>
             <div class="progress-cell">
-              <div class="progress-bar-bg">
+              <div class="progress-bar-bg" role="progressbar" :aria-label="`${row.title}的执行进度`" :aria-valuenow="row.progress" :aria-valuemin="0" :aria-valuemax="100">
                 <div class="progress-bar-fill" :style="{ width: row.progress + '%' }" :class="row.status"></div>
               </div>
               <span class="progress-text">{{ row.progress }}%</span>
@@ -83,6 +99,7 @@
           </div>
 
           <div class="task-row-actions" @click.stop>
+            <button v-if="['pending', 'running', 'paused'].includes(row.status)" class="task-action" title="调整任务优先级和时段" @click="schedulingTask = row"><Clock :size="14" />调度</button>
             <button
               v-if="row.status === 'failed' || row.status === 'partial_success' || row.status === 'cancelled'"
               class="task-action primary"
@@ -136,8 +153,9 @@
       </div>
       <div v-else class="table-empty">
         <ListTodo :size="42" :stroke-width="1.2" />
-        <strong>暂无任务</strong>
-        <p>任务执行后会在这里显示进度和日志</p>
+        <strong>{{ refreshing ? '正在读取任务…' : loadError ? '任务暂时无法读取' : tasks.length ? '没有符合条件的任务' : '暂无任务' }}</strong>
+        <p>{{ tasks.length ? '调整状态或任务类型，查看其他任务' : '任务执行后会在这里显示进度和日志' }}</p>
+        <el-button v-if="tasks.length && !locatedTaskId" size="small" @click="statusFilter = ''; taskTypeFilter = ''">清除筛选</el-button>
       </div>
     </div>
 
@@ -172,6 +190,7 @@
       </router-link>
     </div>
 
+    <TaskSchedulingDialog :task="schedulingTask" @close="schedulingTask = null" @changed="onRefresh" />
     <!-- Log Detail Dialog -->
     <el-dialog v-model="showLogDialog" width="640px" :show-close="true" class="log-dialog">
       <template #header>
@@ -201,6 +220,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, markRaw } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import {
@@ -213,8 +233,17 @@ import { formatFileSize, formatTimestamp } from '@shared/utils'
 import { electronApi } from '../api/ipc'
 import { scheduleUndoableAction } from '../services/undo-feedback'
 import type { Task, LogEntry } from '@shared/types'
+import TaskSchedulingDialog from '../components/TaskSchedulingDialog.vue'
 
 const tasks = ref<Task[]>([])
+const refreshing = ref(false)
+const loadError = ref('')
+let refreshVersion = 0
+const schedulingTask = ref<Task | null>(null)
+const route = useRoute()
+const locatedTaskId = computed(() => typeof route?.query?.taskId === 'string' ? route.query.taskId : '')
+const sourcePage = computed(() => route?.query?.from === 'file-backups' ? { path: '/file-backups', label: '版本备份' }
+  : route?.query?.from === 'automation-rules' ? { path: '/automation-rules', label: '规则中心' } : { path: '/transfer-plans', label: '迁移计划' })
 const statusFilter = ref('')
 const taskTypeFilter = ref('')
 const showLogDialog = ref(false)
@@ -244,12 +273,17 @@ const typeFilters = computed(() => [
   { value: 'delete', label: '删除' },
   { value: 'upload', label: '上传' },
   { value: 'download', label: '下载' },
+  { value: 'planned_transfer', label: '迁移计划' },
+  { value: 'file_backup', label: '版本备份' },
+  { value: 'file_restore', label: '版本恢复' },
+  { value: 'file_backup_prune', label: '清理版本' },
   { value: 'archive_extract', label: '解压' },
   { value: 'archive_compress', label: '压缩' },
 ])
 
 const filteredTasks = computed(() => {
   let result = tasks.value
+  if (locatedTaskId.value) return result.filter(task => task.id === locatedTaskId.value)
   if (statusFilter.value) {
     result = result.filter((t) => t.status === statusFilter.value)
   }
@@ -268,6 +302,7 @@ function taskTypeIcon(type: string) {
     case 'share':
     case 'batch_share': return markRaw(Share2)
     case 'transfer':
+    case 'planned_transfer':
     case 'batch_transfer': return markRaw(ArrowDownToLine)
     default: return markRaw(Plus)
   }
@@ -287,9 +322,21 @@ function taskStatusIcon(status: string) {
 }
 
 async function onRefresh() {
-  const result = await electronApi.listTasks()
-  if (result.success) {
-    tasks.value = result.tasks
+  const version = ++refreshVersion
+  refreshing.value = true
+  try {
+    const result = await electronApi.listTasks()
+    if (version !== refreshVersion) return
+    if (result.success) {
+      tasks.value = result.tasks
+      loadError.value = ''
+    } else {
+      loadError.value = result.error || '读取任务失败，请重试'
+    }
+  } catch (error) {
+    if (version === refreshVersion) loadError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (version === refreshVersion) refreshing.value = false
   }
 }
 
@@ -304,10 +351,13 @@ async function onRetry(task: Task) {
 }
 
 async function onCancel(task: Task) {
-  const result = await electronApi.cancelTask(task.id)
-  if (result.success) {
+  try {
+    const result = await electronApi.cancelTask(task.id)
+    if (!result.success) throw new Error(result.error || '取消失败')
     ElMessage.success('任务已取消')
-    onRefresh()
+    await onRefresh()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -388,12 +438,20 @@ async function onDelete(task: Task) {
 
 async function onViewLog(task: Task) {
   currentTaskTitle.value = task.title
-  const result = await electronApi.getTaskLogs(task.id)
-  if (result.success) {
-    currentLogs.value = result.logs
-  }
+  currentLogs.value = []
   showLogDialog.value = true
+  const version = ++logRequestVersion
+  try {
+    const result = await electronApi.getTaskLogs(task.id)
+    if (version !== logRequestVersion) return
+    if (!result.success) throw new Error(result.error || '读取任务日志失败')
+    currentLogs.value = result.logs || []
+  } catch (error) {
+    if (version === logRequestVersion) ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
 }
+
+let logRequestVersion = 0
 
 let removeTaskListener: (() => void) | undefined
 let clockTimer: ReturnType<typeof setInterval> | undefined
@@ -405,6 +463,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  refreshVersion++
   removeTaskListener?.()
   if (clockTimer) clearInterval(clockTimer)
 })
@@ -418,12 +477,17 @@ onUnmounted(() => {
   gap: var(--pl-space-4);
 }
 
+.task-location { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; border: 1px solid var(--pl-border); border-radius: var(--pl-radius-card); background: var(--pl-primary-soft); font-size: 12px; }
+.task-location span { flex: 1; min-width: 220px; overflow-wrap: anywhere; }
+.task-location a { color: var(--pl-primary); }
+
 /* ── Page header ── */
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
   padding: 16px 20px;
   background: var(--pl-surface);
   border-radius: var(--pl-radius-card);
@@ -462,6 +526,11 @@ onUnmounted(() => {
 
 .header-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  display: flex;
   align-items: center;
   justify-content: flex-end;
   flex: 1;
@@ -487,18 +556,18 @@ onUnmounted(() => {
   gap: 4px;
   padding: 6px 11px;
   border: 1px solid var(--pl-border);
-  background: #ffffff;
+  background: var(--pl-surface);
   border-radius: var(--pl-radius-sm);
   font-size: 12px;
   white-space: nowrap;
   flex: 0 0 auto;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .filter-chip:hover {
-  background: #f7f9fc;
+  background: var(--pl-hover);
   border-color: var(--pl-border-strong);
 }
 
@@ -517,7 +586,7 @@ onUnmounted(() => {
   padding: 0 4px;
   border-radius: 4px;
   background: #f2f4f7;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
 }
 
@@ -529,6 +598,7 @@ onUnmounted(() => {
 /* ── Task card ── */
 .task-card {
   flex: 1;
+  min-height: 180px;
   overflow: auto;
   background: var(--pl-surface);
   border-radius: var(--pl-radius-card);
@@ -578,10 +648,8 @@ onUnmounted(() => {
 .task-row.failed::before { background: var(--pl-danger); }
 
 .task-row:hover {
-  transform: translateY(-1px);
-  border-color: #cfdcf5;
-  background: #fbfdff;
-  box-shadow: 0 8px 20px rgba(31, 41, 55, 0.07);
+  border-color: var(--pl-border);
+  background: var(--pl-surface-subtle);
 }
 
 .task-row:focus-within {
@@ -610,9 +678,14 @@ onUnmounted(() => {
 
 .task-meta {
   margin-top: 5px;
-  color: var(--pl-text-muted);
-  font-size: 11px;
+  color: var(--pl-text-secondary);
+  font-size: var(--pl-font-xs);
+  flex-wrap: wrap;
 }
+
+.task-title { border: 0; background: transparent; padding: 0; text-align: left; font-family: inherit; cursor: pointer; }
+.task-title:hover { color: var(--pl-primary); }
+.task-error { margin-top: 6px; color: var(--pl-danger); font-size: var(--pl-font-xs); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 
 .task-row-progress {
   flex-direction: column;
@@ -623,8 +696,8 @@ onUnmounted(() => {
 .task-row-actions {
   justify-content: flex-end;
   gap: 6px;
-  opacity: 0.72;
-  transform: translateX(4px);
+  opacity: 1;
+  flex-wrap: wrap;
   transition: opacity 0.18s ease, transform 0.18s ease;
 }
 
@@ -683,16 +756,16 @@ onUnmounted(() => {
 
 /* ── Table overrides ── */
 :deep(.el-table) {
-  --el-table-border-color: #f3f4f6;
-  --el-table-row-hover-bg-color: #f9fafb;
+  --el-table-border-color: var(--pl-hover);
+  --el-table-row-hover-bg-color: var(--pl-surface-subtle);
 }
 
 :deep(.el-table th.el-table__cell) {
-  background: #f9fafb !important;
+  background: var(--pl-surface-subtle) !important;
 }
 
 :deep(.el-table td.el-table__cell) {
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--pl-hover);
 }
 
 /* ── Task name cell ── */
@@ -715,8 +788,8 @@ onUnmounted(() => {
 }
 
 .task-type-icon.rename {
-  background: #eff6ff;
-  color: #3b82f6;
+  background: var(--pl-primary-soft);
+  color: var(--pl-primary);
 }
 
 .task-type-icon.move {
@@ -730,7 +803,7 @@ onUnmounted(() => {
 }
 
 .task-type-icon.copy {
-  background: #fffbeb;
+  background: var(--pl-surface);
   color: #f59e0b;
 }
 
@@ -767,7 +840,7 @@ onUnmounted(() => {
   padding: 2px 6px;
   border-radius: 5px;
   background: #f1f4f8;
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   color: var(--pl-text-secondary);
 }
 
@@ -798,7 +871,7 @@ onUnmounted(() => {
 }
 
 .task-status-badge.cancelled {
-  background: #f3f4f6;
+  background: var(--pl-hover);
   color: var(--pl-text-secondary);
 }
 
@@ -812,8 +885,8 @@ onUnmounted(() => {
 }
 
 .task-status-badge.pending {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
 }
 
 .task-status-badge.paused {
@@ -838,7 +911,7 @@ onUnmounted(() => {
 .progress-bar-bg {
   flex: 1;
   height: 6px;
-  background: #f3f4f6;
+  background: var(--pl-hover);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -872,7 +945,7 @@ onUnmounted(() => {
 /* ── Cells ── */
 .cell-muted {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 /* ── Action buttons ── */
@@ -892,14 +965,14 @@ onUnmounted(() => {
   border: none;
   background: transparent;
   border-radius: 6px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .action-btn:hover {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
 }
 
 .action-btn.danger:hover {
@@ -914,12 +987,12 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 48px 0;
-  color: #d1d5db;
+  color: var(--pl-border);
 }
 
 .table-empty p {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 /* ── Stats bar ── */
@@ -928,9 +1001,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 16px;
   padding: 10px 16px;
-  background: #fbfcfe;
+  background: var(--pl-surface-subtle);
   border-radius: 10px;
-  border: 1px solid #e4e9f1;
+  border: 1px solid var(--pl-border);
 }
 
 .stat-chip {
@@ -938,7 +1011,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--pl-text-secondary);
 }
 
 .stat-chip.success { color: #22c55e; }
@@ -952,27 +1025,27 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #3b82f6;
+  color: var(--pl-primary);
   text-decoration: none;
   cursor: pointer;
   transition: color 0.15s;
 }
 
 .stat-link:hover {
-  color: #2563eb;
+  color: var(--pl-primary-hover);
 }
 
 /* ── Log dialog ── */
 .dialog-header h2 {
   font-size: 18px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--pl-text);
   margin-bottom: 4px;
 }
 
 .dialog-header p {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .log-content {
@@ -986,12 +1059,12 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 48px 0;
-  color: #d1d5db;
+  color: var(--pl-border);
 }
 
 .no-log p {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
 }
 
 .log-list {
@@ -1006,7 +1079,7 @@ onUnmounted(() => {
   gap: 10px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: #f9fafb;
+  background: var(--pl-surface-subtle);
 }
 
 .log-item.error {
@@ -1014,12 +1087,12 @@ onUnmounted(() => {
 }
 
 .log-item.warn {
-  background: #fffbeb;
+  background: var(--pl-surface);
 }
 
 .log-time {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--pl-text-muted);
   white-space: nowrap;
   min-width: 120px;
 }
@@ -1028,10 +1101,10 @@ onUnmounted(() => {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   font-weight: 600;
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--pl-hover);
+  color: var(--pl-text-secondary);
   white-space: nowrap;
 }
 
@@ -1041,19 +1114,19 @@ onUnmounted(() => {
 }
 
 .log-level-badge.warn {
-  background: #fffbeb;
+  background: var(--pl-surface);
   color: #f59e0b;
 }
 
 .log-level-badge.info {
-  background: #eff6ff;
-  color: #3b82f6;
+  background: var(--pl-primary-soft);
+  color: var(--pl-primary);
 }
 
 .log-message {
   flex: 1;
   font-size: 13px;
-  color: #374151;
+  color: var(--pl-text);
   word-break: break-all;
 }
 

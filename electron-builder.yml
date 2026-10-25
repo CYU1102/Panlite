@@ -4,7 +4,10 @@ directories:
   output: release
   buildResources: build
 files:
-  - "dist/**/*"
+  - "dist/main/**/*"
+  - "dist/renderer/**/*"
+  # The BrowserWindow icon is resolved from app.getAppPath() at runtime.
+  - "build/icon.png"
   - "package.json"
   - "!**/*.map"
   # Native modules often ship their full C/C++ source and build intermediates.
@@ -53,8 +56,9 @@ win:
   target:
     - nsis
   artifactName: "${productName}-Setup-${version}.${ext}"
-  # icon: build/icon.png  # 暂时使用默认图标
-  signAndEditExecutable: false
+  icon: build/icon.ico
+  signAndEditExecutable: true
+  signExecutable: false
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

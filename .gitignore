@@ -1,10 +1,28 @@
-node_modules/
-dist/
-release/
-release-next*/
-coverage/
+/node_modules/
+/dist/
+/coverage/
+/output/
+/release*/
+/PanLiteApp/
+/resources/
+/.claude/
+
+# Electron's unpacked runtime and local installer artifacts.
+/PanLite.exe
+/PanLiteApp.exe
+/Uninstall PanLite*.exe
+/resources.pak
+/snapshot_blob.bin
+/v8_context_snapshot.bin
+/uninstallerIcon.ico
+/vk_swiftshader.dll
+/vk_swiftshader_icd.json
+/vulkan-1.dll
+
 *.db
 *.log
 .env
+.env.*
+!.env.example
 .DS_Store
 Thumbs.db

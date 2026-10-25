@@ -2,10 +2,10 @@
   <div class="resource-browser">
     <!-- 左侧资源站列表 -->
     <div class="sidebar" :class="{ collapsed: sidebarCollapsed }">
-      <div class="sidebar-toggle" @click="sidebarCollapsed = !sidebarCollapsed">
+      <button type="button" class="sidebar-toggle" :aria-expanded="!sidebarCollapsed" :aria-label="sidebarCollapsed ? '展开搜索来源' : '收起搜索来源'" @click="sidebarCollapsed = !sidebarCollapsed">
         <PanelLeftClose :size="16" v-if="!sidebarCollapsed" />
         <PanelLeftOpen :size="16" v-else />
-      </div>
+      </button>
       <div v-show="!sidebarCollapsed" class="sidebar-content">
         <div class="sidebar-header">
           <div>
@@ -30,20 +30,25 @@
               <span>{{ group.label }}</span>
               <small>{{ group.items.length }}</small>
             </div>
-          <div
+          <button
             v-for="site in group.items"
             :key="site.id"
             class="site-item"
+            type="button"
+            :aria-pressed="activeSite?.id === site.id"
             :class="{ active: activeSite?.id === site.id }"
             @click="selectSite(site)"
           >
             <div class="site-avatar">{{ site.name.slice(0, 1).toUpperCase() }}</div>
             <div class="site-copy">
-              <span class="site-name">{{ site.name }}</span>
+              <span class="site-name">
+                {{ site.name }}
+                <small v-if="site.riskLevel === 'high'" class="risk-badge">高风险来源</small>
+              </span>
               <span class="site-platform">{{ site.capabilities.slice(0, 2).join(' · ') || site.platform || '资源网站' }}</span>
             </div>
             <ChevronRight class="site-arrow" :size="15" />
-          </div>
+          </button>
           </section>
           <div v-if="sites.length === 0" class="empty-hint">
             <Layers3 :size="28" :stroke-width="1.4" />
@@ -57,6 +62,12 @@
 
     <!-- 右侧浏览器 -->
     <div class="browser-area">
+      <ShareLinkBrowser
+        v-if="openedLink" :key="openedLink.url"
+        :url="openedLink.url" :title="openedLink.title" :password="openedLink.password"
+        @close="closeShareBrowser" @copy="copyOpenedLink"
+      />
+      <div v-show="!openedLink" class="resource-page">
       <div class="browser-context">
         <div class="context-copy">
           <div class="context-icon"><Search :size="16" /></div>
@@ -66,8 +77,7 @@
           </div>
         </div>
         <span v-if="activeSite" class="context-site">
-          <span class="online-dot"></span>
-          已连接 · {{ activeSite.platform || '网页来源' }}
+          {{ loadError ? '加载失败' : loading ? '加载中' : '网页来源' }} · {{ activeSite.platform || '资源站' }}
         </span>
       </div>
       <div class="browser-toolbar">
@@ -98,17 +108,27 @@
       <div class="webview-container" v-loading="loading">
         <webview
           v-if="activeSite"
+          :key="resourcePartition"
           ref="webviewRef"
           :src="activeSite.url"
+          :partition="resourcePartition"
+          allowpopups
           class="webview"
           @did-start-loading="onStartLoading"
           @did-stop-loading="onStopLoading"
+          @did-fail-load="onFailLoad"
           @did-navigate="onNavigate"
           @did-navigate-in-page="onNavigateInPage"
           @dom-ready="onDomReady"
           @ipc-message="onIpcMessage"
         />
-        <div v-else class="welcome">
+        <div v-if="activeSite && loadError" class="load-error">
+          <AlertTriangle :size="32" />
+          <strong>网页加载失败</strong>
+          <span>{{ loadError }}</span>
+          <el-button size="small" type="primary" @click="openExternalSite(currentUrl || activeSite.url)">用系统浏览器打开</el-button>
+        </div>
+        <div v-else-if="!activeSite" class="welcome">
           <div class="welcome-icon"><Globe :size="38" :stroke-width="1.3" /></div>
           <span class="welcome-kicker">内置资源浏览器</span>
           <h2>选择一个搜索来源</h2>
@@ -119,6 +139,7 @@
             <span><Sparkles :size="13" /> 提取链接</span>
           </div>
         </div>
+      </div>
       </div>
     </div>
 
@@ -140,7 +161,7 @@
               <FolderDown :size="14" />
               转存
             </el-button>
-            <el-button size="small" @click="openLink(link.url)">
+            <el-button size="small" title="在当前页打开分享链接" aria-label="在当前页打开分享链接" @click="openShareLink(link)">
               <ExternalLink :size="14" />
             </el-button>
             <el-button size="small" @click="copyLink(link.url)">
@@ -169,12 +190,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
-import { RefreshCw, ArrowLeft, ArrowRight, Globe, Link, ExternalLink, Copy, PanelLeftClose, PanelLeftOpen, FolderDown, Search, ChevronRight, Settings2, Layers3, MousePointerClick, Sparkles } from 'lucide-vue-next'
+import { RefreshCw, ArrowLeft, ArrowRight, Globe, Link, ExternalLink, Copy, PanelLeftClose, PanelLeftOpen, FolderDown, Search, ChevronRight, Settings2, Layers3, MousePointerClick, Sparkles, AlertTriangle } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
+import { getShareBrowserUrl } from '@shared/share-browser'
+import { getResourceShareTarget, RESOURCE_BROWSER_PARTITION_PREFIX, type ResourceShareOpen } from '@shared/resource-browser'
 import { useAppStore } from '../stores/app'
 import TransferDialog from '../components/TransferDialog.vue'
+import ShareLinkBrowser from '../components/ShareLinkBrowser.vue'
 import type { TransferLinkInput } from '@shared/types'
 
 interface Site {
@@ -211,12 +235,18 @@ const siteGroups = computed(() => {
 const activeSite = ref<Site | null>(null)
 const currentUrl = ref('')
 const loading = ref(false)
+const loadError = ref('')
 const extracting = ref(false)
 const canGoBack = ref(false)
 const canGoForward = ref(false)
 const webviewRef = ref<any>(null)
 const showExtractedLinks = ref(false)
 const extractedLinks = ref<ExtractedLink[]>([])
+const openedLink = ref<ExtractedLink | null>(null)
+const resourcePartition = ref(`${RESOURCE_BROWSER_PARTITION_PREFIX}${crypto.randomUUID()}`)
+let returnToExtractedLinks = false
+let pendingResourceShare: ResourceShareOpen | null = null
+let resourceDisposed = false
 const sidebarCollapsed = ref(false)
 const showTransfer = ref(false)
 const transferLinks = ref<TransferLinkInput[]>([])
@@ -258,17 +288,28 @@ function parseCapabilities(value: unknown): string[] {
 }
 
 function selectSite(site: Site) {
+  openedLink.value = null
+  pendingResourceShare = null
+  resourcePartition.value = `${RESOURCE_BROWSER_PARTITION_PREFIX}${crypto.randomUUID()}`
   activeSite.value = site
   currentUrl.value = site.url
+  loadError.value = ''
 }
 
 function onStartLoading() {
   loading.value = true
+  loadError.value = ''
 }
 
 function onStopLoading() {
   loading.value = false
   updateNavState()
+}
+
+function onFailLoad(event: { errorCode?: number; errorDescription?: string; isMainFrame?: boolean }) {
+  if (event.errorCode === -3 || event.isMainFrame === false) return
+  loading.value = false
+  loadError.value = event.errorDescription || '站点拒绝连接或暂时不可用'
 }
 
 function onNavigate(event: any) {
@@ -283,6 +324,9 @@ function onNavigateInPage(event: any) {
 
 function onDomReady() {
   updateNavState()
+  const pending = pendingResourceShare
+  pendingResourceShare = null
+  if (pending) onResourceShareOpen(pending)
 }
 
 function onIpcMessage(event: { channel: string; args: unknown[] }) {
@@ -297,8 +341,8 @@ function onIpcMessage(event: { channel: string; args: unknown[] }) {
 function updateNavState() {
   const wv = webviewRef.value
   if (wv) {
-    canGoBack.value = wv.canGoBack()
-    canGoForward.value = wv.canGoForward()
+    try { canGoBack.value = wv.canGoBack(); canGoForward.value = wv.canGoForward() }
+    catch { canGoBack.value = false; canGoForward.value = false }
   }
 }
 
@@ -320,8 +364,45 @@ function extractLinks() {
   webviewRef.value?.send('extract-links')
 }
 
-function openLink(url: string) {
-  electronApi.openExternal(url)
+function openShareLink(link: ExtractedLink) {
+  const url = getShareBrowserUrl(link.url)
+  if (!url) { ElMessage.error('分享链接无效，仅支持 HTTP(S) 链接'); return }
+  returnToExtractedLinks = showExtractedLinks.value
+  openedLink.value = { ...link, url }
+  showExtractedLinks.value = false
+}
+
+function closeShareBrowser() {
+  openedLink.value = null
+  showExtractedLinks.value = returnToExtractedLinks
+}
+
+function onResourceShareOpen(payload: ResourceShareOpen) {
+  if (resourceDisposed || !payload || !activeSite.value || !webviewRef.value || !Number.isInteger(payload.guestId)) return
+  const share = getResourceShareTarget(payload.url)
+  if (!share) return
+  let guestId: number
+  try { guestId = webviewRef.value.getWebContentsId() } catch { pendingResourceShare = payload; return }
+  if (payload.guestId !== guestId) return
+  openShareLink({ title: '网盘分享', ...share })
+}
+const stopResourceShareListener = electronApi.onResourceShareOpen(onResourceShareOpen)
+onBeforeUnmount(() => { resourceDisposed = true; pendingResourceShare = null; stopResourceShareListener() })
+
+async function copyOpenedLink() {
+  if (!openedLink.value) return
+  const link = openedLink.value
+  try {
+    await navigator.clipboard.writeText(link.url + (link.password ? ` 提取码: ${link.password}` : ''))
+    ElMessage.success('已复制链接')
+  } catch { ElMessage.error('复制失败') }
+}
+
+async function openExternalSite(url: string) {
+  try {
+    const result = await electronApi.openExternal(url)
+    if (!result.success) ElMessage.error(result.error || '打开系统浏览器失败')
+  } catch (error) { ElMessage.error('打开系统浏览器失败: ' + String(error)) }
 }
 
 function copyLink(url: string) {
@@ -382,13 +463,15 @@ onMounted(() => {
 .sidebar.collapsed { width: 42px; }
 
 .sidebar-toggle {
+  border: 0;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 42px;
   height: 42px;
   cursor: pointer;
-  color: var(--pl-text-muted);
+  color: var(--pl-text-secondary);
   border-bottom: 1px solid var(--pl-border);
   flex-shrink: 0;
   transition: background 0.2s, color 0.2s;
@@ -410,7 +493,7 @@ onMounted(() => {
   display: block;
   margin-bottom: 3px;
   color: var(--pl-text-muted);
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   font-weight: 650;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -437,7 +520,7 @@ onMounted(() => {
   border-radius: 10px;
   color: var(--pl-primary-hover);
   background: var(--pl-primary-soft);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 700;
 }
 
@@ -471,7 +554,7 @@ onMounted(() => {
   justify-content: space-between;
   padding: 5px 7px 6px;
   color: var(--pl-text-muted);
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
 }
@@ -481,11 +564,15 @@ onMounted(() => {
   border-radius: 9px;
   color: var(--pl-primary-hover);
   background: var(--pl-primary-soft);
-  font-size: 10px;
+  font-size: var(--pl-font-xs);
   text-align: center;
 }
 
 .site-item {
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -503,7 +590,7 @@ onMounted(() => {
 .site-item:hover {
   transform: translateX(2px);
   border-color: #d5e1f7;
-  background: #f8fbff;
+  background: var(--pl-hover);
   color: var(--pl-primary-hover);
 }
 
@@ -532,7 +619,8 @@ onMounted(() => {
 }
 .site-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .site-name { font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.site-platform { font-size: 10px; color: var(--pl-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.risk-badge { margin-left: 4px; color: var(--el-color-danger); font-size: 10px; font-weight: 650; }
+.site-platform { font-size: var(--pl-font-xs); color: var(--pl-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .site-arrow { flex-shrink: 0; color: #c0c8d4; transition: transform 0.16s ease, color 0.16s ease; }
 .site-item:hover .site-arrow,
 .site-item.active .site-arrow { transform: translateX(2px); color: var(--pl-primary); }
@@ -551,6 +639,7 @@ onMounted(() => {
 .empty-hint strong { color: var(--pl-text); font-size: 13px; }
 
 .browser-area { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--pl-page-bg); }
+.resource-page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
 .browser-context {
   display: flex;
@@ -572,7 +661,7 @@ onMounted(() => {
   color: var(--pl-primary);
   background: var(--pl-primary-soft);
 }
-.context-kicker { display: block; font-size: 10px; color: var(--pl-text-muted); font-weight: 650; letter-spacing: 0.06em; }
+.context-kicker { display: block; font-size: var(--pl-font-xs); color: var(--pl-text-muted); font-weight: 650; letter-spacing: 0.06em; }
 .context-title { display: block; margin-top: 2px; font-size: 15px; font-weight: 700; color: var(--pl-text); }
 .context-site {
   display: inline-flex;
@@ -584,9 +673,23 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   border-radius: 8px;
-  font-size: 11px;
+  font-size: var(--pl-font-xs);
   color: var(--pl-text-secondary);
   background: #f3f6fa;
+}
+.load-error {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--pl-text-secondary);
+  background: var(--pl-surface);
 }
 .online-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--pl-success); box-shadow: 0 0 0 3px rgba(22, 160, 133, 0.12); }
 
@@ -609,17 +712,17 @@ onMounted(() => {
 
 .welcome { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 10px; padding: 32px; color: var(--pl-primary); text-align: center; }
 .welcome-icon { display: flex; align-items: center; justify-content: center; width: 78px; height: 78px; margin-bottom: 4px; border-radius: 24px; background: linear-gradient(145deg, #e7f0ff, #f4f8ff); box-shadow: inset 0 0 0 1px #dbe7fb; }
-.welcome-kicker { color: var(--pl-primary); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
+.welcome-kicker { color: var(--pl-primary); font-size: var(--pl-font-xs); font-weight: 700; letter-spacing: 0.08em; }
 .welcome h2 { font-size: 20px; color: var(--pl-text); margin: 0; }
 .welcome p { max-width: 420px; font-size: 13px; color: var(--pl-text-secondary); margin: 0; line-height: 1.65; }
 .welcome-features { gap: 8px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
-.welcome-features span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--pl-border); border-radius: 8px; color: var(--pl-text-secondary); background: var(--pl-surface); font-size: 11px; }
+.welcome-features span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--pl-border); border-radius: 8px; color: var(--pl-text-secondary); background: var(--pl-surface); font-size: var(--pl-font-xs); }
 
 .no-links { padding: 44px 24px; text-align: center; color: var(--pl-text-muted); }
 .links-list { max-height: 400px; overflow-y: auto; padding-right: 2px; }
 .link-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px; border: 1px solid var(--pl-border); border-radius: 11px; margin-bottom: 8px; background: var(--pl-surface-subtle); transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease; }
 .link-item:hover { transform: translateY(-1px); border-color: #bed0f4; background: var(--pl-surface); box-shadow: 0 7px 18px rgba(31, 41, 55, 0.07); }
-.link-index { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; color: var(--pl-primary); background: var(--pl-primary-soft); font-size: 11px; font-weight: 700; }
+.link-index { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; color: var(--pl-primary); background: var(--pl-primary-soft); font-size: var(--pl-font-xs); font-weight: 700; }
 .link-info { flex: 1; min-width: 0; }
 .link-title { display: block; font-size: 14px; font-weight: 600; color: var(--pl-text); margin-bottom: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .link-url { display: block; font-size: 12px; color: var(--pl-text-secondary); margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

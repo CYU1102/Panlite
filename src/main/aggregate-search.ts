@@ -7,7 +7,8 @@ import { getActiveSearchSources, getActiveCrawlerSources, getActiveTgChannels, g
 import { searchCrawlerSource, type CrawlerSourceConfig } from './crawler-engine'
 import { searchTgChannel, type TgChannelConfig } from './tg-crawler'
 import { searchKk, type KkSearchConfig } from './kk-crawler'
-import { searchWithBrowser, type BrowserCrawlerSource } from './browser-crawler'
+import { searchWithBrowser } from './browser-crawler'
+import { searchApi } from './search-engine'
 import log from 'electron-log'
 
 // ── 搜索结果类型 ──
@@ -35,26 +36,18 @@ export async function aggregateSearch(keyword: string): Promise<AggregateSearchR
   log.info(`[AggregateSearch] Searching for: ${keyword}`)
 
   // 收集所有需要搜索的源
-  const searchSources: BrowserCrawlerSource[] = []
-  const crawlerSources = getActiveSearchSources()
-  for (const s of crawlerSources) {
-    searchSources.push({ name: s.name, url: s.url, platform: s.platform, maxCount: s.max_count || 20 })
-  }
+  const searchSources = getActiveSearchSources()
 
-  if (searchSources.length === 0) {
-    log.warn('[AggregateSearch] No search sources configured')
-    return []
-  }
-
-  log.info(`[AggregateSearch] Searching ${searchSources.length} sources with browser crawler`)
+  // 普通资源站为空时仍需继续搜索独立配置的爬虫、TG 和 KK 源。
+  log.info(`[AggregateSearch] Searching ${searchSources.length} ordinary sources`)
 
   // 并发用浏览器搜索（最多同时 3 个，避免卡死）
   const batchSize = 3
   for (let i = 0; i < searchSources.length; i += batchSize) {
     const batch = searchSources.slice(i, i + batchSize)
-    const promises = batch.map(source =>
-      searchWithBrowser(source, keyword)
-    )
+    const promises = batch.map(source => source.type === 'api'
+      ? searchApi(source, keyword)
+      : searchWithBrowser({ name: source.name, url: source.url, platform: source.platform, maxCount: source.max_count || 20 }, keyword))
     const results = await Promise.allSettled(promises)
 
     for (const result of results) {

@@ -9,9 +9,11 @@ await rm(resolve(root, 'dist/main'), { recursive: true, force: true })
 
 const external = [
   'electron',
+  'electron-updater',
   'better-sqlite3',
   'archiver',
   'node-7z',
+  '7zip-bin',
   'node-unrar-js',
   'pdf2json',
   'tar',

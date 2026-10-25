@@ -1,0 +1,117 @@
+name: Windows quality and package smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      baseline_tag:
+        description: 'Previous release tag for old-data upgrade/rollback'
+        required: false
+        default: 'v0.2.2'
+      baseline_asset:
+        description: 'Exact previous installer filename (no wildcards)'
+        required: false
+        default: 'PanLite-Setup-0.2.2.exe'
+      baseline_sha256:
+        description: 'Expected SHA-256 of that previous installer'
+        required: false
+        default: '810297db7e0bbe788e1fffe3f48e40be2d583c2b8f45bc860cd0a180575f41bc'
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check:engines
+      - run: npm run lint
+      - run: npm run build
+      - name: Run complete regression suite with the application runtime
+        run: npm run test:electron -- --reporter=default --reporter=json --outputFile.json=dist/reports/tests.json
+      - name: Verify inline login with a hidden synthetic Electron guest
+        run: node scripts/smoke-inline-login.mjs dist/reports/inline-login
+      - name: Verify resource share popups stay in the application
+        run: node scripts/smoke-resource-share.mjs dist/reports/resource-share
+      - name: Verify bounded file table with the actual production component
+        run: node scripts/smoke-file-table.mjs output/ci-file-table
+      - run: npm run test:task-coverage
+      - name: Audit locked dependencies
+        run: npm audit --audit-level=high --json > dist/reports/dependency-audit.json
+      - name: Save coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PanLite-task-coverage
+          path: |
+            coverage/**
+            dist/reports/**
+            output/ci-file-table/*.json
+            output/ci-file-table/*.png
+          if-no-files-found: warn
+
+  package-smoke:
+    needs: quality
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Capture immutable release source
+        run: node scripts/write-build-provenance.mjs release/build-provenance.json --require-clean
+      - run: npm run pack
+      - run: node scripts/verify-package-content.mjs
+      - run: node scripts/verify-packaged-native.cjs
+      - run: node scripts/verify-packaged-imports.cjs
+      - name: Verify packaged benchmark preserves pending transfers
+        run: node scripts/smoke-benchmark-queue.mjs
+      - name: Download explicit previous-version baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_TAG: ${{ inputs.baseline_tag || 'v0.2.2' }}
+          BASELINE_ASSET: ${{ inputs.baseline_asset || 'PanLite-Setup-0.2.2.exe' }}
+          BASELINE_SHA256: ${{ inputs.baseline_sha256 || '810297db7e0bbe788e1fffe3f48e40be2d583c2b8f45bc860cd0a180575f41bc' }}
+        run: |
+          if ($env:BASELINE_TAG -notmatch '^v\d+\.\d+\.\d+$' -or $env:BASELINE_ASSET -notmatch '^PanLite-Setup-\d+\.\d+\.\d+\.exe$' -or $env:BASELINE_SHA256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Supply an exact previous tag, installer filename and SHA-256 together.' }
+          $baselineDirectory = Join-Path $env:RUNNER_TEMP 'panlite-upgrade-baseline'
+          gh release download $env:BASELINE_TAG --repo CYU1102/Panlite --pattern $env:BASELINE_ASSET --dir $baselineDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Previous installer download failed.' }
+          $baseline = Join-Path $baselineDirectory $env:BASELINE_ASSET
+          if ((Get-FileHash -LiteralPath $baseline -Algorithm SHA256).Hash -ne $env:BASELINE_SHA256) { throw 'Previous installer checksum does not match.' }
+          "PANLITE_BASELINE_INSTALLER=$baseline" >> $env:GITHUB_ENV
+          "PANLITE_BASELINE_SHA256=$env:BASELINE_SHA256" >> $env:GITHUB_ENV
+          "PANLITE_BASELINE_VERSION=$($env:BASELINE_TAG.Substring(1))" >> $env:GITHUB_ENV
+      - name: Install, launch, optionally upgrade and restore, uninstall
+        run: |
+          if ($env:PANLITE_BASELINE_INSTALLER) {
+            npm run test:install -- -BaselineInstaller $env:PANLITE_BASELINE_INSTALLER -BaselineSha256 $env:PANLITE_BASELINE_SHA256 -BaselineVersion $env:PANLITE_BASELINE_VERSION
+          } else {
+            npm run test:install
+            'Previous-version upgrade/rollback not executed: this run proves clean installation only.' >> $env:GITHUB_STEP_SUMMARY
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Installation acceptance failed.' }
+      - run: npm run release:notes
+      - run: node scripts/write-build-provenance.mjs release/build-provenance.json --require-clean --verify
+      - run: npm run checksums
+      - name: Save unsigned installer and smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PanLite-windows-unsigned-smoke
+          path: |
+            release/*.exe
+            release/*.json
+            release/*.txt
+            release/*.md
+            dist/reports/**
+          if-no-files-found: warn

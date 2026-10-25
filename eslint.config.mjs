@@ -5,7 +5,10 @@ import vue from 'eslint-plugin-vue'
 
 export default [
   {
-    ignores: ['dist/**', 'release/**', 'node_modules/**', 'coverage/**', 'scripts/screen.png'],
+    ignores: [
+      'node_modules/**', 'dist/**', 'coverage/**', 'output/**', 'release*/**',
+      'PanLiteApp/**', 'resources/**', 'scripts/screen.png',
+    ],
   },
   {
     files: ['**/*.{js,mjs,cjs}'],

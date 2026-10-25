@@ -100,6 +100,10 @@ function normalizeCitations(value: unknown): AiCitation[] | undefined {
     return {
       documentId: requireId(citation.documentId, '引用文档 ID'),
       documentName: String(citation.documentName || '').trim().slice(0, 500),
+      chunkId: citation.chunkId == null ? undefined : requireId(citation.chunkId, '引用片段 ID'),
+      sourceSha256: citation.sourceSha256 && /^[a-f0-9]{64}$/i.test(citation.sourceSha256) ? citation.sourceSha256 : undefined,
+      startSeconds: Number.isFinite(citation.startSeconds) && citation.startSeconds! >= 0 ? citation.startSeconds : undefined,
+      endSeconds: Number.isFinite(citation.endSeconds) && citation.endSeconds! >= (citation.startSeconds || 0) ? citation.endSeconds : undefined,
       pageNumber: citation.pageNumber,
       section: citation.section == null ? undefined : String(citation.section).slice(0, 500),
       quote,
@@ -240,6 +244,35 @@ export function appendAiConversationMessage(input: AiConversationMessageAppendIn
     getDb().prepare('UPDATE ai_conversations SET updated_at = ? WHERE id = ?').run(now, conversationId)
   })()
   return message
+}
+
+/** Publish a regenerated answer only while the answer it replaces is still the
+ * last message. Failure, cancellation, deletion, or a newer question must never
+ * erase the previous answer or attach a response to a different conversation. */
+export function replaceAiConversationAssistant(
+  input: AiConversationMessageAppendInput & { messageId: string; documentIds?: string[] },
+): AiConversationMessage {
+  const conversationId = requireId(input.conversationId, '会话 ID')
+  const messageId = requireId(input.messageId, '消息 ID')
+  const { role, content } = normalizeAiConversationMessage(input.role, input.content)
+  if (role !== 'assistant') throw new TypeError('只能替换助手回答')
+  const citations = normalizeCitations(input.citations)
+  const documentIds = input.documentIds === undefined ? undefined : normalizeAiConversationDocumentIds(input.documentIds)
+  const now = Date.now()
+  return getDb().transaction(() => {
+    if (!findConversation(conversationId)) throw new Error('会话不存在或已被删除')
+    const latest = getDb().prepare(`
+      SELECT * FROM ai_conversation_messages WHERE conversation_id = ? ORDER BY message_index DESC LIMIT 1
+    `).get(conversationId) as MessageRow | undefined
+    if (latest?.id !== messageId || latest.role !== 'assistant') throw new Error('会话消息已经变化，已保留原回答，请重新生成')
+    getDb().prepare('UPDATE ai_conversation_messages SET content = ?, citations = ?, created_at = ? WHERE id = ? AND conversation_id = ?')
+      .run(content, citations ? JSON.stringify(citations) : null, now, messageId, conversationId)
+    if (documentIds !== undefined) {
+      getDb().prepare('UPDATE ai_conversations SET document_ids = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(documentIds), now, conversationId)
+    } else getDb().prepare('UPDATE ai_conversations SET updated_at = ? WHERE id = ?').run(now, conversationId)
+    return { id: messageId, conversationId, role, content, citations, createdAt: now }
+  })()
 }
 
 export function truncateAiConversationFromMessage(conversationIdValue: string, messageIdValue: string): boolean {

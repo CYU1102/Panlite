@@ -3,12 +3,20 @@ import { quarkAdapter } from './quark'
 import { baiduAdapter } from './baidu'
 import { ucAdapter } from './uc'
 import { xunleiAdapter } from './xunlei'
+import { webdavAdapter } from './webdav'
+import { aliyunAdapter } from './aliyun'
+import { pan123Adapter } from './pan123'
+import { aliyunWebAdapter } from './aliyun-web'
 
 const adapters: Record<string, DriveAdapter> = {
   quark: quarkAdapter,
   baidu: baiduAdapter,
   uc: ucAdapter,
   xunlei: xunleiAdapter,
+  webdav: webdavAdapter,
+  aliyun: aliyunAdapter,
+  pan123: pan123Adapter,
+  aliyun_web: aliyunWebAdapter,
 }
 
 /**

@@ -1,4 +1,4 @@
-import { net } from 'electron'
+import { fetchSearchText } from './crawler-utils'
 import type { SearchResultItem } from '../shared/types'
 import { PAN_PATTERNS } from '../shared/constants'
 import { getActiveSearchSources, getActiveTgChannels, getActiveCrawlerSources, type DbSearchSource, type DbTgChannel, type DbCrawlerSource } from './db'
@@ -20,49 +20,7 @@ const ALL_PAN_PATTERN = /https?:\/\/(?:pan\.quark\.cn\/s\/[a-zA-Z0-9]+|pan\.baid
 
 // ── 网络请求 ──
 
-async function fetchUrl(url: string, options: { method?: string; headers?: Record<string, string>; body?: string; timeout?: number } = {}): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const method = options.method || 'GET'
-    const timeout = options.timeout || 10000
-
-    const request = net.request({ method, url })
-    request.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-
-    if (options.headers) {
-      for (const [k, v] of Object.entries(options.headers)) {
-        request.setHeader(k, v)
-      }
-    }
-
-    if (options.body) {
-      request.setHeader('Content-Length', String(Buffer.byteLength(options.body)))
-      request.write(options.body)
-    }
-
-    const timer = setTimeout(() => {
-      request.abort()
-      reject(new Error('Request timeout'))
-    }, timeout)
-
-    let responseData = ''
-    request.on('response', (response) => {
-      response.on('data', (chunk) => { responseData += chunk.toString() })
-      response.on('end', () => {
-        clearTimeout(timer)
-        resolve(responseData)
-      })
-      response.on('error', (err) => {
-        clearTimeout(timer)
-        reject(err)
-      })
-    })
-    request.on('error', (err) => {
-      clearTimeout(timer)
-      reject(err)
-    })
-    request.end()
-  })
-}
+const fetchUrl = fetchSearchText
 
 // ── 工具函数 ──
 
@@ -118,8 +76,11 @@ async function searchApi(source: DbSearchSource, keyword: string): Promise<Searc
       const qs = new URLSearchParams(params).toString()
       if (qs) requestUrl += (requestUrl.includes('?') ? '&' : '?') + qs
     } else {
-      if (!headers['Content-Type']) headers['Content-Type'] = 'application/x-www-form-urlencoded'
-      body = new URLSearchParams(params).toString()
+      const contentType = Object.entries(headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1]
+      if (!contentType) headers['Content-Type'] = 'application/x-www-form-urlencoded'
+      body = contentType?.toLowerCase().includes('application/json')
+        ? JSON.stringify(params)
+        : new URLSearchParams(params).toString()
     }
 
     const responseText = await fetchUrl(requestUrl, { method, headers, body })
@@ -162,22 +123,6 @@ async function searchApi(source: DbSearchSource, keyword: string): Promise<Searc
 }
 
 // ── HTML 类型搜索 ──
-
-function buildXPathSelector(tag: string, classStr: string): string {
-  const classes = classStr.split(' ').filter(Boolean)
-  if (classes.length === 0) return `//${tag}`
-  const conditions = classes.map((c) => `contains(concat(' ', normalize-space(@class), ' '), ' ${c} ')`).join(' and ')
-  return `//${tag}[${conditions}]`
-}
-
-function extractTextFromHtml(html: string, tag: string, classStr: string): string {
-  // 简化的 HTML 解析：用正则提取
-  const classPattern = classStr.split(' ').filter(Boolean).map((c) => `(?=.*\\b${c}\\b)`).join('')
-  const regex = new RegExp(`<${tag}[^>]*class="[^"]*${classPattern}[^"]*"[^>]*>([\\s\\S]*?)</${tag}>`, 'i')
-  const match = html.match(regex)
-  if (match) return match[1].replace(/<[^>]+>/g, '').trim()
-  return ''
-}
 
 async function searchHtml(source: DbSearchSource, keyword: string): Promise<SearchResultItem[]> {
   try {

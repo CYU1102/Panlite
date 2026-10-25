@@ -1,6 +1,6 @@
 <template>
   <div class="security-page">
-    <div class="page-header">
+    <div class="page-header pl-page-heading">
       <div class="header-info">
         <div class="header-icon"><ShieldCheck :size="21" :stroke-width="1.6" /></div>
         <div>

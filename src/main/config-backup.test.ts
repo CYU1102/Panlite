@@ -6,6 +6,7 @@ import {
   parseConfigBackup,
   previewConfigBackupImport,
   serializeConfigBackup,
+  calculateBackupChecksum,
 } from './config-backup'
 
 function createSchema(database: Database.Database): void {
@@ -122,5 +123,47 @@ describe('config backup', () => {
     expect(() => importConfigBackup(backup, { mode: 'replace' }, target)).toThrow(/rejected by test/)
     expect(target.prepare('SELECT value FROM settings WHERE key = ?').get('requestDelayMs')).toEqual({ value: '100' })
     expect(target.prepare('SELECT COUNT(*) AS count FROM accounts').get()).toEqual({ count: 0 })
+  })
+
+  it('previews only settings that replace mode can actually delete', () => {
+    const now = Date.now()
+    target.prepare('INSERT INTO settings VALUES (?, ?, ?, ?)').run('quarkPageSize', '100', 0, now)
+    target.prepare('INSERT INTO settings VALUES (?, ?, ?, ?)').run('aliyunClientSecret', 'encrypted-fixture', 1, now)
+    target.prepare('INSERT INTO settings VALUES (?, ?, ?, ?)').run('theme', 'dark', 0, now)
+    const backup = createConfigBackup(source)
+    const preview = previewConfigBackupImport(backup, { mode: 'replace' }, target)
+    expect(preview.tables.find(row => row.table === 'settings')?.deletes).toBe(1)
+    importConfigBackup(backup, { mode: 'replace' }, target)
+    expect(target.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual([
+      { key: 'aliyunClientSecret' }, { key: 'bannedKeywords' }, { key: 'requestDelayMs' }, { key: 'theme' },
+    ])
+  })
+
+  it('refuses account identity collisions before changing any data', () => {
+    const now = Date.now()
+    target.prepare('INSERT INTO accounts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('account-1', 'baidu', 'existing', 'oauth', 'existing-ciphertext', null, 'active', 1, now, now, null)
+    const backup = createConfigBackup(source)
+    expect(() => previewConfigBackupImport(backup, {}, target)).toThrow('冲突')
+    expect(() => importConfigBackup(backup, { mode: 'replace' }, target)).toThrow('冲突')
+    expect(target.prepare('SELECT platform, encrypted_credential FROM accounts').get())
+      .toEqual({ platform: 'baidu', encrypted_credential: 'existing-ciphertext' })
+    expect(target.prepare('SELECT COUNT(*) AS count FROM settings').get()).toEqual({ count: 0 })
+  })
+
+  it('rejects invalid request settings before committing a backup', () => {
+    const backup = createConfigBackup(source)
+    backup.data.settings[0].value = 'invalid-number'
+    backup.checksum = calculateBackupChecksum(backup)
+    expect(() => importConfigBackup(backup, {}, target)).toThrow('有效数字')
+    expect(target.prepare('SELECT COUNT(*) AS count FROM accounts').get()).toEqual({ count: 0 })
+  })
+
+  it('rejects duplicate entries instead of presenting incorrect preview counts', () => {
+    const backup = createConfigBackup(source)
+    backup.data.search_sources.push({ ...backup.data.search_sources[0] })
+    backup.checksum = calculateBackupChecksum(backup)
+    expect(() => previewConfigBackupImport(backup, {}, target)).toThrow('重复')
+    expect(() => importConfigBackup(backup, {}, target)).toThrow('重复')
   })
 })

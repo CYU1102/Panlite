@@ -22,6 +22,7 @@
       <div class="target-label"><strong>目标位置</strong><span>请选择一个文件夹</span></div>
       <div class="target-tree">
         <el-tree
+          :key="account?.id"
           :data="treeData"
           :props="{ label: 'name', children: 'children' }"
           node-key="id"
@@ -50,7 +51,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { electronApi } from '../api/ipc'
 import { FileText } from 'lucide-vue-next'
@@ -78,18 +79,14 @@ const emit = defineEmits<{
 
 const selectedDirId = ref('')
 const copying = ref(false)
-const treeData = ref<TreeNode[]>([])
-
-onMounted(() => {
-  // 初始化根目录
-  treeData.value = [{
+const treeData = ref<TreeNode[]>([{
     id: '0',
     name: '根目录',
     children: [],
-  }]
-})
+  }])
 
 async function loadNode(node: any, resolve: (data: TreeNode[]) => void) {
+  if (node.level === 0) { resolve(treeData.value); return }
   if (!props.account) {
     resolve([])
     return
@@ -212,7 +209,7 @@ function onClose() {
 }
 .source-label, .target-label { display: flex; min-width: 74px; flex-direction: column; gap: 2px; }
 .source-label strong, .target-label strong { color: var(--pl-text); font-size: 12px; font-weight: 650; }
-.source-label span, .target-label span { color: var(--pl-text-muted); font-size: 11px; }
+.source-label span, .target-label span { color: var(--pl-text-muted); font-size: var(--pl-font-xs); }
 .source-files { gap: 6px; }
 .source-file { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; color: var(--pl-primary-hover); background: var(--pl-surface); border: 1px solid #d5e3ff; border-radius: 7px; font-size: 12px; }
 .target-section { margin-bottom: 8px; }

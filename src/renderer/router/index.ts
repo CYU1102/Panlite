@@ -18,6 +18,14 @@ const router = createRouter({
       component: () => import('../pages/AccountManager.vue'),
     },
     {
+      path: '/file-catalog',
+      name: 'FileCatalog',
+      component: () => import('../pages/FileCatalog.vue'),
+    },
+    { path: '/storage-analysis', name: 'StorageAnalysis', component: () => import('../pages/StorageAnalysis.vue') },
+    { path: '/file-backups', name: 'FileBackups', component: () => import('../pages/FileBackups.vue') },
+    { path: '/automation-rules', name: 'AutomationRules', component: () => import('../pages/AutomationRules.vue') },
+    {
       path: '/tasks',
       name: 'TaskLog',
       component: () => import('../pages/TaskLog.vue'),
@@ -41,6 +49,11 @@ const router = createRouter({
       path: '/cloud-transfer',
       name: 'CloudTransfer',
       component: () => import('../pages/CloudTransfer.vue'),
+    },
+    {
+      path: '/transfer-plans',
+      name: 'TransferPlans',
+      component: () => import('../pages/TransferPlans.vue'),
     },
     {
       path: '/batch-share',
@@ -81,12 +94,6 @@ const router = createRouter({
       path: '/settings',
       name: 'Settings',
       component: () => import('../pages/Settings.vue'),
-    },
-    {
-      path: '/export',
-      name: 'Export',
-      component: () => import('../pages/Placeholder.vue'),
-      props: { title: '导出文件' },
     },
     {
       // Catch-all: redirect unknown paths to /files

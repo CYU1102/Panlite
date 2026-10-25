@@ -1,9 +1,9 @@
 # PanLite
 
-> 面向 Windows 的多网盘桌面管理器：统一管理百度网盘、夸克网盘、UC 网盘和迅雷网盘，并提供跨网盘迁移、资源搜索、安全归档和独立 AI 知识工作台。
+> 面向 Windows 的多网盘桌面管理器：接入百度、夸克、UC、迅雷、WebDAV、阿里云盘和 123 云盘，提供文件管理、跨网盘迁移、资源搜索、安全归档和 AI 知识工作台。
 
 [![License](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
-[![Electron](https://img.shields.io/badge/Electron-33-47848f.svg)](https://www.electronjs.org/)
+[![Electron](https://img.shields.io/badge/Electron-44-47848f.svg)](https://www.electronjs.org/)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 
@@ -13,7 +13,7 @@ PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨
 
 ### 多网盘与文件管理
 
-- 同时管理多个百度、夸克、UC 和迅雷账号
+- 同时管理多个网盘账号；各平台能力与登录方式见下表
 - 展示账号健康状态、容量以及可获取的会员类型和有效期
 - 浏览、搜索、上传、下载、新建目录、重命名、移动和删除
 - 支持文件夹递归上传/下载，并保留原目录结构
@@ -36,6 +36,8 @@ PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨
 - 外部页面运行在受限 WebView 中，并对导航、权限和外链进行约束
 
 ### 独立 AI 工作台
+
+默认优先本地解析。模型补充识别、云端转写及语义向量按处理策略显式启用；填写模型配置不代表自动启用这些能力。
 
 - 文本：TXT、Markdown、JSON、CSV、XML、YAML、日志等
 - PDF：按页提取文本层；扫描型 PDF 可回退到配置的视觉模型
@@ -60,33 +62,34 @@ PanLite 将文件管理、批量分享、分享链接转存、任务队列和跨
 
 ## 平台支持
 
-| 平台 | 登录方式 | 文件管理 | 上传/下载 | 分享/转存 | 跨网盘迁移 |
+| 平台 | 接入方式 | 文件管理 | 上传 | 下载 | 创建分享/链接转存 |
 | --- | --- | :---: | :---: | :---: | :---: |
-| 百度网盘 | 网页自动登录、OAuth、手动 Cookie | ✅ | ✅ | ✅ | ✅ |
-| 夸克网盘 | 网页自动登录、手动 Cookie | ✅ | ✅ | ✅ | ✅ |
-| UC 网盘 | 网页自动登录、手动 Cookie | ✅ | ✅ | ✅ | ✅ |
-| 迅雷网盘 | 官方网页登录授权、Refresh Token | ✅ | ✅ | ✅ | ✅ |
+| 百度网盘 | 网页登录、OAuth 或手动 Cookie | ✅ | ✅ | ✅ | ✅ |
+| 夸克网盘 | 页内官方登录、官方窗口或手动 Cookie | ✅ | ✅ | ✅ | ✅ |
+| UC 网盘 | 页内官方登录、官方窗口或手动 Cookie | ✅ | ✅ | ✅ | ✅ |
+| 迅雷网盘 | 网页授权或 Refresh Token | ✅ | ✅ | ✅ | ✅ |
+| WebDAV | 服务器地址与账号密码 | ✅ | ✅ | ✅ | — |
+| 阿里云盘（开放平台） | 自有应用授权码或 Refresh Token | ✅ | ✅ | ✅ | — |
+| 123 云盘 | 开放平台 Client ID / Secret | ✅ | ✅ | ✅ | — |
+| 阿里云盘（网页版） | 网页版 Refresh Token | ✅ | — | ✅ | ✅ |
 
-> 网盘接口和登录页面可能随平台更新而变化。PanLite 会尽量给出明确错误并保留可重试任务，但不能保证第三方平台接口长期不变。
+此表依据 [平台能力声明](src/shared/capabilities.ts) 与账号入口整理，表示代码已接入，不代表所有平台都经过真实账号端到端验收。跨网盘文件迁移要求来源支持下载、目标支持上传，因此网页版阿里云盘不能作为上传目标；其余限制与验收范围见 [功能验收清单](docs/FUNCTIONAL_AUDIT.md)。第三方接口和登录页面可能随平台更新而变化。
+
+添加夸克或 UC 账号时可在当前弹窗加载官方登录页，在官方页面选择扫码等可用方式；刷新会创建新会话，取消会清理临时登录数据。官方页面无法加载或受平台限制时，可明确选择官方登录窗口。二维码是否可用、有效期及验证码要求由平台决定；当前候选尚需真实扫码验收。
 
 ## 安装与运行
 
 ### 下载安装包
 
-前往 [GitHub Releases](https://github.com/CYU1102/Panlite/releases/latest) 下载适合当前设备的安装包：
+如 [GitHub Releases](https://github.com/CYU1102/Panlite/releases) 已发布经验证的版本，可下载对应安装包。当前 Windows 验证目标为 Windows 10/11 x64，NSIS 安装包产物名为 `PanLite-Setup-<版本>.exe`。仓库另有 macOS DMG 配置，但 macOS 构建、签名、公证和安装验收需要在独立发布流程中确认；不要据此推断每个版本都有 macOS 下载项。
 
-- Windows 10/11 x64：`PanLite-Setup-*.exe`
-- Apple Silicon Mac：`PanLite-*-mac-arm64.dmg`
-- Intel Mac：`PanLite-*-mac-x64.dmg`
-
-当前安装包尚未配置 Windows 或 Apple Developer 代码签名。首次运行时系统可能显示安全提示，请确认文件来自本仓库后继续；macOS 用户可以在“系统设置 → 隐私与安全性”中允许打开。
+当前发行方式为未签名 Windows 安装包，使用 `npm run pack` 构建；不要求提供签名证书。发布前仍须完成 SHA-256、包内原生模块、隔离环境安装及升级/回滚验收，步骤见 [发布指南](docs/RELEASE.md)。当前需要签名验证的应用内更新保持关闭；以后采用签名更新渠道时再单独验收。
 
 ### 环境要求
 
-- Windows 10/11 x64
-- macOS（Apple Silicon arm64 或 Intel x64）
-- Node.js 20 或更高版本
-- npm 10 或更高版本
+- 运行已发布的 Windows 包：Windows 10/11 x64；无需单独安装 Node.js 或 npm。
+- 从源码开发或打包：Node.js `^22.22.2`、`^24.15.0` 或 `^26.0.0`，npm `>=10`（以 `package.json` 的 `engines` 为准）。当前锁定的依赖仅声明支持这些范围，不支持更早的 Node 22/24 或 Node 25。
+- macOS：仓库保留 arm64/x64 DMG 构建配置；具体版本是否提供安装包与支持范围以该版本发布记录和验收结果为准。
 
 ### 从源码运行
 
@@ -97,17 +100,31 @@ npm ci
 npm run dev
 ```
 
+开发启动会先构建当前主进程，并核对 Vite 的项目身份，构建或服务检查失败时停止启动。`VITE_PORT` 同时控制服务与启动器，端口占用时直接报错。渲染页面支持热更新；修改主进程后重新执行 `npm run dev`。后续路线与完成标准见 [升级计划](UPGRADE_PLAN.md)。
+
+本轮 `0.2.3` 候选的实现、测试和待验收范围见 [升级执行记录](docs/UPGRADE_20261025.md)。
+
 ### 检查与测试
 
 ```bash
-# ESLint、类型检查、主进程构建和 Vitest
+# ESLint、类型检查、渲染器/主进程构建和 Vitest
 npm run check
 
 # 分别运行
 npm run lint
 npm run typecheck
 npm test
+
+# 已为 Electron 构建 SQLite 时，直接使用应用运行时测试，不切换 ABI
+npm run test:electron
+
+# 发布前还需执行
+npm run security:audit
 ```
+
+固定样本基准使用 `npm run benchmark:workflows -- --output output/workflows.json`；通过 `--baseline` 指定同机、同配置的上一候选报告。目录持久化另用 `scripts/benchmark-catalog.mjs`，SQLite 必须与所用 Node/Electron 运行时匹配。报告分别记录耗时、内存、样本和源码指纹；没有兼容基线时不宣称提速。
+
+真实任务队列取消基准使用 `npm run benchmark:tasks -- --output output/tasks.json`，自动选择 Electron Node 运行时；只使用合成账号、隔离 SQLite 和本地 HTTP，不访问真实网盘。
 
 ### 构建 Windows 安装包
 
@@ -115,7 +132,7 @@ npm test
 npm run pack
 ```
 
-输出位于 `release/`。当前构建配置采用最高压缩等级，仅保留简体中文和英文回退语言，并排除原生依赖的编译源码与无关平台文件。参考构建中安装包约 74 MB，解压目录约 244 MB；实际大小会随 Electron 和依赖版本变化。
+输出位于 `release/`。构建配置使用最高压缩等级，并仅保留简体中文和英文回退语言。安装包大小以本次构建的体积报告为准。
 
 查看打包体积明细：
 
@@ -135,7 +152,7 @@ BAIDU_CLIENT_SECRET=your_client_secret
 BAIDU_REDIRECT_URI=https://openapi.baidu.com/qrcode/1
 ```
 
-不要提交真实的 `.env`、Cookie、Token 或数据库文件；这些文件已经由 `.gitignore` 排除。
+不要提交真实的 `.env`、Cookie、Token、数据库或本机构建产物；提交前检查 `git status` 和 `.gitignore` 的实际覆盖范围。
 
 ### AI Provider
 
@@ -166,6 +183,7 @@ Panlite/
 │  └─ shared/                # 共享类型、平台能力与纯函数
 ├─ scripts/                  # 主进程构建和包体积分析
 ├─ electron-builder.yml      # Windows 打包配置
+├─ electron-builder.mac.yml  # macOS DMG 配置
 ├─ vite.config.ts            # 渲染进程构建配置
 └─ vitest.config.ts          # 测试配置
 ```
@@ -174,7 +192,7 @@ Panlite/
 
 - PanLite 没有自建的账号中转服务器，网盘请求直接发送到对应平台。
 - 账号凭据和任务数据保存在本机 Electron 用户数据目录中。
-- AI 工作台不会自动读取网盘文件；只有主动导入的本地文件才会建立索引。
+- AI 工作台只处理用户主动导入的本地文件或主动选取的网盘文件；导入后可建立本地索引。
 - 图片、扫描 PDF、音视频或文本是否发送到云端，取决于选择的解析链和 AI Provider。
 - 内置资源站属于外部网站，PanLite 不存储、不背书其内容，使用时请遵守当地法律和站点规则。
 
@@ -184,8 +202,8 @@ Panlite/
 
 ## 许可证
 
-[MIT License](LICENSE)
+项目在 `package.json` 中声明 MIT；许可证全文见 [LICENSE](LICENSE)。
 
 ## 免责声明
 
-PanLite 是非官方开源项目，与百度、夸克、UC、迅雷及内置资源站无隶属或合作关系。请勿将本项目用于侵犯版权、绕过平台限制或违反服务条款的用途。
+PanLite 是非官方开源项目，与上述网盘平台及内置资源站无隶属或合作关系。请勿将本项目用于侵犯版权、绕过平台限制或违反服务条款的用途。
