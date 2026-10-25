@@ -19,8 +19,8 @@ let options: TaskResumableDownloadOptions
 let status: TaskStatus
 
 beforeEach(async () => {
-  // CI's TEMP can use an 8.3 alias; publication intentionally returns realpath.
-  directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-task-resume-test-')))
+  // The JS realpathSync may retain Windows 8.3 names; publication uses native realpath.
+  directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-task-resume-test-')))
   bytes = content; etag = '"original"'; rangeSupported = true; headStatus = 200; ranges = []; methods = []; headers = []; override = undefined; status = 'running'
   server = http.createServer((request, response) => {
     methods.push(request.method ?? 'GET'); headers.push(request.headers)
@@ -75,7 +75,7 @@ describe('task download integration with real loopback HTTP and owned disk cache
     try {
       const target = path.join(alias, 'downloads', 'output.bin')
       const result = await downloadTaskResumable({ ...options, targetPath: target })
-      expect(result).toMatchObject({ kind: 'downloaded', localPath: path.join(fs.realpathSync(physical), 'downloads', 'output.bin') })
+      expect(result).toMatchObject({ kind: 'downloaded', localPath: path.join(fs.realpathSync.native(physical), 'downloads', 'output.bin') })
       expect(fs.readFileSync(target).equals(content)).toBe(true)
     } finally { fs.unlinkSync(alias) }
   })

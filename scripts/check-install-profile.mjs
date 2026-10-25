@@ -7,8 +7,12 @@ import { tmpdir } from 'node:os'
 const [action, executable, profile, output, manifest] = process.argv.slice(2)
 if (!['seed', 'verify', 'launch'].includes(action) || !executable || !profile || !output) throw new Error('Expected seed|verify|launch, executable, isolated profile, output and optional manifest')
 const isolatedRoot = dirname(resolve(profile))
-if (dirname(isolatedRoot) !== resolve(tmpdir()) || !/^panlite-install-smoke-[a-f0-9]{32}$/.test(basename(isolatedRoot))) throw new Error('Profile must belong to the disposable installation test directory')
-if (await realpath(isolatedRoot) !== join(await realpath(tmpdir()), basename(isolatedRoot))) throw new Error('Disposable installation root must not be a junction or symbolic link')
+if (!/^panlite-install-smoke-[a-f0-9]{32}$/.test(basename(isolatedRoot))) throw new Error('Profile must belong to the disposable installation test directory')
+// PowerShell GetFullPath expands Windows 8.3 TEMP paths; Node's tmpdir/resolve
+// retain their lexical spelling. Compare their existing parents by identity.
+const canonicalTemp = await realpath(tmpdir())
+if (await realpath(dirname(isolatedRoot)) !== canonicalTemp) throw new Error('Profile must belong to the disposable installation test directory')
+if ((await lstat(isolatedRoot)).isSymbolicLink() || await realpath(isolatedRoot) !== join(canonicalTemp, basename(isolatedRoot))) throw new Error('Disposable installation root must not be a junction or symbolic link')
 try { if ((await lstat(profile)).isSymbolicLink()) throw new Error('Isolated profile must not be a junction or symbolic link') }
 catch (error) { if (error.code !== 'ENOENT') throw error }
 const env = { ...process.env }

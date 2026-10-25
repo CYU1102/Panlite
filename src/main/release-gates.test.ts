@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
 const fixture = vi.hoisted(() => ({ profile: '' }))
@@ -85,6 +86,53 @@ describe('release source provenance', () => {
     })
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('Profile must belong to the disposable installation test directory')
+  })
+})
+
+describe('installer profile guard with filesystem aliases', () => {
+  function guardFixture() {
+    const tempRoot = fs.mkdtempSync(path.join(directory, 'guard-temp-'))
+    const tempAlias = path.join(directory, `guard-alias-${randomUUID()}`)
+    fs.symlinkSync(tempRoot, tempAlias, process.platform === 'win32' ? 'junction' : 'dir')
+    const ownedName = () => `panlite-install-smoke-${randomUUID().replace(/-/g, '')}`
+    const run = (profile: string) => spawnSync(process.execPath, [path.resolve('scripts/check-install-profile.mjs'), 'launch',
+      path.join(directory, 'intentionally-missing-application.exe'), profile, path.join(directory, `guard-output-${randomUUID()}.json`)], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', TEMP: tempAlias, TMP: tempAlias, TMPDIR: tempAlias },
+      windowsHide: true, encoding: 'utf8', timeout: 10000,
+    })
+    return { tempRoot, tempAlias, ownedName, run }
+  }
+  it('accepts a canonical profile when TEMP uses a genuine ancestor alias, then reaches application validation', () => {
+    const f = guardFixture()
+    const profile = path.join(fs.realpathSync.native(f.tempRoot), f.ownedName(), 'profile')
+    fs.mkdirSync(profile, { recursive: true })
+    expect(fs.realpathSync.native(f.tempAlias)).toBe(fs.realpathSync.native(f.tempRoot))
+    expect(path.resolve(f.tempAlias)).not.toBe(path.resolve(f.tempRoot))
+    const result = f.run(profile)
+    expect(result.status).toBe(1)
+    // The deliberately missing executable is never launched. Reaching this
+    // error proves the equivalent TEMP/profile identities passed the guard.
+    expect(result.stderr).toContain('Installed profile launch failed')
+    expect(result.stderr).not.toContain('Profile must belong to the disposable installation test directory')
+  })
+  it('rejects a correctly named test root outside the canonical TEMP directory', () => {
+    const f = guardFixture()
+    const profile = path.join(directory, f.ownedName(), 'profile')
+    fs.mkdirSync(profile, { recursive: true })
+    expect(f.run(profile).stderr).toContain('Profile must belong to the disposable installation test directory')
+  })
+  it('still rejects a test root that is itself a junction despite accepting a TEMP ancestor alias', () => {
+    const f = guardFixture(), target = path.join(f.tempRoot, 'other-target'), root = path.join(f.tempRoot, f.ownedName())
+    fs.mkdirSync(path.join(target, 'profile'), { recursive: true })
+    fs.symlinkSync(target, root, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(f.run(path.join(root, 'profile')).stderr).toContain('Disposable installation root must not be a junction or symbolic link')
+  })
+  it('still rejects a profile junction and a root without the required GUID name', () => {
+    const f = guardFixture(), root = path.join(f.tempRoot, f.ownedName()), target = path.join(f.tempRoot, 'profile-target')
+    fs.mkdirSync(root); fs.mkdirSync(target)
+    fs.symlinkSync(target, path.join(root, 'profile'), process.platform === 'win32' ? 'junction' : 'dir')
+    expect(f.run(path.join(root, 'profile')).stderr).toContain('Isolated profile must not be a junction or symbolic link')
+    expect(f.run(path.join(f.tempRoot, 'panlite-install-smoke-not-a-guid', 'profile')).stderr).toContain('Profile must belong to the disposable installation test directory')
   })
 })
 
