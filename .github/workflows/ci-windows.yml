@@ -42,6 +42,8 @@ jobs:
         run: node scripts/smoke-resource-share.mjs dist/reports/resource-share
       - name: Verify bounded file table with the actual production component
         run: node scripts/smoke-file-table.mjs output/ci-file-table
+      - name: Collect the predefined current-candidate task cancellation baseline
+        run: node scripts/benchmark-task-cancellation.mjs --controlled --output dist/reports/task-cancellation-controlled.json
       - run: npm run test:task-coverage
       - name: Audit locked dependencies
         run: npm audit --audit-level=high --json > dist/reports/dependency-audit.json
@@ -71,6 +73,8 @@ jobs:
         with:
           name: PanLite-windows-unsigned-smoke
           path: output/ci-package
+      - name: Verify every delivered checksum entry
+        run: node scripts/verify-checksums.mjs output/ci-package/release
       - name: Bind wizard acceptance to the clean source and installer hash
         run: |
           node scripts/write-build-provenance.mjs output/ci-package/release/build-provenance.json --require-clean --verify
@@ -106,6 +110,8 @@ jobs:
         with:
           name: PanLite-windows-unsigned-smoke
           path: output/ci-package
+      - name: Verify the complete delivered release set
+        run: node scripts/verify-checksums.mjs output/ci-package/release
       - name: Download the fixed published startup baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -143,6 +149,10 @@ jobs:
       - name: Capture immutable release source
         run: node scripts/write-build-provenance.mjs release/build-provenance.json --require-clean
       - run: npm run pack
+      - name: Record complete package size evidence
+        run: |
+          npm run size:report | Tee-Object -FilePath dist/reports/package-size.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Package size report failed.' }
       - run: node scripts/verify-package-content.mjs
       - run: node scripts/verify-packaged-native.cjs
       - run: node scripts/verify-packaged-imports.cjs
@@ -176,6 +186,8 @@ jobs:
       - run: npm run release:notes
       - run: node scripts/write-build-provenance.mjs release/build-provenance.json --require-clean --verify
       - run: npm run checksums
+      - name: Verify the complete checksum manifest before upload
+        run: node scripts/verify-checksums.mjs release > dist/reports/release-checksums.json
       - name: Save unsigned installer and smoke reports
         if: always()
         uses: actions/upload-artifact@v5
@@ -186,5 +198,7 @@ jobs:
             release/*.json
             release/*.txt
             release/*.md
+            release/latest.yml
+            release/*.blockmap
             dist/reports/**
           if-no-files-found: warn

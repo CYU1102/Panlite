@@ -104,7 +104,7 @@ npm run dev
 
 本轮 `0.2.3` 候选的实现、测试和待验收范围见 [升级执行记录](docs/UPGRADE_20261025.md)。
 
-干净提交 `3faea51` 的 [Windows CI](https://github.com/CYU1102/Panlite/actions/runs/40170143336) 已通过 166 个测试文件（1788 项通过、1 项可选集成跳过）、未签名打包，以及从 `0.2.2` 合成数据升级、离线回滚和卸载。非静默安装向导、真人扫码和真实平台读写仍单独验收；此候选尚未正式发布。
+干净提交 `4bea49e` 的 [Windows CI](https://github.com/CYU1102/Panlite/actions/runs/40173073147) 已通过 167 个测试文件（1791 项通过、1 项可选集成跳过）、未签名打包、从 `0.2.2` 合成数据升级/离线回滚/卸载，以及非静默向导控件和快捷方式检查。启动采样的尾延迟仍需复核，真人扫码与真实平台读写未验收；此候选尚未正式发布。
 
 ### 检查与测试
 
@@ -127,6 +127,8 @@ npm run security:audit
 固定样本基准使用 `npm run benchmark:workflows -- --output output/workflows.json`；通过 `--baseline` 指定同机、同配置的上一候选报告。目录持久化另用 `scripts/benchmark-catalog.mjs`，SQLite 必须与所用 Node/Electron 运行时匹配。报告分别记录耗时、内存、样本和源码指纹；没有兼容基线时不宣称提速。
 
 真实任务队列取消基准使用 `npm run benchmark:tasks -- --output output/tasks.json`，自动选择 Electron Node 运行时；只使用合成账号、隔离 SQLite 和本地 HTTP，不访问真实网盘。
+
+受控采样加 `--controlled`，每场景 2 次预热、30 次正式测量，在单个进程中交替执行。输出必须是新文件，避免覆盖旧证据；新增编译输入和实际依赖指纹后，默认五次协议也使用新的夹具版本，旧报告不会被误判为同配置可比。
 
 ### 构建 Windows 安装包
 

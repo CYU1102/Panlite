@@ -1,31 +1,31 @@
 /** Actual task admission, SQLite lifecycle and execution-token benchmark.
  * Only the provider adapter, Electron shell, credential encryption, archive and
  * notifications are substituted. HTTP stays on loopback; no GUI/profile/account.
- * node scripts/benchmark-task-cancellation.mjs [--output report.json] [--baseline earlier.json]
+ * node scripts/benchmark-task-cancellation.mjs [--controlled] [--output NEW-report.json] [--baseline earlier.json]
+ * --controlled: 2 warmup + 30 measured rounds, both scenarios each round.
+ * --check is a pure protocol/argument self-check; it never launches Electron.
+ * Existing output files are refused in every mode; earlier data is immutable.
  * The launcher selects Electron's Node mode without rebuilding SQLite.
  */
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { build } from 'esbuild'
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import reportTools from './benchmark-report.cjs'
+import { collectSourceProvenance } from './write-build-provenance.mjs'
+import { parseArguments, createFixture, plannedRuns, digest, fileEvidence, externalEvidence, buildInputEvidence, toolchainEvidence, verifyFilesUnchanged, staticCheck } from './task-cancellation-evidence.mjs'
 
 const require = createRequire(import.meta.url)
 const root = resolve(import.meta.dirname, '..')
 const { metadata, statistics, round, readBaseline, compareReports } = reportTools
-const argument = name => {
-  const index = process.argv.indexOf(name)
-  if (index < 0) return undefined
-  const value = process.argv[index + 1]
-  if (!value || value.startsWith('--')) throw new Error(`${name} needs a file path`)
-  return resolve(value)
-}
+const options = parseArguments(process.argv.slice(2))
 
-if (!process.versions.electron) {
+if (options.check) staticCheck()
+else if (!process.versions.electron) {
   const child = spawn(require('electron'), [resolve(import.meta.filename), ...process.argv.slice(2)], { cwd: root, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, windowsHide: true, stdio: 'inherit' })
   child.once('error', error => { console.error(error); process.exitCode = 1 })
   child.once('exit', code => { process.exitCode = code ?? 1 })
@@ -37,19 +37,21 @@ if (!process.versions.electron) {
 }
 
 async function runBenchmark() {
-  const output = argument('--output') ?? resolve(root, 'dist/reports/task-cancellation-benchmark.json')
-  const baselinePath = argument('--baseline')
+  const output = options.output ?? resolve(root, options.controlled ? 'dist/reports/task-cancellation-controlled-baseline.json' : 'dist/reports/task-cancellation-benchmark.json')
+  const baselinePath = options.baseline
   if (output === baselinePath) throw new Error('Use a separate output file to preserve the previous candidate report')
+  if (existsSync(output)) throw new Error('Output already exists; choose a new file to preserve earlier benchmark data')
   const baseline = readBaseline(baselinePath)
-  const fixture = { version: 'task-cancellation-fixed-v1', runsPerScenario: 5, scenarios: ['cooperative-abort', 'late-success-after-abort'], fileBytes: 1024 * 1024, firstResponseBytes: 1024, lateCompletionDelayMs: 25, idlePollMs: 1, finalStabilityWaitMs: 30, account: 'synthetic-quark', taskType: 'download', conflictPolicy: 'overwrite', originalTarget: 'valuable-original-bytes' }
+  const fixture = createFixture(options.controlled)
   const provenance = metadata(root, fixture, [
-    'scripts/benchmark-task-cancellation.mjs', 'scripts/benchmark-report.cjs', 'src/main/task-runner.ts', 'src/main/task-admission.ts',
+    'scripts/benchmark-task-cancellation.mjs', 'scripts/task-cancellation-evidence.mjs', 'scripts/benchmark-report.cjs', 'src/main/task-runner.ts', 'src/main/task-admission.ts',
     'src/main/db.ts', 'src/main/task-state-machine.ts', 'src/main/task-operations.ts', 'src/main/account-request-budget.ts', 'src/main/download-target.ts',
   ])
+  const sourceBefore = await collectSourceProvenance(root)
   const scratch = mkdtempSync(join(tmpdir(), 'panlite-task-cancellation-bench-'))
   if (dirname(scratch) !== tmpdir() || !basename(scratch).startsWith('panlite-task-cancellation-bench-')) throw new Error('Unsafe benchmark cleanup path')
-  let database, server, activeRun
-  const samples = [], memorySamples = [], allTaskIds = []
+  let database, server, activeRun, report, failure, inputEvidence
+  const samples = [], warmupSamples = [], memorySamples = [], allTaskIds = []
   const memory = label => memorySamples.push({ label, ...process.memoryUsage() })
   const wait = ms => new Promise(done => setTimeout(done, ms))
   const waitFor = async (predicate, label, timeout = 10_000) => {
@@ -63,25 +65,39 @@ async function runBenchmark() {
 
   try {
     const compiled = join(scratch, 'queue.cjs')
-    await build({
-      stdin: { contents: "export { initDatabase, getDb, insertAccount, insertTask, getTaskById, updateTaskProgressIfOwned, updateTaskPayloadIfOwned, transitionTaskStatusIfCurrent } from './src/main/db.ts'; export { enqueueTask, cancelTask, getQueueStatus } from './src/main/task-runner.ts'", resolveDir: root, loader: 'ts' },
-      outfile: compiled, bundle: true, platform: 'node', format: 'cjs', target: 'node22', logLevel: 'silent',
+    const stdin = "export { initDatabase, getDb, insertAccount, insertTask, getTaskById, updateTaskProgressIfOwned, updateTaskPayloadIfOwned, transitionTaskStatusIfCurrent } from './src/main/db.ts'; export { enqueueTask, cancelTask, getQueueStatus } from './src/main/task-runner.ts'"
+    const virtualInputs = new Map([['<stdin>', stdin]])
+    const compileOptions = { bundle: true, platform: 'node', format: 'cjs', target: 'node22', logLevel: 'silent', metafile: true }
+    const built = await build({
+      stdin: { contents: stdin, resolveDir: root, loader: 'ts' },
+      outfile: compiled, ...compileOptions,
       plugins: [{ name: 'synthetic-task-shell-and-provider', setup(builder) {
         builder.onResolve({ filter: /^better-sqlite3$/ }, () => ({ path: require.resolve('better-sqlite3'), external: true }))
         builder.onResolve({ filter: /^(electron|electron-log)$/ }, args => ({ path: args.path, namespace: 'benchmark-shell' }))
-        builder.onLoad({ filter: /.*/, namespace: 'benchmark-shell' }, args => ({ contents: args.path === 'electron'
-          ? `export const app = { getPath: () => ${JSON.stringify(scratch)} }; export const BrowserWindow = { getAllWindows: () => [] }; export const net = { fetch: globalThis.fetch }`
-          : 'export default { info() {}, warn() {}, error() {} }' }))
+        builder.onLoad({ filter: /.*/, namespace: 'benchmark-shell' }, args => {
+          const contents = args.path === 'electron'
+            ? `export const app = { getPath: () => ${JSON.stringify(scratch)} }; export const BrowserWindow = { getAllWindows: () => [] }; export const net = { fetch: globalThis.fetch }`
+            : 'export default { info() {}, warn() {}, error() {} }'
+          virtualInputs.set(`benchmark-shell:${args.path}`, contents)
+          return { contents }
+        })
         builder.onResolve({ filter: /adapters\/registry$/ }, () => ({ path: 'registry', namespace: 'benchmark-dependency' }))
         builder.onResolve({ filter: /^\.\/(crypto|archive|runtime-services)$/ }, args => ({ path: args.path.slice(2), namespace: 'benchmark-dependency' }))
-        builder.onLoad({ filter: /.*/, namespace: 'benchmark-dependency' }, args => ({ contents: {
+        builder.onLoad({ filter: /.*/, namespace: 'benchmark-dependency' }, args => {
+          const contents = {
           registry: "export const getAdapter = platform => { if (platform !== 'quark') throw new Error('Unexpected benchmark platform'); return globalThis.__PANLITE_TASK_BENCHMARK_ADAPTER }",
           crypto: 'export const decryptCredential = value => value',
           archive: "export const cleanupTempDir = () => {}; export const createArchive = () => { throw new Error('Archive not part of fixture') }; export const extractArchive = createArchive",
           'runtime-services': 'export const notifyTaskTerminal = () => {}',
-        }[args.path] }))
+          }[args.path]
+          virtualInputs.set(`benchmark-dependency:${args.path}`, contents)
+          return { contents }
+        })
       } }],
     })
+    inputEvidence = { sourceBefore, compileOptions: { ...compileOptions, stdinLoader: 'ts', stdinSha256: digest(stdin), plugin: 'synthetic-task-shell-and-provider', external: require.resolve('better-sqlite3') },
+      buildInputs: await buildInputEvidence(built.metafile, virtualInputs, root), bundle: await fileEvidence(compiled, root), toolchain: await toolchainEvidence(require, root),
+      ownedTemporaryPath: scratch, variableInputLimit: 'Synthetic Electron app.getPath embeds the owned temporary directory. Raw stub and bundle hashes are retained; temporary path differences are not normalized away.' }
 
     server = createServer((request, response) => {
       const run = activeRun
@@ -137,20 +153,20 @@ async function runBenchmark() {
     const queue = require(compiled)
     queue.initDatabase()
     database = queue.getDb()
+    inputEvidence.sqliteExternalBefore = await externalEvidence(require, root)
     queue.insertAccount({ id: 'synthetic-quark', platform: 'quark', nickname: 'Isolated benchmark only', login_type: 'cookie', encrypted_credential: '{}', user_agent: null, status: 'active', bind_machine: 0, created_at: 1, updated_at: 1, last_check_at: null })
     const idle = () => Object.values(queue.getQueueStatus()).every(status => !status.pending && !status.running && !status.size)
     memory('before-task-runs')
-    for (const scenario of fixture.scenarios) {
-      for (let index = 0; index < fixture.runsPerScenario; index++) {
-        const id = `${scenario}-${index + 1}`
+    for (const planned of plannedRuns(options.controlled)) {
+        const { id, scenario, phase, round: sampleRound } = planned
         allTaskIds.push(id)
         const downloadDirectory = join(scratch, id)
         mkdirSync(downloadDirectory)
         const target = join(downloadDirectory, 'source.bin')
         writeFileSync(target, fixture.originalTarget)
-        activeRun = { id, scenario }
+        activeRun = { id, scenario, phase, round: sampleRound }
         const run = activeRun
-        queue.insertTask({ id, account_id: 'synthetic-quark', platform: 'quark', task_type: 'download', title: id, payload: JSON.stringify({ targetDirPath: downloadDirectory, conflictPolicy: 'overwrite', files: [{ fileId: id, fileName: 'source.bin', fileSize: fixture.fileBytes, isDir: false }] }), status: 'pending', progress: 0, retry_count: 3, execution_token: null, error_message: null, created_at: index + 1, updated_at: index + 1, finished_at: null })
+        queue.insertTask({ id, account_id: 'synthetic-quark', platform: 'quark', task_type: 'download', title: id, payload: JSON.stringify({ targetDirPath: downloadDirectory, conflictPolicy: 'overwrite', files: [{ fileId: id, fileName: 'source.bin', fileSize: fixture.fileBytes, isDir: false }] }), status: 'pending', progress: 0, retry_count: 3, execution_token: null, error_message: null, created_at: sampleRound, updated_at: sampleRound, finished_at: null })
         const enqueuedAt = performance.now()
         queue.enqueueTask(id)
         await waitFor(() => run.progressObservedAt !== undefined, `${id} adapter real first body read`)
@@ -158,6 +174,8 @@ async function runBenchmark() {
         assert(running?.status === 'running' && typeof running.execution_token === 'string' && running.execution_token.length > 0, 'Real SQLite task was not claimed with an execution token')
         assert(queue.getQueueStatus().quark?.running === 1, 'Real admission queue has no running worker')
         const token = running.execution_token
+        const cpuBefore = options.controlled ? process.cpuUsage() : null
+        const eluBefore = options.controlled ? performance.eventLoopUtilization() : null
         run.cancelRequestedAt = performance.now()
         assert(queue.cancelTask(id), 'User cancellation was rejected')
         run.cancelReturnedAt = performance.now()
@@ -166,6 +184,8 @@ async function runBenchmark() {
         assert(run.signal.aborted && run.adapterAbortAt !== undefined, 'Cancellation did not abort the adapter')
         await waitFor(idle, `${id} actual task queue idle`)
         run.queueIdleAt = performance.now()
+        const cpu = cpuBefore ? process.cpuUsage(cpuBefore) : null
+        const elu = eluBefore ? performance.eventLoopUtilization(eluBefore) : null
         await waitFor(() => run.httpClosedAt !== undefined, `${id} loopback response closed`)
         assert(run.adapterSettledAt !== undefined, 'Queue reported idle before the adapter settled')
         assert(!queue.updateTaskProgressIfOwned(id, token, 100), 'Stale worker changed task progress')
@@ -180,35 +200,73 @@ async function runBenchmark() {
         assert(readdirSync(downloadDirectory).length === 1, 'Task staging cleanup left files/directories behind')
         if (scenario === 'late-success-after-abort') assert(run.lateProgressAt > run.cancelRequestedAt && run.lateResultAt > run.cancelRequestedAt, 'Late provider callback/result was not actually exercised')
         memory(`${id}-final-stable`)
-        samples.push({
-          id, scenario, enqueueToAdapterMs: round(run.adapterEnteredAt - enqueuedAt), cancelCallMs: round(run.cancelReturnedAt - run.cancelRequestedAt),
+        const sample = {
+          id, scenario, phase, round: sampleRound, enqueueToAdapterMs: round(run.adapterEnteredAt - enqueuedAt), cancelCallMs: round(run.cancelReturnedAt - run.cancelRequestedAt),
+          enqueueToHttpRequestStartedMs: round(run.httpRequestStartedAt - enqueuedAt), httpRequestToProgressObservedMs: round(run.progressObservedAt - run.httpRequestStartedAt),
           cancelToAdapterAbortMs: round(run.adapterAbortAt - run.cancelRequestedAt), cancelToFetchRejectedMs: round(run.fetchRejectedAt - run.cancelRequestedAt),
+          cancelToAdapterSettledMs: round(run.adapterSettledAt - run.cancelRequestedAt), adapterSettledToIdleObservedMs: round(run.queueIdleAt - run.adapterSettledAt),
           cancelToQueueIdleMs: round(run.queueIdleAt - run.cancelRequestedAt), cancelToHttpClosedMs: round(run.httpClosedAt - run.cancelRequestedAt),
+          timestampsMs: { enqueuedAt, adapterEnteredAt: run.adapterEnteredAt, httpRequestStartedAt: run.httpRequestStartedAt, progressObservedAt: run.progressObservedAt,
+            cancelRequestedAt: run.cancelRequestedAt, cancelReturnedAt: run.cancelReturnedAt, adapterAbortAt: run.adapterAbortAt, fetchRejectedAt: run.fetchRejectedAt, adapterSettledAt: run.adapterSettledAt,
+            queueIdleObservedAt: run.queueIdleAt, httpClosedAt: run.httpClosedAt },
+          ...(options.controlled ? { resourceWindow: 'cancelRequestedAt through queueIdleObservedAt', cpu: { userMicros: cpu.user, systemMicros: cpu.system }, eventLoopUtilization: { idleMs: elu.idle, activeMs: elu.active, utilization: elu.utilization } } : {}),
           lateProviderResultObserved: scenario === 'late-success-after-abort', staleProgressRejected: true, stalePayloadRejected: true, staleCompletionRejected: true,
           finalStatus: final.status, executionTokenCleared: final.execution_token === null, originalTargetPreserved: true, stagingRemoved: true, queueIdle: idle(),
-        })
-      }
+        }
+        if (phase === 'warmup') warmupSamples.push(sample)
+        else samples.push(sample)
     }
-    const report = {
-      schema: 1, benchmark: 'actual-task-queue-cancellation', recordedAt: new Date().toISOString(), ...provenance,
+    inputEvidence.sourceAfter = await collectSourceProvenance(root)
+    assert(inputEvidence.sourceAfter.revision === sourceBefore.revision && inputEvidence.sourceAfter.sourceSha256 === sourceBefore.sourceSha256, 'Source changed during the benchmark')
+    const inputFiles = [...inputEvidence.buildInputs.files, ...inputEvidence.sqliteExternalBefore.files, inputEvidence.toolchain.electron, inputEvidence.toolchain.esbuildApi, inputEvidence.toolchain.esbuildPackage, inputEvidence.toolchain.esbuildBinary]
+    inputEvidence.inputsUnchanged = await verifyFilesUnchanged(inputFiles, root)
+    inputEvidence.sqliteExternalAfter = await externalEvidence(require, root)
+    inputEvidence.sourceUnchanged = true
+    inputEvidence.cleanCommittedSource = !sourceBefore.dirty && !inputEvidence.sourceAfter.dirty
+    report = {
+      schema: options.controlled ? 2 : 1, benchmark: 'actual-task-queue-cancellation', recordedAt: new Date().toISOString(), ...provenance,
+      completed: true, controlled: options.controlled, singleProcessRepetition: true, warmupSamples, inputEvidence,
       environment: { ...provenance.environment, sqlite: database.prepare('SELECT sqlite_version() AS version').get().version },
       scenarios: Object.fromEntries(fixture.scenarios.map(scenario => {
         const rows = samples.filter(sample => sample.scenario === scenario)
         return [scenario, { adapterAbort: statistics(rows.map(row => row.cancelToAdapterAbortMs)), queueIdle: statistics(rows.map(row => row.cancelToQueueIdleMs)), httpClosed: statistics(rows.map(row => row.cancelToHttpClosedMs)) }]
       })),
-      samples, memory: { sampledPeakRssBytes: Math.max(...memorySamples.map(sample => sample.rss)), sampledPeakHeapUsedBytes: Math.max(...memorySamples.map(sample => sample.heapUsed)), processPeakRssBytes: process.resourceUsage().maxRSS * 1024, samples: memorySamples, method: 'Stage-boundary process samples; OS maximum includes compilation/database initialization. No assertion about a per-task peak or absence of leaks.' },
+      samples, memory: { sampledPeakRssBytes: Math.max(...memorySamples.map(sample => sample.rss)), sampledPeakHeapUsedBytes: Math.max(...memorySamples.map(sample => sample.heapUsed)), processPeakRssBytes: process.resourceUsage().maxRSS * 1024, samples: memorySamples, method: 'Stage-boundary process samples; OS maximum includes compilation, database initialization and input/toolchain hashing. No assertion about a per-task peak or absence of leaks.' },
       verified: { realTaskRunner: true, realAdmissionQueue: true, realSqliteStateAndTokens: true, realAbortableLoopbackBodyRead: true, allTasksCancelled: allTaskIds.every(id => queue.getTaskById(id).status === 'cancelled'), lateResultsFenced: true, queueIdleAtEnd: idle(), originalFilesPreserved: true },
-      limits: ['Synthetic provider adapter over loopback; not end-to-end cloud-provider cancellation or renderer IPC latency.', 'Late-success scenario intentionally adds a fixed 25ms delay after abort to prove stale callbacks/results are fenced; that delay is included in queue-idle timing.', 'The actual download task uses atomic fallback staging, not the resumable path. Other task types and provider-owned asynchronous jobs need separate workloads.', 'Five samples per scenario, warm process, OS cache and competing load uncontrolled. No speedup claim without a compatible previous candidate.'],
+      limits: ['Synthetic provider adapter over loopback; not end-to-end cloud-provider cancellation or renderer IPC latency.', 'Late-success scenario intentionally adds a fixed 25ms delay after abort to prove stale callbacks/results are fenced; that delay is included in queue-idle timing.', 'The actual download task uses atomic fallback staging, not the resumable path. Other task types and provider-owned asynchronous jobs need separate workloads.',
+        options.controlled ? 'Two warmup observations and thirty measured observations per scenario in a single process. These are not independent process replications; OS cache and competing load remain uncontrolled.' : 'Five samples per scenario, warm process, OS cache and competing load uncontrolled. No speedup claim without a compatible previous candidate.',
+        'adapterSettledToIdleObserved includes task cleanup, database/finally work and the 1ms queue polling observation. It is not a pure database duration or the exact admission-deletion instant.',
+        'Input hashes observe actual files before and after the run, not kernel-level read attestation. Metadata hashing occurs outside cancellation timing and can affect caches.',
+        'This new controlled baseline does not restore the missing initial input closure or close the historical 20.33ms to 26.94ms review.'],
     }
     report.comparison = compareReports(report, baseline, ['scenarios.cooperative-abort.adapterAbort.p95Ms', 'scenarios.cooperative-abort.queueIdle.p95Ms', 'scenarios.late-success-after-abort.queueIdle.p95Ms', 'memory.sampledPeakRssBytes'])
-    mkdirSync(dirname(output), { recursive: true })
-    writeFileSync(output, JSON.stringify(report, null, 2) + '\n')
-    console.log(JSON.stringify({ output, scenarios: report.scenarios, verified: report.verified, memory: { sampledPeakRssBytes: report.memory.sampledPeakRssBytes }, comparison: report.comparison }, null, 2))
+    if (options.controlled && !baseline) Object.assign(report.comparison, { kind: 'new-controlled-baseline', reason: 'No compatible controlled candidate baseline supplied; this is a new baseline and does not clear the historical regression review.' })
+  } catch (error) {
+    failure = error
+    report = { schema: options.controlled ? 2 : 1, benchmark: 'actual-task-queue-cancellation', recordedAt: new Date().toISOString(), ...provenance, completed: false, controlled: options.controlled,
+      error: error instanceof Error ? error.message : String(error), samples, warmupSamples, inputEvidence,
+      failedRun: activeRun ? Object.fromEntries(Object.entries(activeRun).filter(([key]) => key !== 'signal')) : null }
   } finally {
-    if (activeRun?.signal && !activeRun.signal.aborted) server?.closeAllConnections()
-    if (server) { server.closeAllConnections(); await new Promise(done => server.close(done)) }
-    database?.close()
-    delete globalThis.__PANLITE_TASK_BENCHMARK_ADAPTER
-    rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    try {
+      if (activeRun?.signal && !activeRun.signal.aborted) server?.closeAllConnections()
+      if (server) { server.closeAllConnections(); await new Promise(done => server.close(done)) }
+      database?.close()
+      delete globalThis.__PANLITE_TASK_BENCHMARK_ADAPTER
+      const canonicalTemp = realpathSync.native(tmpdir())
+      const physicalScratch = realpathSync.native(scratch)
+      assert(!lstatSync(scratch).isSymbolicLink() && dirname(physicalScratch).toLowerCase() === canonicalTemp.toLowerCase() && basename(physicalScratch).startsWith('panlite-task-cancellation-bench-'), 'Unsafe benchmark cleanup identity')
+      rmSync(physicalScratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      assert(!existsSync(scratch), 'Owned benchmark directory remains after cleanup')
+      report.temporaryDirectoryRemoved = true
+    } catch (error) {
+      failure ??= error
+      report.completed = false
+      report.cleanupError = error instanceof Error ? error.message : String(error)
+      report.temporaryDirectoryRemoved = false
+    }
   }
+  mkdirSync(dirname(output), { recursive: true })
+  writeFileSync(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' })
+  if (failure) throw failure
+  console.log(JSON.stringify({ output, scenarios: report.scenarios, verified: report.verified, memory: { sampledPeakRssBytes: report.memory.sampledPeakRssBytes }, comparison: report.comparison, measuredSamples: samples.length, warmupSamples: warmupSamples.length }, null, 2))
 }

@@ -1,10 +1,12 @@
 import { app, type BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { StartupBenchmarkTrace } from './startup-benchmark-trace'
 
 /** Opt-in CLI benchmark; uses an isolated profile and never touches user data. */
 export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWindow: (window: BrowserWindow) => void } | null {
   if (!process.argv.includes('--benchmark-startup')) return null
+  const trace = new StartupBenchmarkTrace()
   const profile = process.env.PANLITE_BENCHMARK_USER_DATA
   const output = process.env.PANLITE_BENCHMARK_OUTPUT
   if (!profile || !output) throw new Error('Startup benchmark requires isolated profile and output paths')
@@ -31,9 +33,41 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
   fs.mkdirSync(profile, { recursive: true })
   app.setPath('userData', path.resolve(profile))
   const startedAt = performance.now()
+  trace.mark('prepare.complete')
+  const traceSidecar = /\.json$/.test(output) ? output.replace(/\.json$/, '.trace.json') : `${output}.trace.json`
+  const snapshot = (snapshotPoint: string) => ({
+    ...trace.snapshot(), snapshotPoint, postReportSidecar: path.basename(traceSidecar),
+    instrumentation: {
+      mainReportSnapshot: 'Taken before main-report JSON serialization and write; reportWrite includes both.',
+      sidecarWrite: 'One synchronous sidecar write after the main report; its own duration is not measured and is included in parent observation-to-exit time.',
+      clockScope: 'Main-process events share one monotonic clock; renderer marks and parent observations have separate origins.',
+    },
+  })
+  const writeReport = (report: Record<string, unknown>, termination: 'quit' | 'exit') => {
+    trace.mark('report.write.start')
+    fs.writeFileSync(output, JSON.stringify({ ...report, trace: snapshot('before-main-report-write') }, null, 2) + '\n')
+    trace.mark('report.write.end')
+    if (termination === 'quit') {
+      app.once('before-quit', () => {
+        try {
+          trace.mark('quit.request')
+          fs.writeFileSync(traceSidecar, JSON.stringify(snapshot('before-quit'), null, 2) + '\n')
+        } catch (error) {
+          console.error('Cannot preserve startup benchmark post-report trace:', error)
+          app.exit(1)
+        }
+      })
+    } else {
+      // app.exit deliberately skips before-quit; retain that different lifecycle
+      // rather than inventing a quit event for the existing-function suite.
+      trace.mark('exit.request')
+      fs.writeFileSync(traceSidecar, JSON.stringify(snapshot('before-exit'), null, 2) + '\n')
+    }
+  }
   return {
     theme,
     recordWindow(window) {
+      trace.mark('window.received')
       const runtime = { version: app.getVersion(), electron: process.versions.electron, node: process.versions.node, moduleAbi: process.versions.modules, chrome: process.versions.chrome }
       if (process.env.PANLITE_BENCHMARK_WIDTH) {
         const width = Number(process.env.PANLITE_BENCHMARK_WIDTH)
@@ -41,9 +75,12 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
         window.setSize(width, 800)
       }
       const windowCreatedMs = performance.now() - startedAt
+      trace.mark('window.configured')
       window.webContents.once('did-finish-load', () => {
+        trace.mark('load.finished')
         void (async () => {
           // The renderer mark waits for the initial lazy route and two frames.
+          trace.mark('ready.query.start')
           const renderer = await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
             const deadline = performance.now() + 30000;
             const timer = setInterval(() => {
@@ -56,13 +93,15 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
               } else if (performance.now() > deadline) { clearInterval(timer); reject(new Error('Renderer did not reach first screen')); }
             }, 25);
           })`)
+          trace.mark('ready.query.end')
           if (!renderer.textLength) throw new Error('Renderer produced an empty screen')
           const readyMs = performance.now() - startedAt
+          trace.mark('ready')
           if (existingSuite) {
             const { verifyExistingRoutes } = await import('./existing-function-smoke')
             const verification = await verifyExistingRoutes(window, output)
             fs.mkdirSync(path.dirname(output), { recursive: true })
-            fs.writeFileSync(output, JSON.stringify({ ...runtime, readyMs, renderer, hiddenAtVerification: !window.isVisible(), mainProcessMemory: process.memoryUsage(), ...verification }, null, 2) + '\n')
+            writeReport({ ...runtime, readyMs, renderer, hiddenAtVerification: !window.isVisible(), mainProcessMemory: process.memoryUsage(), ...verification }, 'exit')
             app.exit(verification.passed ? 0 : 1)
             return
           }
@@ -140,6 +179,7 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
               return { defaultsDisabled: true, persisted: true, invalidWriteRejected: true, localOcrReady, imports };
             })()`)
           }
+          trace.mark('visual.start')
           const visual = await window.webContents.executeJavaScript(`(async () => {
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             const style = selector => {
@@ -166,6 +206,7 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
               localToolsHorizontalOverflow: tools ? tools.scrollWidth > tools.clientWidth + 1 : false,
               topbarOverflow: bar ? bar.scrollWidth > bar.clientWidth + 1 : false };
           })()`)
+          trace.mark('visual.end')
           if (theme && visual.theme !== theme) throw new Error('Requested benchmark theme was not applied')
           if (visual.theme === 'dark') {
             const surfaces = [visual.header, visual.statusChip, visual.aiPage, visual.providerSidebar, visual.providerForm]
@@ -188,17 +229,28 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
           fs.mkdirSync(path.dirname(output), { recursive: true })
           // Let Chromium commit the navigated route and teleported dialog to
           // the compositor before capturePage reads the frame.
+          trace.mark('delay.start')
           await new Promise(resolve => setTimeout(resolve, 350))
+          trace.mark('delay.end')
+          trace.mark('capture.start')
           const screenshot = await window.webContents.capturePage()
-          fs.writeFileSync(output.replace(/\.json$/, '.png'), screenshot.toPNG())
-          fs.writeFileSync(output, JSON.stringify({ ...runtime,
+          trace.mark('capture.end')
+          trace.mark('png.encode.start')
+          const png = screenshot.toPNG()
+          trace.mark('png.encode.end')
+          trace.mark('png.write.start')
+          fs.writeFileSync(output.replace(/\.json$/, '.png'), png)
+          trace.mark('png.write.end')
+          writeReport({ ...runtime,
             platform: process.platform, windowCreatedMs, readyMs, renderer, visual, processingPolicy,
-            hiddenAtVerification: !window.isVisible(), mainProcessMemory: process.memoryUsage() }, null, 2) + '\n')
+            hiddenAtVerification: !window.isVisible(), mainProcessMemory: process.memoryUsage() }, 'quit')
           app.quit()
         })().catch(error => {
-          fs.mkdirSync(path.dirname(output), { recursive: true })
-          fs.writeFileSync(output, JSON.stringify({ error: String(error) }) + '\n')
-          app.exit(1)
+          try {
+            trace.mark('error')
+            fs.mkdirSync(path.dirname(output), { recursive: true })
+            fs.writeFileSync(output, JSON.stringify({ error: String(error), trace: snapshot('error') }, null, 2) + '\n')
+          } finally { app.exit(1) }
         })
       })
     },

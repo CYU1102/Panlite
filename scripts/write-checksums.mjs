@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, join, resolve, relative } from 'node:path'
+import { finished } from 'node:stream/promises'
 
 const args = process.argv.slice(2)
 if (args.some(arg => arg.startsWith('--') && arg !== '--recursive')) throw new Error('Unknown checksum option')
@@ -23,14 +24,18 @@ async function listFiles(directory) {
   return files
 }
 
-function hashFile(path) {
-  return new Promise((resolveHash, reject) => {
-    const hash = createHash('sha256')
-    const stream = createReadStream(path)
-    stream.on('data', (chunk) => hash.update(chunk))
-    stream.on('error', reject)
-    stream.on('end', () => resolveHash(hash.digest('hex')))
-  })
+async function hashFile(path) {
+  const hash = createHash('sha256')
+  const stream = createReadStream(path)
+  const closed = new Promise(done => stream.once('close', done))
+  try {
+    for await (const chunk of stream) hash.update(chunk)
+    await finished(stream)
+    return hash.digest('hex')
+  } finally {
+    if (!stream.closed) stream.destroy()
+    await closed
+  }
 }
 
 const files = (await listFiles(outputDir)).sort((a, b) => a.localeCompare(b))

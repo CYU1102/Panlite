@@ -16,7 +16,10 @@ const BASELINE_SHA256 = '810297db7e0bbe788e1fffe3f48e40be2d583c2b8f45bc860cd0a18
 const BASELINE_REVISION = '0ed304fd1eb86d2e888349146a7d944330a0e0d9'
 const require = createRequire(import.meta.url)
 const optionNames = new Set(['baseline-installer', 'baseline-sha256', 'candidate-installer', 'candidate-sha256', 'candidate-manifest', 'output'])
-const protocol = Object.freeze({ warmupRoundsPerVersion: 2, measuredPairs: 20, pairOrder: 'AB for odd pairs, BA for even pairs', profile: 'new empty directory per launch', theme: 'light', windowWidth: 1280, launchTimeoutMs: 45000, osCache: 'not flushed', performanceThresholdGate: false })
+const protocol = Object.freeze({ version: 'release-startup-trace-v1', candidateTraceSchema: 1, warmupRoundsPerVersion: 2, measuredPairs: 20, pairOrder: 'AB for odd pairs, BA for even pairs', profile: 'new empty directory per launch', theme: 'light', windowWidth: 1280, launchTimeoutMs: 45000, osCache: 'not flushed', performanceThresholdGate: false })
+const traceEvents = ['prepare.start', 'prepare.complete', 'window.received', 'window.configured', 'load.finished', 'ready.query.start', 'ready.query.end', 'ready', 'visual.start', 'visual.end', 'delay.start', 'delay.end', 'capture.start', 'capture.end', 'png.encode.start', 'png.encode.end', 'png.write.start', 'png.write.end', 'report.write.start']
+const traceStageEvents = { prepare: ['prepare.start', 'prepare.complete'], mainInitialization: ['prepare.complete', 'window.received'], readyQuery: ['ready.query.start', 'ready.query.end'], visual: ['visual.start', 'visual.end'], settleDelay: ['delay.start', 'delay.end'], capture: ['capture.start', 'capture.end'], pngEncode: ['png.encode.start', 'png.encode.end'], pngWrite: ['png.write.start', 'png.write.end'], reportWrite: ['report.write.start', 'report.write.end'] }
+const traceStages = Object.keys(traceStageEvents)
 
 function argumentsFor(args) {
   const options = {}
@@ -103,6 +106,36 @@ function validateManifest(manifest, expectedRevision) {
   assert(/^[a-f\d]{64}$/i.test(manifest.sourceSha256 ?? '') && /^[a-f\d]{64}$/i.test(manifest.lockfileSha256 ?? ''), 'Candidate manifest lacks source/lock hashes')
 }
 
+function validateTrace(trace, final = false) {
+  assert(trace?.schema === 1 && Number.isFinite(trace.originPerformanceMs) && trace.originPerformanceMs >= 0, 'Missing child trace origin/schema')
+  assert.equal(trace.clock, 'child performance.now relative to trace origin', 'Trace clock scope changed')
+  assert.equal(trace.snapshotPoint, final ? 'before-quit' : 'before-main-report-write', 'Trace snapshot boundary changed')
+  assert.equal(trace.postReportSidecar, 'startup.trace.json', 'Unexpected trace sidecar path')
+  assert(Array.isArray(trace.events) && trace.events.length >= traceEvents.length, 'Incomplete child trace events')
+  const names = new Set()
+  for (let index = 0; index < trace.events.length; index++) {
+    const event = trace.events[index]
+    assert(typeof event.name === 'string' && event.name && !names.has(event.name), 'Duplicate or unnamed child trace event')
+    assert(Number.isFinite(event.atMs) && event.atMs >= 0 && (!index || event.atMs >= trace.events[index - 1].atMs), 'Non-monotonic or negative child trace time')
+    names.add(event.name)
+  }
+  for (const name of [...traceEvents, ...(final ? ['report.write.end', 'quit.request'] : [])]) assert(names.has(name), `Missing child trace event: ${name}`)
+  assert(trace.validation?.monotonic && trace.validation.nonNegative && trace.validation.uniqueNames && trace.validation.stageOrder, 'Child trace reports invalid timing')
+  const eventTimes = new Map(trace.events.map(event => [event.name, event.atMs]))
+  for (const name of traceStages) {
+    const stage = trace.stages?.[name]
+    assert(stage && Number.isFinite(stage.startMs) && stage.startMs >= 0, `Missing child stage: ${name}`)
+    assert.equal(stage.startMs, eventTimes.get(traceStageEvents[name][0]), `Child stage start does not match its event: ${name}`)
+    if (name === 'reportWrite' && !final) {
+      assert(stage.complete === false && stage.endMs === null && stage.durationMs === null, 'Main report must not invent its own write completion')
+    } else {
+      assert.equal(stage.endMs, eventTimes.get(traceStageEvents[name][1]), `Child stage end does not match its event: ${name}`)
+      assert(stage.complete === true && Number.isFinite(stage.endMs) && stage.endMs >= stage.startMs && Number.isFinite(stage.durationMs) && Math.abs(stage.durationMs - (stage.endMs - stage.startMs)) < 0.001, `Invalid child stage duration: ${name}`)
+    }
+  }
+  return trace
+}
+
 function staticCheck() {
   assert.throws(() => assertHostedWindows({}, 'win32'))
   assert.throws(() => assertHostedWindows({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'self-hosted' }, 'win32'))
@@ -125,6 +158,13 @@ function staticCheck() {
   assert.throws(() => validateManifest({ ...manifest, dirty: true }, 'a'.repeat(40)))
   assert.throws(() => validateManifest(manifest, 'd'.repeat(40)))
   assert.throws(() => archiveEntries('header\n----------\nPath = linked\nSymbolic Link = elsewhere\n'))
+  const staticEventTimes = new Map(traceEvents.map((name, index) => [name, index]))
+  const trace = { schema: 1, clock: 'child performance.now relative to trace origin', originPerformanceMs: 100, snapshotPoint: 'before-main-report-write', postReportSidecar: 'startup.trace.json', events: traceEvents.map((name, atMs) => ({ name, atMs })), validation: { monotonic: true, nonNegative: true, uniqueNames: true, stageOrder: true }, stages: Object.fromEntries(Object.entries(traceStageEvents).map(([name, [start, end]]) => [name, { startMs: staticEventTimes.get(start), endMs: name === 'reportWrite' ? null : staticEventTimes.get(end), durationMs: name === 'reportWrite' ? null : staticEventTimes.get(end) - staticEventTimes.get(start), complete: name !== 'reportWrite' }])) }
+  validateTrace(trace)
+  assert.throws(() => validateTrace({ ...trace, events: [...trace.events, { name: 'prepare.start', atMs: 20 }] }))
+  assert.throws(() => validateTrace({ ...trace, events: trace.events.map((event, index) => index === 1 ? { ...event, atMs: -1 } : event) }))
+  assert.throws(() => validateTrace({ ...trace, stages: { ...trace.stages, capture: { startMs: 5, endMs: 1, durationMs: -4, complete: true } } }))
+  assert.throws(() => validateTrace(trace, true))
   console.log(JSON.stringify({ staticCheck: 'passed', applicationLaunched: false, archiveExtracted: false, installerExecuted: false, baselineSha256: BASELINE_SHA256, protocol,
     requiredOptions: [...optionNames], extraction: 'Hosted runner full 7z.exe reads NSIS; npm 7zip-bin reads the inner 7z. No installation fallback.',
     scope: 'Release-as-shipped descriptive observation. 0.2.2 benchmark shows its GUI and may resume an empty queue; 0.2.3 benchmark hides its window. Runtime/visibility differences are retained.' }, null, 2))
@@ -200,12 +240,20 @@ async function launch(run, payload, output, scratch, tempRoot) {
     const raw = JSON.parse(readFileSync(rawFile, 'utf8'))
     assert(!raw.error && raw.renderer?.textLength > 0 && raw.version === payload.version, 'Invalid application startup report')
     assert(Number.isFinite(raw.readyMs) && Number.isFinite(raw.renderer.firstScreenMs), 'Missing startup durations')
-    if (run.version === 'candidate') assert.equal(raw.hiddenAtVerification, true, 'Candidate benchmark must verify its hidden window')
+    let childTrace = null
+    if (run.version === 'candidate') {
+      assert.equal(raw.hiddenAtVerification, true, 'Candidate benchmark must verify its hidden window')
+      validateTrace(raw.trace)
+      childTrace = validateTrace(JSON.parse(readFileSync(join(directory, 'startup.trace.json'), 'utf8')), true)
+      assert.equal(childTrace.originPerformanceMs, raw.trace.originPerformanceMs, 'Trace sidecar uses a different clock origin')
+      assert.deepEqual(childTrace.events.slice(0, raw.trace.events.length), raw.trace.events, 'Trace sidecar changed already-recorded events')
+    }
     assert(existsSync(join(directory, 'startup.png')), 'Application did not preserve its screenshot')
     Object.assign(processRecord, { completed: true, rawReport: relative(output, rawFile).replaceAll('\\', '/'),
       firstScreenMs: raw.renderer.firstScreenMs, readyMs: raw.readyMs, processWallMs: round(exitMs), firstStdoutMs: firstStdoutMs === null ? null : round(firstStdoutMs),
       reportObservedMs: reportObservedMs === null ? null : round(reportObservedMs), postReportObservationToExitMs: reportObservedMs !== null && exitMs >= reportObservedMs ? round(exitMs - reportObservedMs) : null,
-      route: raw.renderer.route, runtime: { electron: raw.electron ?? null, node: raw.node ?? null, moduleAbi: raw.moduleAbi ?? null, chrome: raw.chrome ?? null },
+      route: raw.renderer.route, firstContentfulPaintMs: raw.renderer.firstContentfulPaintMs ?? null,
+      childTrace, runtime: { electron: raw.electron ?? null, node: raw.node ?? null, moduleAbi: raw.moduleAbi ?? null, chrome: raw.chrome ?? null },
       hiddenAtVerification: raw.hiddenAtVerification ?? null, freshProfile: true })
     writeFileSync(join(directory, 'process.json'), JSON.stringify(processRecord, null, 2) + '\n')
   } catch (error) {
@@ -283,6 +331,9 @@ async function main(options) {
     }
     const metrics = ['firstScreenMs', 'readyMs', 'processWallMs', 'reportObservedMs', 'postReportObservationToExitMs']
     report.statistics = Object.fromEntries(['baseline', 'candidate'].map(version => [version, Object.fromEntries(metrics.map(metric => [metric, statistics(report.samples.filter(sample => sample.phase === 'measured' && sample.version === version).map(sample => sample[metric]))]))]))
+    const tracedSamples = report.samples.filter(sample => sample.phase === 'measured' && sample.version === 'candidate')
+    report.childTraceStatistics = Object.fromEntries(traceStages.map(stage => [stage, statistics(tracedSamples.map(sample => sample.childTrace.stages[stage].durationMs))]))
+    report.traceLimits = ['Only the candidate has phase instrumentation; legacy phase times are not synthesized.', 'Child stages share a monotonic origin. Parent observations and renderer marks use separate clocks.', 'The sidecar is written once after the main report. Its own write cost is included in parent process exit time and is not self-measured.', 'firstScreenMs is the DOM/double-animation-frame readiness mark. Missing FCP values are preserved, not treated as equivalent visible paint.']
     report.descriptiveDifferences = Object.fromEntries(metrics.map(metric => {
       const before = report.statistics.baseline[metric], after = report.statistics.candidate[metric]
       return [metric, Object.fromEntries(['medianMs', 'p95Ms'].map(percentile => [percentile, before[percentile] !== null && after[percentile] !== null ? { absoluteMs: round(after[percentile] - before[percentile]), percent: before[percentile] > 0 ? round((after[percentile] / before[percentile] - 1) * 100) : null } : null]))]

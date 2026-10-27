@@ -16,6 +16,7 @@
 2. `npm run pack:release` 仅用于以后可选的签名更新渠道。选用该渠道时才需按 `electron-builder.release.cjs` 配置证书与发布者，并通过对应签名校验；它不是默认未签名发行的必经入口。
 3. 检查包内主进程、渲染器、原生 SQLite 模块和启动日志；运行打包程序启动 smoke 与 `npm run size:report`，保留报告。
 4. 运行 `npm run release:notes` 生成与 `package.json` 当前版本对应的发布说明及本指南副本；运行 `npm run checksums` 生成 `release/SHA256SUMS.txt`。
+   随后运行 `node scripts/verify-checksums.mjs release` 验证清单中的每个实际文件。CI 同时交付 `latest.yml` 和 `.blockmap`，避免校验清单引用未上传的文件；这些文件的交付不启用未签名包的应用内更新。整包体积报告归档为 `dist/reports/package-size.txt`。
 5. 对默认未签名包核对 SHA-256、包内依赖和原生模块，将签名验证记为“不适用（未签名发行）”，保持依赖签名校验的应用内更新关闭。只有选用签名渠道才运行 `npm run release:verify`，并要求 `PANLITE_PUBLISHER_NAME` 与实际证书发布者一致。
 6. 发布前复核安装包、校验和、版本、发行说明及下载页面对应同一提交。macOS 使用独立 DMG 工作流，需另行完成平台验收、签名和公证。
 
@@ -50,6 +51,8 @@ Windows CI 默认从 `CYU1102/Panlite` 的 `v0.2.2` 读取上方固定 SHA-256 �
 该探针固定当前用户安装模式，卸载使用原位 `_?=` 参数；不覆盖模式选择页、自复制卸载引导、人工视觉审查或真实默认用户库。截图为窗口 `PrintWindow` 的尽力采集，不能因为有 PNG 就填写视觉验收通过。
 
 独立 `release-startup-comparison` job 在同一远端 runner 对固定 `0.2.2` 与同次候选包的原始应用载荷交替采样，归档为 `PanLite-windows-release-startup`。旧版显示窗口、运行时版本和后台行为与候选不同，报告必须保留这些差异。采样完成不代表性能无退化，也不关闭任务取消延迟等其他复核项。
+
+候选启动报告保留主进程单调时钟的分段 trace；`startup.trace.json` 在实际 `before-quit` 事件补齐报告写入及退出请求。侧文件自身写入开销包含在父进程退出时间内，不把它算作已独立测得的阶段。质量任务另采 `--controlled` 取消基准：单一 Electron Node 进程、每场景 2 次预热和 30 次正式样本，保存编译及实际依赖输入指纹。它是新的受控基线，不能覆盖或消除此前五样本性能复核。
 
 另行执行交互安装和真实账号升级演练：先安装上一版本，在测试账号中准备设置、任务、文件与 AI 数据；关闭应用，复制完整用户数据目录到安全的独立位置并记录哈希，再安装候选版。检查数据库迁移、账号登录、附件、任务状态和真实平台操作。该演练须使用可清理的测试数据。
 
