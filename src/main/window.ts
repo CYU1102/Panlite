@@ -8,8 +8,10 @@ import { INLINE_LOGIN_PREFIX } from '../shared/inline-login'
 import { inlineLoginManager } from './inline-login'
 import { RESOURCE_BROWSER_PARTITION_PREFIX } from '../shared/resource-browser'
 import { configureResourceWebview } from './resource-webview'
+import { benchmarkVisibleWindow } from './benchmark-window-mode'
 
 export function createMainWindow(): BrowserWindow {
+  const visibleBenchmark = benchmarkVisibleWindow(process.argv, process.env, process.platform)
   const pendingWebviewOrigins = new Map<Electron.Session, string[]>()
   const pendingResourceGuests = new Map<Electron.Session, string>()
   const devServerUrl = process.env.VITE_DEV_SERVER_URL
@@ -23,7 +25,7 @@ export function createMainWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 600,
     title: 'PanLite',
-    show: !process.argv.includes('--benchmark-startup'),
+    show: !process.argv.includes('--benchmark-startup') || visibleBenchmark,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0b' : '#f6f8fc',
     icon: join(app.getAppPath(), 'build/icon.png'),
     webPreferences: {

@@ -97,4 +97,16 @@ describe('share guest attachment', () => {
       expect(mocks.events.has('ready-to-show')).toBe(false)
     } finally { process.argv = original }
   })
+  it.runIf(process.platform === 'win32')('shows only an explicitly authorized hosted benchmark window', () => {
+    const original = process.argv
+    try {
+      for (const [key, value] of Object.entries({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'Windows',
+        RUNNER_TEMP: 'temporary', GITHUB_WORKSPACE: 'workspace', GITHUB_RUN_ID: '123', GITHUB_SHA: 'a'.repeat(40) })) vi.stubEnv(key, value)
+      process.argv = [...original, '--benchmark-startup', '--benchmark-visible']
+      createMainWindow()
+      expect(mocks.options).toHaveBeenLastCalledWith(expect.objectContaining({ show: true, webPreferences: expect.objectContaining({ backgroundThrottling: false }) }))
+      vi.stubEnv('RUNNER_ENVIRONMENT', 'self-hosted')
+      expect(() => createMainWindow()).toThrow(/disposable GitHub-hosted Windows runner/)
+    } finally { process.argv = original; vi.unstubAllEnvs() }
+  })
 })

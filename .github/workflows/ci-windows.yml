@@ -97,7 +97,7 @@ jobs:
   release-startup-comparison:
     needs: package-smoke
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -134,6 +134,20 @@ jobs:
         with:
           name: PanLite-windows-release-startup
           path: output/ci-release-startup/**
+          if-no-files-found: warn
+      - name: Compare candidate hidden and visible benchmark windows
+        run: |
+          $smoke = Get-Content -LiteralPath output/ci-package/dist/reports/install-smoke.json -Raw | ConvertFrom-Json
+          $version = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if (-not $smoke.passed -or $smoke.candidateVersion -ne $version) { throw 'Candidate did not pass its same-run installation smoke.' }
+          node scripts/benchmark-release-startup.mjs --visibility-comparison --baseline-installer output/ci-release-baseline/PanLite-Setup-0.2.2.exe --baseline-sha256 810297db7e0bbe788e1fffe3f48e40be2d583c2b8f45bc860cd0a180575f41bc --candidate-installer "output/ci-package/release/PanLite-Setup-$version.exe" --candidate-sha256 $smoke.candidateSha256 --candidate-manifest output/ci-package/release/build-provenance.json --output output/ci-visibility-startup
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate visibility comparison did not complete.' }
+      - name: Save visibility comparison samples
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: PanLite-windows-visibility-startup
+          path: output/ci-visibility-startup/**
           if-no-files-found: warn
 
   package-smoke:

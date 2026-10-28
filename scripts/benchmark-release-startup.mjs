@@ -25,11 +25,15 @@ function argumentsFor(args) {
   const options = {}
   for (let index = 0; index < args.length; index++) {
     const name = args[index].replace(/^--/, '')
-    if (args[index] === '--check') { if (options.check) throw new Error('Duplicate --check'); options.check = true; continue }
+    if (args[index] === '--check' || args[index] === '--visibility-comparison') {
+      if (options[name]) throw new Error(`Duplicate --${name}`)
+      options[name] = true; continue
+    }
     if (!args[index].startsWith('--') || !optionNames.has(name) || options[name] !== undefined) throw new Error(`Unknown or duplicate option: ${args[index]}`)
     if (!args[index + 1] || args[index + 1].startsWith('--')) throw new Error(`--${name} needs a value`)
     options[name] = args[++index]
   }
+  if (options.check && args.length !== 1) throw new Error('--check must be used alone')
   return options
 }
 
@@ -87,10 +91,14 @@ function removeOwned(directory, scratch, tempRoot) {
   rmSync(absolute, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }
 
-function plannedRuns() {
+function plannedRuns(visibilityComparison = false) {
   const plan = []
-  for (let round = 1; round <= protocol.warmupRoundsPerVersion; round++) for (const version of ['baseline', 'candidate']) plan.push({ phase: 'warmup', round, order: version === 'baseline' ? 1 : 2, version })
-  for (let pair = 1; pair <= protocol.measuredPairs; pair++) (pair % 2 ? ['baseline', 'candidate'] : ['candidate', 'baseline']).forEach((version, index) => plan.push({ phase: 'measured', round: pair, order: index + 1, version }))
+  const conditions = visibilityComparison ? ['hidden', 'visible'] : ['baseline', 'candidate']
+  const add = (phase, round, condition, index) => plan.push(visibilityComparison
+    ? { phase, round, order: index + 1, version: 'candidate', visibility: condition }
+    : { phase, round, order: index + 1, version: condition })
+  for (let round = 1; round <= protocol.warmupRoundsPerVersion; round++) conditions.forEach((condition, index) => add('warmup', round, condition, index))
+  for (let pair = 1; pair <= protocol.measuredPairs; pair++) (pair % 2 ? conditions : [...conditions].reverse()).forEach((condition, index) => add('measured', pair, condition, index))
   return plan
 }
 
@@ -158,6 +166,16 @@ function staticCheck() {
     assert.equal(plan.filter(item => item.phase === 'measured' && item.version === version).length, 20)
   }
   assert.equal(plan.filter(item => item.phase === 'measured' && item.order === 1 && item.version === 'baseline').length, 10)
+  const visibilityPlan = plannedRuns(true)
+  assert.equal(visibilityPlan.length, 44)
+  for (const visibility of ['hidden', 'visible']) {
+    assert.equal(visibilityPlan.filter(item => item.phase === 'warmup' && item.visibility === visibility && item.version === 'candidate').length, 2)
+    assert.equal(visibilityPlan.filter(item => item.phase === 'measured' && item.visibility === visibility && item.version === 'candidate').length, 20)
+  }
+  assert.equal(visibilityPlan.filter(item => item.phase === 'measured' && item.order === 1 && item.visibility === 'visible').length, 10)
+  assert.equal(argumentsFor(['--visibility-comparison'])['visibility-comparison'], true)
+  assert.throws(() => argumentsFor(['--visibility-comparison', '--visibility-comparison']))
+  assert.throws(() => argumentsFor(['--check', '--visibility-comparison']))
   assert.deepEqual(statistics([1, 2, 3, 4]), { count: 4, medianMs: 2.5, p95Ms: 4, maxMs: 4 })
   assert.equal(statistics(Array.from({ length: 20 }, (_, index) => index + 1)).p95Ms, 19)
   const manifest = { version: '0.2.3', channel: 'windows-unsigned', releaseEligibleSource: true, dirty: false, revision: 'a'.repeat(40), sourceSha256: 'b'.repeat(64), lockfileSha256: 'c'.repeat(64) }
@@ -219,7 +237,7 @@ async function extractPayload(installer, name, scratch, outerTool, innerTool) {
 }
 
 async function launch(run, payload, output, scratch, tempRoot) {
-  const directory = join(output, run.phase, `${String(run.round).padStart(2, '0')}-${run.order}-${run.version}`)
+  const directory = join(output, run.phase, `${String(run.round).padStart(2, '0')}-${run.order}-${run.version}${run.visibility ? `-${run.visibility}` : ''}`)
   mkdirSync(directory, { recursive: true })
   const profile = mkdtempSync(join(scratch, 'profile-'))
   assert.equal(readdirSync(profile).length, 0, 'Every launch must start from an empty profile')
@@ -236,7 +254,7 @@ async function launch(run, payload, output, scratch, tempRoot) {
   })
   try {
     await new Promise((resolveLaunch, reject) => {
-      child = spawn(payload.executable, ['--benchmark-startup'], { cwd: dirname(payload.executable), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      child = spawn(payload.executable, ['--benchmark-startup', ...(run.visibility === 'visible' ? ['--benchmark-visible'] : [])], { cwd: dirname(payload.executable), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
       const collect = chunk => { diagnostics = (diagnostics + chunk).slice(-128000) }
       child.stdout.on('data', chunk => { firstStdoutMs ??= performance.now() - started; collect(chunk) })
       child.stderr.on('data', collect)
@@ -253,12 +271,18 @@ async function launch(run, payload, output, scratch, tempRoot) {
     assert(Number.isFinite(raw.readyMs) && Number.isFinite(raw.renderer.firstScreenMs), 'Missing startup durations')
     let childTrace = null, rendererVisualTiming = null
     if (run.version === 'candidate') {
-      assert.equal(raw.hiddenAtVerification, true, 'Candidate benchmark must verify its hidden window')
+      assert.equal(raw.hiddenAtVerification, run.visibility !== 'visible', 'Candidate window visibility differs from the selected mode')
       validateTrace(raw.trace)
       childTrace = validateTrace(JSON.parse(readFileSync(join(directory, 'startup.trace.json'), 'utf8')), true)
       assert.equal(childTrace.originPerformanceMs, raw.trace.originPerformanceMs, 'Trace sidecar uses a different clock origin')
       assert.deepEqual(childTrace.events.slice(0, raw.trace.events.length), raw.trace.events, 'Trace sidecar changed already-recorded events')
       rendererVisualTiming = validateRendererVisualTiming(raw.visual?.rendererVisualTiming)
+      if (run.visibility) {
+        assert.equal(raw.windowVisibleAtCreation, run.visibility === 'visible', 'Initial window visibility differs from the selected mode')
+        assert.equal(raw.windowVisibleAtVisualStart, run.visibility === 'visible', 'Visual-check window visibility differs from the selected mode')
+        assert(['visible', 'hidden'].includes(raw.renderer.visibilityState) && typeof raw.renderer.hasFocus === 'boolean', 'Renderer visibility/focus at ready is missing')
+        assert(['visible', 'hidden'].includes(rendererVisualTiming.visibilityAtStart) && ['visible', 'hidden'].includes(rendererVisualTiming.visibilityAtEnd), 'Renderer visual visibility is missing')
+      }
     }
     assert(existsSync(join(directory, 'startup.png')), 'Application did not preserve its screenshot')
     Object.assign(processRecord, { completed: true, rawReport: relative(output, rawFile).replaceAll('\\', '/'),
@@ -266,7 +290,9 @@ async function launch(run, payload, output, scratch, tempRoot) {
       reportObservedMs: reportObservedMs === null ? null : round(reportObservedMs), postReportObservationToExitMs: reportObservedMs !== null && exitMs >= reportObservedMs ? round(exitMs - reportObservedMs) : null,
       route: raw.renderer.route, firstContentfulPaintMs: raw.renderer.firstContentfulPaintMs ?? null,
       childTrace, rendererVisualTiming, runtime: { electron: raw.electron ?? null, node: raw.node ?? null, moduleAbi: raw.moduleAbi ?? null, chrome: raw.chrome ?? null },
-      hiddenAtVerification: raw.hiddenAtVerification ?? null, freshProfile: true })
+      hiddenAtVerification: raw.hiddenAtVerification ?? null, windowVisibleAtCreation: raw.windowVisibleAtCreation ?? null,
+      windowVisibleAtVisualStart: raw.windowVisibleAtVisualStart ?? null, visibilityAtReady: raw.renderer.visibilityState ?? null,
+      hasFocusAtReady: raw.renderer.hasFocus ?? null, freshProfile: true })
     writeFileSync(join(directory, 'process.json'), JSON.stringify(processRecord, null, 2) + '\n')
   } catch (error) {
     processRecord.error = error instanceof Error ? error.message : String(error)
@@ -302,6 +328,7 @@ async function launch(run, payload, output, scratch, tempRoot) {
 
 async function main(options) {
   assertHostedWindows()
+  const visibilityComparison = options['visibility-comparison'] === true
   for (const name of optionNames) assert(options[name], `Missing --${name}`)
   assert.equal(options['baseline-sha256'].toLowerCase(), BASELINE_SHA256, 'Only the explicitly pinned published 0.2.2 baseline is supported')
   assert(/^[a-f\d]{64}$/i.test(options['candidate-sha256']), 'Candidate SHA-256 is required from the same-run installation report')
@@ -318,40 +345,43 @@ async function main(options) {
   const scratch = realpathSync.native(mkdtempSync(join(tempRoot, 'panlite-release-startup-')))
   assert(dirname(scratch).toLowerCase() === tempRoot.toLowerCase(), 'Scratch escaped RUNNER_TEMP')
   assert(!inside(scratch, output), 'Reports must survive scratch cleanup')
-  const report = { schema: 1, benchmark: 'release-as-shipped-startup', recordedAt: new Date().toISOString(), protocol,
-    scope: 'Descriptive comparison of untouched installer application payloads on the same CI VM. Legacy GUI visibility, queue startup and bundled runtime differ; this is not a like-for-like configuration or a cold-cache benchmark.',
+  const report = { schema: 1, benchmark: visibilityComparison ? 'candidate-window-visibility-startup' : 'release-as-shipped-startup', recordedAt: new Date().toISOString(),
+    protocol: visibilityComparison ? { ...protocol, version: 'candidate-window-visibility-v1', conditions: ['hidden', 'visible'], candidatePayloadIdentical: true } : protocol,
+    scope: visibilityComparison ? 'Same candidate payload and runtime on one disposable runner; only benchmark window visibility is selected. Not a normal user startup or cold-cache measurement.' : 'Descriptive comparison of untouched installer application payloads on the same CI VM. Legacy GUI visibility, queue startup and bundled runtime differ; this is not a like-for-like configuration or a cold-cache benchmark.',
     performanceThresholdGate: false, taskCancellationReviewClosed: false,
     ci: { repository: process.env.GITHUB_REPOSITORY, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, revision: process.env.GITHUB_SHA, runnerImage: process.env.ImageOS, runnerImageVersion: process.env.ImageVersion },
     environment: { platform: platform(), arch: arch(), release: release(), cpu: cpus()[0]?.model, logicalCpus: cpus().length, memoryBytes: totalmem(), harnessNode: process.version },
     sourceBinding: { baselineRelease: 'v0.2.2', baselineReleaseRevision: BASELINE_REVISION, baselineInstallerSha256: BASELINE_SHA256, candidateExpectedInstallerSha256: options['candidate-sha256'].toLowerCase(), candidateManifestSha256: digest(manifestBytes), candidateRevision: manifest.revision, candidateSourceSha256: manifest.sourceSha256, candidateLockfileSha256: manifest.lockfileSha256, sameWorkflowRunCandidateReceipt: 'Expected candidate installer SHA is supplied by the consuming job from this run\'s installation acceptance report; manifest revision must equal GITHUB_SHA.' },
-    configurationDifferences: { baseline: '0.2.2 benchmark creates a normal GUI in the disposable remote runner and calls queue recovery; every launch has a new empty profile with no accounts or queued work.', candidate: '0.2.3 benchmark creates a hidden window and skips queue/background startup.', bundledRuntime: 'Actual Electron/Node versions are preserved per sample; differing runtimes are part of the shipped releases.' },
+    configurationDifferences: visibilityComparison ? { hidden: 'Candidate benchmark creates a hidden window.', visible: 'The same candidate benchmark explicitly creates a visible window on the hosted runner.', shared: 'Both use empty profiles, the same runtime, disabled benchmark background throttling and skip queue/background startup.' } : { baseline: '0.2.2 benchmark creates a normal GUI in the disposable remote runner and calls queue recovery; every launch has a new empty profile with no accounts or queued work.', candidate: '0.2.3 benchmark creates a hidden window and skips queue/background startup.', bundledRuntime: 'Actual Electron/Node versions are preserved per sample; differing runtimes are part of the shipped releases.' },
     samples: [], completed: false, temporaryDirectoryRemoved: false,
   }
-  writeFileSync(join(output, 'protocol.json'), JSON.stringify({ ...report, plan: plannedRuns() }, null, 2) + '\n')
+  writeFileSync(join(output, 'protocol.json'), JSON.stringify({ ...report, plan: plannedRuns(visibilityComparison) }, null, 2) + '\n')
   let failure
   try {
     const outerTool = fullSevenZip(), innerTool = require('7zip-bin').path7za
     report.archiveTools = { nsis: outerTool, application7z: innerTool }
-    const payloads = { baseline: await extractPayload(baselineInstaller, 'baseline', scratch, outerTool, innerTool), candidate: await extractPayload(candidateInstaller, 'candidate', scratch, outerTool, innerTool) }
+    const payloads = { ...(visibilityComparison ? {} : { baseline: await extractPayload(baselineInstaller, 'baseline', scratch, outerTool, innerTool) }), candidate: await extractPayload(candidateInstaller, 'candidate', scratch, outerTool, innerTool) }
     report.payloads = Object.fromEntries(Object.entries(payloads).map(([key, { executable: _executable, ...identity }]) => [key, identity]))
-    for (const run of plannedRuns()) {
+    for (const run of plannedRuns(visibilityComparison)) {
       const sample = await launch(run, payloads[run.version], output, scratch, tempRoot)
       sample.profileRemoved = true
       report.samples.push(sample)
       writeFileSync(join(output, 'progress.json'), JSON.stringify(report, null, 2) + '\n')
-      console.log(`${run.phase} ${run.round} ${run.version}: first screen ${sample.firstScreenMs.toFixed(1)}ms; process ${sample.processWallMs.toFixed(1)}ms`)
+      console.log(`${run.phase} ${run.round} ${run.visibility ?? run.version}: first screen ${sample.firstScreenMs.toFixed(1)}ms; process ${sample.processWallMs.toFixed(1)}ms`)
     }
-    const metrics = ['firstScreenMs', 'readyMs', 'processWallMs', 'reportObservedMs', 'postReportObservationToExitMs']
-    report.statistics = Object.fromEntries(['baseline', 'candidate'].map(version => [version, Object.fromEntries(metrics.map(metric => [metric, statistics(report.samples.filter(sample => sample.phase === 'measured' && sample.version === version).map(sample => sample[metric]))]))]))
+    const metrics = ['firstScreenMs', 'readyMs', 'processWallMs', 'reportObservedMs', 'postReportObservationToExitMs', ...(visibilityComparison ? ['firstContentfulPaintMs'] : [])]
+    const conditions = visibilityComparison ? ['hidden', 'visible'] : ['baseline', 'candidate']
+    report.statistics = Object.fromEntries(conditions.map(condition => [condition, Object.fromEntries(metrics.map(metric => [metric, statistics(report.samples.filter(sample => sample.phase === 'measured' && (visibilityComparison ? sample.visibility === condition : sample.version === condition)).map(sample => sample[metric]))]))]))
     const tracedSamples = report.samples.filter(sample => sample.phase === 'measured' && sample.version === 'candidate')
     report.childTraceStatistics = Object.fromEntries(traceStages.map(stage => [stage, statistics(tracedSamples.map(sample => sample.childTrace.stages[stage].durationMs))]))
     report.rendererVisualStatistics = Object.fromEntries(['firstFrameWaitMs', 'secondFrameWaitMs', 'stylesReadMs'].map(stage => [stage, statistics(tracedSamples.map(sample => sample.rendererVisualTiming[stage]))]))
+    if (visibilityComparison) report.rendererVisualByVisibility = Object.fromEntries(conditions.map(condition => [condition, Object.fromEntries(['firstFrameWaitMs', 'secondFrameWaitMs', 'stylesReadMs'].map(stage => [stage, statistics(tracedSamples.filter(sample => sample.visibility === condition).map(sample => sample.rendererVisualTiming[stage]))]))]))
     report.traceLimits = ['Only the candidate has phase instrumentation; legacy phase times are not synthesized.', 'Child stages share a monotonic origin. Parent observations and renderer marks use separate clocks; renderer visual intervals share their own renderer clock and exclude the main-to-renderer bridge.', 'The sidecar is written once after the main report. Its own write cost is included in parent process exit time and is not self-measured.', 'firstScreenMs is the DOM/double-animation-frame readiness mark. Missing FCP values are preserved, not treated as equivalent visible paint.']
     report.descriptiveDifferences = Object.fromEntries(metrics.map(metric => {
-      const before = report.statistics.baseline[metric], after = report.statistics.candidate[metric]
+      const before = report.statistics[conditions[0]][metric], after = report.statistics[conditions[1]][metric]
       return [metric, Object.fromEntries(['medianMs', 'p95Ms'].map(percentile => [percentile, before[percentile] !== null && after[percentile] !== null ? { absoluteMs: round(after[percentile] - before[percentile]), percent: before[percentile] > 0 ? round((after[percentile] / before[percentile] - 1) * 100) : null } : null]))]
     }))
-    report.interpretation = ['All 40 measured launches are preserved; the four predefined warmup launches are preserved and excluded from aggregate statistics.', 'The same VM runs every launch serially with AB/BA alternation. OS filesystem caches and host load remain uncontrolled.', 'processWallMs includes post-first-screen visual checks, screenshot capture and application exit; it is not user first-screen latency.', 'reportObservedMs is the parent observation of complete JSON after screenshot capture, not an exact child write timestamp. Observation-to-exit may be unavailable.', 'No like-for-like comparator is modified or overridden. Runtime/GUI/queue differences prevent claiming identical measurement configuration.', 'This collection alone does not close the existing task cancellation or startup tail-latency review, and no new performance pass/fail threshold is imposed.']
+    report.interpretation = ['All 40 measured launches are preserved; the four predefined warmup launches are preserved and excluded from aggregate statistics.', 'The same VM runs every launch serially with AB/BA alternation. OS filesystem caches and host load remain uncontrolled.', 'processWallMs includes post-first-screen visual checks, screenshot capture and application exit; it is not user first-screen latency.', 'reportObservedMs is the parent observation of complete JSON after screenshot capture, not an exact child write timestamp. Observation-to-exit may be unavailable.', visibilityComparison ? 'Same candidate payload in each condition; benchmark mode suppresses normal background services. BrowserWindow visibility and renderer visibility/focus are recorded separately and do not prove actual screen presentation.' : 'No like-for-like comparator is modified or overridden. Runtime/GUI/queue differences prevent claiming identical measurement configuration.', 'This collection alone does not close the existing task cancellation or startup tail-latency review, and no new performance pass/fail threshold is imposed.']
     report.completed = true
   } catch (error) { failure = error; report.error = error instanceof Error ? error.message : String(error) }
   finally {

@@ -137,6 +137,8 @@ describe('startup benchmark monotonic trace', () => {
     const main = JSON.parse(fixture.writes.get('synthetic-startup.json')!)
     const sidecar = JSON.parse(fixture.writes.get('synthetic-startup.trace.json')!)
     expect(main.trace.snapshotPoint).toBe('before-main-report-write')
+    expect(main.windowVisibleAtCreation).toBe(false)
+    expect(main.windowVisibleAtVisualStart).toBe(false)
     expect(main.trace.stages.reportWrite.complete).toBe(false)
     expect(main.trace.events.some((event: { name: string }) => event.name === 'quit.request')).toBe(false)
     expect(sidecar.snapshotPoint).toBe('before-quit')
@@ -157,11 +159,11 @@ describe('startup benchmark monotonic trace', () => {
     const visual = await runInNewContext(script, {
       performance: { now: () => times.shift() },
       requestAnimationFrame: (callback: () => void) => { frames++; callback() },
-      document: { querySelector: () => null, documentElement: { classList: { contains: () => false } } },
+      document: { visibilityState: 'visible', querySelector: () => null, documentElement: { classList: { contains: () => false } } },
       innerHeight: 720,
     })
     expect(frames).toBe(2)
-    expect(visual.rendererVisualTiming).toEqual({ clock: 'renderer performance.now', started: 10, firstFrame: 15, secondFrame: 55, stylesComplete: 60 })
+    expect(visual.rendererVisualTiming).toEqual({ clock: 'renderer performance.now', started: 10, firstFrame: 15, secondFrame: 55, stylesComplete: 60, visibilityAtStart: 'visible', visibilityAtEnd: 'visible' })
     expect(visual.theme).toBe('light')
   })
 

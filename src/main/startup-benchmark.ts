@@ -68,6 +68,7 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
     theme,
     recordWindow(window) {
       trace.mark('window.received')
+      const windowVisibleAtCreation = window.isVisible()
       const runtime = { version: app.getVersion(), electron: process.versions.electron, node: process.versions.node, moduleAbi: process.versions.modules, chrome: process.versions.chrome }
       if (process.env.PANLITE_BENCHMARK_WIDTH) {
         const width = Number(process.env.PANLITE_BENCHMARK_WIDTH)
@@ -89,7 +90,8 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
                 clearInterval(timer);
                 resolve({ firstScreenMs: ready.startTime,
                   firstContentfulPaintMs: performance.getEntriesByName('first-contentful-paint')[0]?.startTime ?? null,
-                  route: location.hash, textLength: document.querySelector('#app')?.textContent?.trim().length || 0 });
+                  route: location.hash, textLength: document.querySelector('#app')?.textContent?.trim().length || 0,
+                  visibilityState: document.visibilityState, hasFocus: document.hasFocus() });
               } else if (performance.now() > deadline) { clearInterval(timer); reject(new Error('Renderer did not reach first screen')); }
             }, 25);
           })`)
@@ -179,9 +181,11 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
               return { defaultsDisabled: true, persisted: true, invalidWriteRejected: true, localOcrReady, imports };
             })()`)
           }
+          const windowVisibleAtVisualStart = window.isVisible()
           trace.mark('visual.start')
           const visual = await window.webContents.executeJavaScript(`(async () => {
             const started = performance.now();
+            const visibilityAtStart = document.visibilityState;
             let firstFrame;
             await new Promise(resolve => requestAnimationFrame(() => {
               firstFrame = performance.now();
@@ -212,7 +216,8 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
               localToolsHorizontalOverflow: tools ? tools.scrollWidth > tools.clientWidth + 1 : false,
               topbarOverflow: bar ? bar.scrollWidth > bar.clientWidth + 1 : false };
             const stylesComplete = performance.now();
-            result.rendererVisualTiming = { clock: 'renderer performance.now', started, firstFrame, secondFrame, stylesComplete };
+            result.rendererVisualTiming = { clock: 'renderer performance.now', started, firstFrame, secondFrame, stylesComplete,
+              visibilityAtStart, visibilityAtEnd: document.visibilityState };
             return result;
           })()`)
           trace.mark('visual.end')
@@ -251,7 +256,7 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
           fs.writeFileSync(output.replace(/\.json$/, '.png'), png)
           trace.mark('png.write.end')
           writeReport({ ...runtime,
-            platform: process.platform, windowCreatedMs, readyMs, renderer, visual, processingPolicy,
+            platform: process.platform, windowCreatedMs, readyMs, renderer, visual, processingPolicy, windowVisibleAtCreation, windowVisibleAtVisualStart,
             hiddenAtVerification: !window.isVisible(), mainProcessMemory: process.memoryUsage() }, 'quit')
           app.quit()
         })().catch(error => {
