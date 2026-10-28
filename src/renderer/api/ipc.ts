@@ -122,7 +122,7 @@ declare global {
       deleteFiles: (accountId: string, fileIds: string[]) => Promise<SimpleResult>
       copyFiles: (accountId: string, fileIds: string[], targetDirId: string) => Promise<SimpleResult>
       getFileLink: (accountId: string, fileId: string) => Promise<SimpleResult & { url?: string }>
-      prepareFilePreview: (accountId: string, fileId: string, fileName: string, fileSize?: number, preparationId?: string) => Promise<FilePreviewIpcResult>
+      prepareFilePreview: (accountId: string, fileId: string, fileName: string, fileSize?: number, preparationId?: string, password?: string) => Promise<FilePreviewIpcResult>
       cleanupFilePreview: (sessionId: string) => Promise<FilePreviewIpcResult>
       cancelFilePreview: (preparationId: string) => Promise<FilePreviewIpcResult>
       globalSearch: (input: unknown) => Promise<SimpleResult>

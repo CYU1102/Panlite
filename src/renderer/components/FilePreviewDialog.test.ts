@@ -24,8 +24,8 @@ function deferred<T>() {
   const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
   return { promise, resolve, reject }
 }
-async function render() {
-  wrapper = mount(FilePreviewDialog, { props: { modelValue: true, accountId: 'account', fileId: 'one', fileName: 'sample.txt' }, global: {
+async function render(props: Partial<{ modelValue: boolean; accountId: string; fileId: string; fileName: string; password: string }> = {}) {
+  wrapper = mount(FilePreviewDialog, { props: { modelValue: true, accountId: 'account', fileId: 'one', fileName: 'sample.txt', ...props }, global: {
     stubs: { ElDialog: { props: ['fullscreen'], template: '<section :data-expanded="fullscreen"><slot name="header" titleId="preview-title" /><slot /><slot name="footer" /></section>' } },
   } })
   await flushPromises()
@@ -33,6 +33,30 @@ async function render() {
 }
 
 describe('preview session lifecycle', () => {
+  it('retries an encrypted archive with its exact password and passes it to extraction', async () => {
+    api.prepareFilePreview.mockResolvedValueOnce({ success: false, error: '无法读取RAR文件内容' }).mockResolvedValueOnce(
+      result('rar', 'archive', { archive: { format: 'rar', fileCount: 1, totalSize: 5, files: [], isEncrypted: true } }),
+    )
+    const view = await render({ fileName: 'encrypted.rar' })
+    const input = view.get('input[aria-label="压缩包密码"]')
+    expect(input.attributes('type')).toBe('password')
+    await input.setValue(' 1234 ')
+    await view.findAll('button').find(button => button.text() === '重试')!.trigger('click')
+    await flushPromises()
+    expect(api.prepareFilePreview.mock.calls[1][5]).toBe(' 1234 ')
+    expect(api.prepareFilePreview.mock.calls[1][4]).not.toBe(api.prepareFilePreview.mock.calls[0][4])
+    await view.findAll('button').find(button => button.text() === '打开解压功能')!.trigger('click')
+    expect(view.emitted('openArchive')?.[0]).toEqual([{ fileId: 'one', fileName: 'encrypted.rar', password: ' 1234 ' }])
+  })
+
+  it('does not reuse a password when the selected account or file changes', async () => {
+    api.prepareFilePreview.mockResolvedValue({ success: false, error: '无法读取' })
+    const view = await render({ fileName: 'encrypted.rar', password: 'old-secret' })
+    await view.setProps({ accountId: 'other', fileId: 'two' })
+    await flushPromises()
+    expect(api.prepareFilePreview.mock.calls[api.prepareFilePreview.mock.calls.length - 1][5]).toBeUndefined()
+    expect((view.get('input[aria-label="压缩包密码"]').element as HTMLInputElement).value).toBe('')
+  })
   it('discards and releases results arriving after a parent closes the dialog', async () => {
     const pending = deferred<ReturnType<typeof result>>()
     api.prepareFilePreview.mockReturnValue(pending.promise)

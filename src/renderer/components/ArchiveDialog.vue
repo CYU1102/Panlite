@@ -23,17 +23,19 @@
     </div>
 
     <!-- 密码输入（如果需要） -->
-    <div v-if="meta?.isEncrypted && !password" class="password-section">
+    <div v-if="loadError" class="archive-error" role="alert">{{ loadError }}</div>
+    <div v-if="loadError || (meta?.isEncrypted && !password)" class="password-section">
       <el-input
         v-model="inputPassword"
         type="password"
-        placeholder="请输入压缩包密码"
+        placeholder="压缩包密码（如需要）"
+        aria-label="压缩包密码"
         show-password
       >
         <template #prepend>密码</template>
       </el-input>
       <el-button type="primary" @click="loadWithPassword" :loading="loading">
-        确认
+        重新读取
       </el-button>
     </div>
 
@@ -74,7 +76,7 @@
         <el-button
           type="primary"
           @click="onExtractAll"
-          :disabled="!meta"
+          :disabled="!meta || loading || extracting"
           :loading="extracting"
         >
           全部解压
@@ -82,7 +84,7 @@
         <el-button
           type="success"
           @click="onExtractSelected"
-          :disabled="selectedFiles.length === 0"
+          :disabled="selectedFiles.length === 0 || loading || extracting"
           :loading="extracting"
         >
           解压选中 ({{ selectedFiles.length }})
@@ -93,7 +95,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { Loader2 } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
@@ -105,6 +107,7 @@ const props = defineProps<{
   account: Omit<DriveAccount, 'credential'> | null
   fileId: string
   fileName: string
+  initialPassword?: string
 }>()
 
 const emit = defineEmits<{
@@ -117,36 +120,54 @@ const extracting = ref(false)
 const meta = ref<ArchiveMeta | null>(null)
 const password = ref('')
 const inputPassword = ref('')
+const loadError = ref('')
 const selectedFiles = ref<ArchiveFileInfo[]>([])
+let generation = 0
+onBeforeUnmount(() => { generation++; password.value = ''; inputPassword.value = '' })
 
 // 监听对话框打开
-watch(() => props.modelValue, async (newVal) => {
-  if (newVal && props.account && props.fileId) {
-    await loadArchive()
-  }
+watch(() => [props.modelValue, props.account?.id, props.fileId, props.fileName, props.initialPassword] as const, (current, previous) => {
+  generation++
+  meta.value = null
+  loadError.value = ''
+  selectedFiles.value = []
+  loading.value = false
+  extracting.value = false
+  const scopeChanged = previous && (current[1] !== previous[1] || current[2] !== previous[2] || current[3] !== previous[3])
+  password.value = props.modelValue && !(scopeChanged && current[4] === previous[4]) ? props.initialPassword || '' : ''
+  inputPassword.value = password.value
+  if (props.modelValue && props.account && props.fileId) void loadArchive()
 }, { immediate: true })
 
 async function loadArchive() {
   if (!props.account) return
-
+  const attempt = ++generation
+  const accountId = props.account.id
+  const fileId = props.fileId
+  const fileName = props.fileName
+  const attemptPassword = password.value || undefined
   loading.value = true
+  loadError.value = ''
   try {
     const result = await electronApi.archiveList(
-      props.account.id,
-      props.fileId,
-      props.fileName,
-      password.value || undefined
+      accountId,
+      fileId,
+      fileName,
+      attemptPassword,
     )
-
+    if (attempt !== generation) return
     if (result.success && result.meta) {
       meta.value = result.meta
     } else {
-      ElMessage.error(result.error || '读取压缩包失败')
+      meta.value = null
+      loadError.value = result.error || '读取压缩包失败'
     }
   } catch (err) {
-    ElMessage.error('读取压缩包失败: ' + String(err))
+    if (attempt !== generation) return
+    meta.value = null
+    loadError.value = '读取压缩包失败: ' + String(err)
   } finally {
-    loading.value = false
+    if (attempt === generation) loading.value = false
   }
 }
 
@@ -169,24 +190,30 @@ async function onExtractSelected() {
 
 async function extractFiles(files?: string[]) {
   if (!props.account) return
-
-  // 选择本地目标目录
-  const dirResult = await electronApi.selectDownloadDir()
-  if (!dirResult.success || !dirResult.dirPath) return
+  const attempt = generation
+  const accountId = props.account.id
+  const fileId = props.fileId
+  const fileName = props.fileName
+  const attemptPassword = password.value || undefined
 
   extracting.value = true
   try {
+    // 选择目录期间账号或文件可能发生变化。
+    const dirResult = await electronApi.selectDownloadDir()
+    if (attempt !== generation) return
+    if (!dirResult.success || !dirResult.dirPath) return
     const result = await electronApi.archiveExtract(
-      props.account.id,
-      props.fileId,
-      props.fileName,
+      accountId,
+      fileId,
+      fileName,
       {
-        password: password.value || undefined,
+        password: attemptPassword,
         targetDir: dirResult.dirPath,
         files,
       }
     )
 
+    if (attempt !== generation) return
     if (result.success) {
       ElMessage.success(result.taskId ? '解压任务已创建，可在任务日志查看进度' : '解压完成')
       emit('success')
@@ -195,23 +222,29 @@ async function extractFiles(files?: string[]) {
       ElMessage.error(result.error || '解压失败')
     }
   } catch (err) {
+    if (attempt !== generation) return
     ElMessage.error('解压失败: ' + String(err))
   } finally {
-    extracting.value = false
+    if (attempt === generation) extracting.value = false
   }
 }
 
 
 function onClose() {
+  generation++
   emit('update:modelValue', false)
   meta.value = null
   password.value = ''
   inputPassword.value = ''
   selectedFiles.value = []
+  loadError.value = ''
+  loading.value = false
+  extracting.value = false
 }
 </script>
 
 <style scoped>
+.archive-error { margin-bottom: 12px; color: var(--pl-danger); overflow-wrap: anywhere; }
 .archive-info {
   display: flex;
   gap: 24px;

@@ -143,7 +143,7 @@ async function extractZip(filePath: string, outputDir: string, password?: string
 
 // ── RAR 解压 ──
 
-async function listRarFiles(filePath: string, password?: string): Promise<ArchiveFileInfo[]> {
+async function listRarFiles(filePath: string, password?: string): Promise<{ files: ArchiveFileInfo[]; isEncrypted: boolean }> {
   try {
     const unrar = require('node-unrar-js')
     const files: ArchiveFileInfo[] = []
@@ -158,8 +158,10 @@ async function listRarFiles(filePath: string, password?: string): Promise<Archiv
     // 获取文件列表
     const list = archive.getFileList()
     const fileHeaders = list.fileHeaders
+    let isEncrypted = Boolean(list.arcHeader?.flags?.headerEncrypted)
 
     for (const header of fileHeaders) {
+      isEncrypted ||= Boolean(header.flags?.encrypted)
       if (files.length >= ARCHIVE_LIMITS.maxEntries) throw new Error('压缩包文件数量超过限制')
       files.push({
         name: header.name.split('/').pop() || header.name,
@@ -171,9 +173,9 @@ async function listRarFiles(filePath: string, password?: string): Promise<Archiv
       })
     }
 
-    return files
-  } catch (err) {
-    log.error('Failed to list RAR files:', err)
+    return { files, isEncrypted }
+  } catch {
+    log.error('Failed to list RAR files')
     throw new Error('无法读取RAR文件内容')
   }
 }
@@ -210,8 +212,8 @@ async function extractRar(filePath: string, outputDir: string, password?: string
       }
       runtime.onProgress?.(++completed, extracted.files.length)
     }
-  } catch (err) {
-    log.error('Failed to extract RAR:', err)
+  } catch {
+    log.error('Failed to extract RAR')
     throw new Error('解压RAR文件失败')
   }
 }
@@ -254,8 +256,8 @@ async function list7zFiles(filePath: string, password?: string): Promise<Archive
     }
 
     return files
-  } catch (err) {
-    log.error('Failed to list 7z files:', err)
+  } catch {
+    log.error('Failed to list 7z files')
     throw new Error('无法读取7z文件内容')
   }
 }
@@ -290,8 +292,8 @@ async function extract7z(filePath: string, outputDir: string, password?: string,
         resolve()
       })
     })
-  } catch (err) {
-    log.error('Failed to extract 7z:', err)
+  } catch {
+    log.error('Failed to extract 7z')
     throw new Error('解压7z文件失败')
   }
 }
@@ -395,9 +397,12 @@ export async function listArchiveFiles(filePath: string, password?: string): Pro
       isEncrypted = result.isEncrypted
       break
     }
-    case 'rar':
-      files = await listRarFiles(filePath, password)
+    case 'rar': {
+      const result = await listRarFiles(filePath, password)
+      files = result.files
+      isEncrypted = result.isEncrypted
       break
+    }
     case '7z':
       files = await list7zFiles(filePath, password)
       break

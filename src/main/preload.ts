@@ -148,8 +148,8 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.FILE_COPY, accountId, fileIds, targetDirId),
   getFileLink: (accountId: string, fileId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FILE_GET_LINK, accountId, fileId),
-  prepareFilePreview: (accountId: string, fileId: string, fileName: string, fileSize?: number, preparationId?: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.FILE_PREVIEW_PREPARE, { accountId, fileId, fileName, fileSize, preparationId }),
+  prepareFilePreview: (accountId: string, fileId: string, fileName: string, fileSize?: number, preparationId?: string, password?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FILE_PREVIEW_PREPARE, { accountId, fileId, fileName, fileSize, preparationId, password }),
   cleanupFilePreview: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FILE_PREVIEW_CLEANUP, sessionId),
   cancelFilePreview: (preparationId: string) =>

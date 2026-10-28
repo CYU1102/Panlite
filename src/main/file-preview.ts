@@ -421,6 +421,9 @@ function validateRequest(request: FilePreviewRequest): void {
   if (request.fileSize !== undefined && (!Number.isSafeInteger(request.fileSize) || request.fileSize < 0)) {
     throw new Error('文件大小无效')
   }
+  if (request.password !== undefined && (typeof request.password !== 'string' || request.password.includes('\0'))) {
+    throw new Error('压缩包密码无效')
+  }
   if (request.preparationId !== undefined && (typeof request.preparationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.preparationId))) {
     throw new Error('预览请求标识无效')
   }

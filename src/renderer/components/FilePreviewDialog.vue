@@ -34,6 +34,9 @@
 
       <el-result v-else-if="error" icon="error" title="无法预览" :sub-title="error">
         <template #extra>
+          <label v-if="isArchive" class="archive-password">压缩包密码（如需要）
+            <input v-model="archivePassword" type="password" autocomplete="off" aria-label="压缩包密码" @keyup.enter="loadPreview">
+          </label>
           <el-button type="primary" @click="loadPreview">重试</el-button>
         </template>
       </el-result>
@@ -121,7 +124,7 @@
         <el-button
           v-if="preview?.kind === 'archive' && canOpenArchive"
           type="primary"
-          @click="emit('openArchive', { fileId, fileName })"
+          @click="emit('openArchive', { fileId, fileName, password: archivePassword || undefined })"
         >
           打开解压功能
         </el-button>
@@ -136,6 +139,7 @@ import { computed, defineComponent, h, onBeforeUnmount, ref, watch } from 'vue'
 import { Loader2, Music, Maximize2, Minimize2, ZoomIn, ZoomOut } from 'lucide-vue-next'
 import { electronApi } from '../api/ipc'
 import type { FilePreviewSessionDto, FilePreviewKind, FilePreviewIpcResult } from '@shared/file-preview'
+import { detectFilePreviewType } from '@shared/file-preview'
 
 interface MarkdownBlock {
   type: 'heading' | 'code' | 'quote' | 'list' | 'rule' | 'paragraph'
@@ -168,7 +172,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
-  openArchive: [payload: { fileId: string; fileName: string }]
+  openArchive: [payload: { fileId: string; fileName: string; password?: string }]
 }>()
 
 const loading = ref(false)
@@ -181,6 +185,8 @@ const imageFit = ref(true)
 const imageScale = ref(1)
 const imageNaturalSize = ref({ width: 0, height: 0 })
 const imageStage = ref<HTMLElement | null>(null)
+const archivePassword = ref(props.password || '')
+const isArchive = computed(() => detectFilePreviewType(props.fileName).kind === 'archive')
 const imageStyle = computed(() => imageFit.value || !imageNaturalSize.value.width
   ? {}
   : { width: `${imageNaturalSize.value.width * imageScale.value}px`, maxWidth: 'none', maxHeight: 'none' })
@@ -231,7 +237,9 @@ const MarkdownInline = defineComponent({
   },
 })
 
-watch(() => [props.modelValue, props.accountId, props.fileId, props.fileName, props.fileSize], () => {
+watch(() => [props.modelValue, props.accountId, props.fileId, props.fileName, props.fileSize, props.password] as const, (current, previous) => {
+  const scopeChanged = previous && (current[1] !== previous[1] || current[2] !== previous[2] || current[3] !== previous[3])
+  archivePassword.value = props.modelValue && !(scopeChanged && current[5] === previous[5]) ? props.password || '' : ''
   if (props.modelValue) void loadPreview()
   else {
     loadGeneration++
@@ -244,6 +252,7 @@ watch(() => [props.modelValue, props.accountId, props.fileId, props.fileName, pr
 
 onBeforeUnmount(() => {
   loadGeneration++
+  archivePassword.value = ''
   cancelPendingPreparation()
   void cleanupPreview()
 })
@@ -275,6 +284,7 @@ async function loadPreview(): Promise<void> {
       props.fileName,
       props.fileSize,
       preparationId,
+      isArchive.value ? archivePassword.value || undefined : undefined,
     ) as FilePreviewIpcResult
     if (generation !== loadGeneration) {
       if (result.preview?.sessionId) await cleanupSession(result.preview.sessionId)
@@ -317,6 +327,7 @@ async function cleanupSession(sessionId: string): Promise<void> {
 function closeDialog(): void {
   loadGeneration++
   cancelPendingPreparation()
+  archivePassword.value = ''
   loading.value = false
   expanded.value = false
   emit('update:modelValue', false)
@@ -460,6 +471,8 @@ function safeExternalLink(value: string): string {
 .image-controls button:disabled { opacity: .4; cursor: not-allowed; }
 .image-scale { min-width: 48px; color: var(--pl-text-muted); font-size: 12px; text-align: center; }
 .preview-state { min-height: 360px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--pl-text-muted); }
+.archive-password { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; color: var(--pl-text-secondary); font-size: 13px; }
+.archive-password input { max-width: 100%; padding: 7px 9px; border: 1px solid var(--pl-border); border-radius: 6px; color: var(--pl-text); background: var(--pl-surface); }
 .limit-tip { margin-bottom: 12px; padding: 10px 12px; color: var(--pl-warning); background: var(--pl-warning-soft); border: 1px solid var(--pl-border); border-radius: 8px; font-size: 13px; line-height: 1.6; }
 .media-stage { min-height: min(360px, max(120px, calc(100vh - 310px))); display: flex; align-items: center; justify-content: center; background: #111827; border-radius: 10px; overflow: hidden; }
 .media-stage video { width: 100%; max-height: max(120px, min(60vh, calc(100vh - 350px))); object-fit: contain; }

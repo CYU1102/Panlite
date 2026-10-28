@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -101,6 +101,27 @@ describe('path and text safety', () => {
 })
 
 describe('preview sessions', () => {
+  it('reads an actual header-encrypted RAR using the supplied password and cleans up failed attempts', async () => {
+    const root = temporaryRoot()
+    const service = new FilePreviewService({ tempRoot: root })
+    const encryptedRequest = { ...request, fileName: 'encrypted.rar', password: '1234' }
+    let downloadedPath = ''
+    const download = async (_source: FilePreviewRequest, context: FilePreviewDownloadContext) => {
+      const localPath = path.join(context.directory, context.fileName)
+      copyFileSync(path.resolve('src/main/ai/test-fixtures/node-unrar/HeaderEnc1234.rar'), localPath)
+      downloadedPath = localPath
+      return { success: true, localPath }
+    }
+    await expect(service.createSession({ ...encryptedRequest, password: 'incorrect' }, download)).rejects.toThrow()
+    expect(existsSync(downloadedPath)).toBe(false)
+    const preview = await service.createSession(encryptedRequest, download)
+    expect(preview.kind).toBe('archive')
+    expect(preview.archive?.fileCount).toBeGreaterThan(0)
+    expect(preview.archive?.isEncrypted).toBe(true)
+    expect(JSON.stringify(preview)).not.toContain('1234')
+    expect(service.cleanupSession(preview.sessionId)).toBe(true)
+  })
+
   it('creates a capped text session and removes it on cleanup', async () => {
     const service = new FilePreviewService({ tempRoot: temporaryRoot(), maxTextBytes: 5 })
     let downloadedPath = ''

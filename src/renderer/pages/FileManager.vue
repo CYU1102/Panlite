@@ -401,6 +401,8 @@
 
       :file-name="archiveTarget?.name || ''"
 
+      :initial-password="archiveInitialPassword"
+
       @success="onRefresh"
 
     />
@@ -569,6 +571,8 @@ const offlineReason = ref('')
 const showDownloadDialog = ref(false)
 const showCopyDialog = ref(false)
 const showArchiveDialog = ref(false)
+const archiveInitialPassword = ref('')
+watch(showArchiveDialog, open => { if (!open) archiveInitialPassword.value = '' })
 const showCompressDialog = ref(false)
 const showSearchFilter = ref(false)
 const showPreviewDialog = ref(false)
@@ -835,6 +839,7 @@ function onArchiveFile(file: FileItem) {
     return
   }
   archiveTarget.value = file
+  archiveInitialPassword.value = ''
   showArchiveDialog.value = true
 }
 
@@ -862,10 +867,11 @@ function onPreviewFile(file: FileItem) {
   showPreviewDialog.value = true
 }
 
-function onArchivePreview(payload: { fileId: string; fileName: string }) {
+function onArchivePreview(payload: { fileId: string; fileName: string; password?: string }) {
   if (!capabilities.value.browseArchive || previewTarget.value?.id !== payload.fileId) return
   if (!captureFileOperation([previewTarget.value])) return
   archiveTarget.value = previewTarget.value
+  archiveInitialPassword.value = payload.password || ''
   showPreviewDialog.value = false
   showArchiveDialog.value = true
 }
