@@ -16,6 +16,11 @@ describe('archive path protection', () => {
     expect(target.toLowerCase()).toContain('safe-output')
     expect(target.toLowerCase()).toContain('folder')
   })
+
+  it.runIf(process.platform === 'win32').each(['file.txt:stream', 'CON.txt', 'folder/name.', 'folder/name ', 'bad?name']) (
+    'rejects Windows-ambiguous entry %s',
+    (entry) => expect(() => normalizeArchiveEntryPath(entry)).toThrow(),
+  )
 })
 
 describe('archive resource limits', () => {

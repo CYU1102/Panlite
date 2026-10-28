@@ -21,6 +21,9 @@ export function normalizeArchiveEntryPath(entryPath: string): string {
     throw new Error(`压缩包包含目录穿越路径: ${entryPath}`)
   }
   if (parts.length === 0) throw new Error(`压缩包包含无效路径: ${entryPath}`)
+  if (process.platform === 'win32' && parts.some(part => /[<>:"|?*\x00-\x1f]/.test(part) || /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) {
+    throw new Error(`压缩包包含 Windows 不支持的文件名: ${entryPath}`)
+  }
   return parts.join('/')
 }
 

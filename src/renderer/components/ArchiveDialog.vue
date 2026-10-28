@@ -24,6 +24,7 @@
 
     <!-- 密码输入（如果需要） -->
     <div v-if="loadError" class="archive-error" role="alert">{{ loadError }}</div>
+    <p v-if="meta" class="archive-note">解压不会覆盖已有同名文件；如有冲突，请选择其他目录或先重命名。失败时请检查目标目录中已写入的新文件。</p>
     <div v-if="loadError || (meta?.isEncrypted && !password)" class="password-section">
       <el-input
         v-model="inputPassword"
@@ -245,6 +246,7 @@ function onClose() {
 
 <style scoped>
 .archive-error { margin-bottom: 12px; color: var(--pl-danger); overflow-wrap: anywhere; }
+.archive-note { margin: 0 0 12px; color: var(--pl-text-secondary); font-size: 12px; line-height: 1.6; }
 .archive-info {
   display: flex;
   gap: 24px;

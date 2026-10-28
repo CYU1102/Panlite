@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { extractArchive, listArchiveFiles, resolve7ZipExecutablePath } from './archive'
@@ -67,6 +67,15 @@ describe('7z runtime integration', () => {
     expect(readFileSync(join(output, '目录', '中文 文件.txt'), 'utf8')).toBe('加密样本')
   })
 
+  it('does not overwrite existing files when extracting a 7z archive', async () => {
+    const output = join(workDir, 'existing-7z-output')
+    mkdirSync(join(output, '目录'), { recursive: true })
+    const existing = join(output, '目录', '中文 文件.txt')
+    writeFileSync(existing, 'original')
+    await expect(extractArchive(encryptedPath, output, '1234')).rejects.toThrow(/未覆盖/)
+    expect(readFileSync(existing, 'utf8')).toBe('original')
+  })
+
   it('rejects missing or incorrect header passwords without an interactive prompt and accepts the correct one', async () => {
     await expect(listArchiveFiles(encryptedHeadersPath)).rejects.toThrow(/无法读取7z/)
     await expect(listArchiveFiles(encryptedHeadersPath, 'wrong')).rejects.toThrow(/无法读取7z/)
@@ -103,5 +112,18 @@ describe('7z runtime integration', () => {
     await extractArchive(newlinePasswordPath, output, newlinePassword)
     expect(readFileSync(join(output, '目录', '中文 文件.txt'), 'utf8')).toBe('加密样本')
     expect(spawnSpy.mock.calls.some((call: unknown[]) => call[0] === path7za && (call[1] as string[]).includes(`-p${newlinePassword}`))).toBe(true)
+  }, 15000)
+
+  it('rejects a real 7z archive containing a directory link', async () => {
+    const source = join(workDir, 'link-source'), outside = join(workDir, 'link-outside')
+    mkdirSync(source); mkdirSync(outside)
+    writeFileSync(join(outside, 'keep.txt'), 'keep')
+    const link = join(source, 'linked')
+    symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+    const archive = join(workDir, 'link.7z')
+    try { execFileSync(path7za, ['a', archive, 'link-source', '-snl'], { cwd: workDir, windowsHide: true }) }
+    finally { unlinkSync(link) }
+    await expect(listArchiveFiles(archive)).rejects.toThrow(/无法读取7z/)
+    expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('keep')
   }, 15000)
 })

@@ -1,9 +1,12 @@
 import { createReadStream, createWriteStream, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, unlinkSync, existsSync } from 'fs'
 import { join, extname, dirname, resolve } from 'path'
 import { finished, pipeline } from 'stream/promises'
+import { Transform } from 'node:stream'
+import { crc32 } from 'node:zlib'
 import type { ArchiveFileInfo, ArchiveMeta } from '../shared/types'
 import log from 'electron-log'
 import { ARCHIVE_LIMITS, assertArchiveLimits, resolveArchiveEntryPath } from './archive-security'
+import { stageArchiveExtraction } from './archive-extraction-staging'
 
 export interface ArchiveOperationOptions {
   signal?: AbortSignal
@@ -130,7 +133,17 @@ async function extractZip(filePath: string, outputDir: string, password?: string
           // 解压文件
           const readStream = entry.stream(password)
           const writeStream = createWriteStream(targetPath)
-          await pipeline(readStream, writeStream, { signal: runtime.signal })
+          let bytes = 0, checksum = 0
+          const verifier = new Transform({
+            transform(chunk: Buffer, _encoding, callback) {
+              bytes += chunk.length
+              if (bytes > entry.uncompressedSize) { callback(new Error('ZIP 文件大小超过声明值')); return }
+              checksum = crc32(chunk, checksum)
+              callback(null, chunk)
+            },
+          })
+          await pipeline(readStream, verifier, writeStream, { signal: runtime.signal })
+          if (bytes !== entry.uncompressedSize || checksum !== (entry.crc32 >>> 0)) throw new Error('ZIP 文件大小或校验值不匹配')
         }
         runtime.onProgress?.(++completed, selectedEntries.length)
       }
@@ -271,6 +284,9 @@ async function list7zFiles(filePath: string, password?: string): Promise<{ files
       const packedSizeText = info.get('Packed Size')
       const modified = info.get('Modified')
       const attributes = info.get('Attributes') || ''
+      if (info.has('Symbolic Link') || info.has('Hard Link') || /^[A-Z.]*L/.test(attributes) || /(?:^|\s)l[rwxstST-]{9}(?:\s|$)/.test(attributes)) {
+        throw new Error('压缩包包含不允许的链接')
+      }
       if (!sizeText || !/^\d+$/.test(sizeText) || !Number.isSafeInteger(Number(sizeText))) throw new Error('压缩包条目大小无效')
       if (packedSizeText !== undefined && (!/^\d+$/.test(packedSizeText) || !Number.isSafeInteger(Number(packedSizeText)))) throw new Error('压缩包条目压缩大小无效')
       isEncrypted ||= info.get('Encrypted') === '+'
@@ -481,25 +497,24 @@ export async function extractArchive(
   const selectedPaths = requested ? selected.map((file) => file.path) : undefined
   assertArchiveLimits(selected)
 
-  // 确保输出目录存在
-  mkdirSync(outputDir, { recursive: true })
-
-  switch (format) {
-    case 'zip':
-      await extractZip(filePath, outputDir, password, selectedPaths, runtime)
-      break
-    case 'rar':
-      await extractRar(filePath, outputDir, password, selectedPaths, runtime)
-      break
-    case '7z':
-      await extract7z(filePath, outputDir, password, selectedPaths, runtime)
-      break
-    case 'tar':
-      await extractTar(filePath, outputDir, selectedPaths, runtime)
-      break
-    default:
-      throw new Error('不支持的压缩包格式')
-  }
+  await stageArchiveExtraction(outputDir, selected, async stage => {
+    switch (format) {
+      case 'zip':
+        await extractZip(filePath, stage, password, selectedPaths, runtime)
+        break
+      case 'rar':
+        await extractRar(filePath, stage, password, selectedPaths, runtime)
+        break
+      case '7z':
+        await extract7z(filePath, stage, password, selectedPaths, runtime)
+        break
+      case 'tar':
+        await extractTar(filePath, stage, selectedPaths, runtime)
+        break
+      default:
+        throw new Error('不支持的压缩包格式')
+    }
+  }, runtime.signal)
 }
 
 // ── 递归获取目录下所有文件 ──
