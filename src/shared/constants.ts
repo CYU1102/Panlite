@@ -24,6 +24,7 @@ export const IPC_CHANNELS = {
   FILE_GET_LINK: 'file:get-link',
   FILE_PREVIEW_PREPARE: 'file-preview:create',
   FILE_PREVIEW_CLEANUP: 'file-preview:cleanup',
+  FILE_PREVIEW_CANCEL: 'file-preview:cancel',
 
   // Global search
   GLOBAL_SEARCH: 'global-search:execute',

@@ -1,16 +1,20 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertPathInside,
   createFilePreviewIpcHandlers,
   detectFilePreviewType,
   FilePreviewService,
   readTextPreview,
+  registerFilePreviewIpc,
+  FILE_PREVIEW_IPC_CHANNELS,
   type FilePreviewDownloadContext,
+  type FilePreviewIpcResult,
   type FilePreviewRequest,
 } from './file-preview'
+import { IPC_CHANNELS } from '../shared/constants'
 
 const roots: string[] = []
 
@@ -179,14 +183,48 @@ describe('preview sessions', () => {
     const service = new FilePreviewService({ tempRoot: temporaryRoot() })
     let resolveDownload!: () => void
     const gate = new Promise<void>(resolve => { resolveDownload = resolve })
+    let signal: AbortSignal | undefined
     const creating = service.createSession(request, async (_source, context) => {
+      signal = context.signal
       await gate
       const localPath = path.join(context.directory, context.fileName)
       writeFileSync(localPath, 'content')
       return { success: true, localPath }
     })
     service.cleanupAll()
+    expect(signal?.aborted).toBe(true)
     resolveDownload()
     await expect(creating).rejects.toThrow('预览已取消')
+  })
+
+  it('rejects duplicate preparation IDs and ignores a source resolving after cancellation', async () => {
+    const service = new FilePreviewService({ tempRoot: temporaryRoot() })
+    const preparationId = 'c08c1fc2-4f2f-445c-a4a6-c8a9485e0f34'
+    let resolveSource!: (source: { url: string }) => void
+    const source = new Promise<{ url: string }>(resolve => { resolveSource = resolve })
+    const requestWithId = { ...request, fileName: 'clip.mp4', preparationId }
+    const downloader = vi.fn(async () => ({ success: false }))
+    const creating = service.createSession(requestWithId, downloader, () => source)
+    await expect(service.createSession(requestWithId, downloader)).rejects.toThrow('预览请求已存在')
+    expect(service.cancelPreparation(preparationId)).toBe(true)
+    await expect(creating).rejects.toThrow('预览已取消')
+    resolveSource({ url: 'https://fixture.invalid/clip' })
+    expect(downloader).not.toHaveBeenCalled()
+    expect(service.cancelPreparation(preparationId)).toBe(false)
+  })
+
+  it('routes the preload cancellation channel to the matching pending preparation', async () => {
+    const service = new FilePreviewService({ tempRoot: temporaryRoot() })
+    const listeners = new Map<string, (event: unknown, ...args: any[]) => unknown>()
+    let resolveSource!: (source: { url: string }) => void
+    const source = new Promise<{ url: string }>(resolve => { resolveSource = resolve })
+    registerFilePreviewIpc({ handle: (channel, listener) => { listeners.set(channel, listener) } }, service,
+      async () => ({ success: false }), () => source)
+    expect(FILE_PREVIEW_IPC_CHANNELS.cancel).toBe(IPC_CHANNELS.FILE_PREVIEW_CANCEL)
+    const preparationId = 'c08c1fc2-4f2f-445c-a4a6-c8a9485e0f34'
+    const creating = listeners.get(IPC_CHANNELS.FILE_PREVIEW_PREPARE)!(null, { ...request, fileName: 'clip.mp4', preparationId }) as Promise<FilePreviewIpcResult>
+    expect(listeners.get(IPC_CHANNELS.FILE_PREVIEW_CANCEL)!(null, preparationId)).toEqual({ success: true, cleaned: true })
+    resolveSource({ url: 'https://fixture.invalid/clip' })
+    await expect(creating).resolves.toMatchObject({ success: false, error: '预览已取消' })
   })
 })

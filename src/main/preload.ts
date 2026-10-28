@@ -148,10 +148,12 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.FILE_COPY, accountId, fileIds, targetDirId),
   getFileLink: (accountId: string, fileId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FILE_GET_LINK, accountId, fileId),
-  prepareFilePreview: (accountId: string, fileId: string, fileName: string, fileSize?: number) =>
-    ipcRenderer.invoke(IPC_CHANNELS.FILE_PREVIEW_PREPARE, { accountId, fileId, fileName, fileSize }),
+  prepareFilePreview: (accountId: string, fileId: string, fileName: string, fileSize?: number, preparationId?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FILE_PREVIEW_PREPARE, { accountId, fileId, fileName, fileSize, preparationId }),
   cleanupFilePreview: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FILE_PREVIEW_CLEANUP, sessionId),
+  cancelFilePreview: (preparationId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FILE_PREVIEW_CANCEL, preparationId),
   globalSearch: (input: unknown) => ipcRenderer.invoke(IPC_CHANNELS.GLOBAL_SEARCH, input),
   getGlobalSearchHistory: () => ipcRenderer.invoke(IPC_CHANNELS.GLOBAL_SEARCH_HISTORY),
   listSavedSearches: () => ipcRenderer.invoke(IPC_CHANNELS.SAVED_SEARCH_LIST),

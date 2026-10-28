@@ -23,11 +23,13 @@ import { previewError, streamPreviewSource, validPreviewRange, type PreviewSourc
 import { listArchiveFiles } from './archive'
 import { sanitizeFileName } from './file-transfer'
 import { parseAiDocument } from './ai/document-parser'
+import { waitForPreview } from './preview-cancellation'
 
 export interface FilePreviewDownloadContext {
   directory: string
   fileName: string
   maxBytes: number
+  signal?: AbortSignal
 }
 
 export interface FilePreviewDownloadResult {
@@ -64,6 +66,7 @@ interface StoredPreviewSession {
 export interface FilePreviewIpcHandlers {
   create(request: FilePreviewRequest): Promise<FilePreviewIpcResult>
   cleanup(sessionId: string): FilePreviewIpcResult
+  cancel(preparationId: string): FilePreviewIpcResult
 }
 
 export interface IpcHandlerRegistrar {
@@ -73,6 +76,7 @@ export interface IpcHandlerRegistrar {
 export const FILE_PREVIEW_IPC_CHANNELS = Object.freeze({
   create: 'file-preview:create',
   cleanup: 'file-preview:cleanup',
+  cancel: 'file-preview:cancel',
 })
 
 export const FILE_PREVIEW_DEFAULTS = Object.freeze({
@@ -133,6 +137,7 @@ export class FilePreviewService {
   readonly sessionTtlMs: number
 
   private readonly sessions = new Map<string, StoredPreviewSession>()
+  private readonly preparations = new Map<string, AbortController>()
   private readonly now: () => number
   private cleanupGeneration = 0
 
@@ -146,98 +151,117 @@ export class FilePreviewService {
   }
 
   async createSession(request: FilePreviewRequest, downloader: FilePreviewDownloader, resolveSource?: FilePreviewSourceResolver): Promise<FilePreviewSessionDto> {
+    validateRequest(request)
+    const preparationId = request.preparationId ?? randomUUID()
+    if (this.preparations.has(preparationId)) throw new Error('预览请求已存在')
+    const preparation = new AbortController()
+    this.preparations.set(preparationId, preparation)
     const generation = this.cleanupGeneration
     const assertActive = () => {
-      if (generation !== this.cleanupGeneration) throw new Error('预览已取消')
+      if (generation !== this.cleanupGeneration || preparation.signal.aborted) throw new Error('预览已取消')
     }
-    this.cleanupExpiredSessions()
-    validateRequest(request)
-    const previewType = detectFilePreviewType(request.fileName)
-    if (previewType.kind === 'unsupported') throw new Error('暂不支持预览此文件类型')
-    if (!previewType.supported) throw new Error('已识别此压缩包格式，但当前解压引擎暂不支持读取')
-    if (resolveSource && ['image', 'audio', 'video', 'pdf'].includes(previewType.kind)) {
-      const source = await resolveSource(request)
-      assertActive()
-      if (source) {
-        const url = new URL(source.url)
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('网盘预览地址无效')
-        const sessionId = randomUUID()
-        const dto: FilePreviewSessionDto = {
-          sessionId, fileName: sanitizeFileName(request.fileName), kind: previewType.kind,
-          mimeType: previewType.mimeType, size: request.fileSize || 0,
-          delivery: 'stream', assetUrl: `panlite-preview://session/${sessionId}`,
-          expiresAt: this.now() + this.sessionTtlMs,
-        }
-        this.storeSession({ source, dto })
-        return dto
-      }
-    }
-    if (request.fileSize !== undefined && request.fileSize > this.maxDownloadBytes) {
-      throw new Error('文件超过预览下载大小限制')
-    }
-
-    const directory = mkdtempSync(path.join(this.tempRoot, 'session-'))
-    const safeName = sanitizeFileName(request.fileName)
     try {
-      const downloadResult = await downloader(request, {
-        directory,
-        fileName: safeName,
-        maxBytes: this.maxDownloadBytes,
-      })
-      assertActive()
-      if (!downloadResult.success || !downloadResult.localPath) {
-        throw new Error(downloadResult.error || '预览文件下载失败')
-      }
-
-      const filePath = this.validateDownloadedFile(directory, downloadResult.localPath)
-      const size = statSync(filePath).size
-      if (size > this.maxDownloadBytes) throw new Error('下载文件超过预览大小限制')
-
-      const sessionId = randomUUID()
-      const expiresAt = this.now() + this.sessionTtlMs
-      const common = {
-        sessionId,
-        fileName: safeName,
-        kind: previewType.kind,
-        mimeType: previewType.mimeType,
-        size,
-        expiresAt,
-        delivery: 'download',
-      } as const
-
-      let dto: FilePreviewSessionDto
-      if (previewType.kind === 'text' || previewType.kind === 'markdown') {
-        const text = readTextPreview(filePath, this.maxTextBytes)
-        dto = { ...common, kind: previewType.kind, content: text.content, truncated: text.truncated }
-      } else if (previewType.kind === 'office') {
-        const parsed = await parseAiDocument(filePath, previewType.extension.slice(1))
-        if (parsed.status !== 'ready' || !parsed.sections?.length) {
-          throw new Error(parsed.message || 'Office 文档未提取到可预览内容')
+      this.cleanupExpiredSessions()
+      const previewType = detectFilePreviewType(request.fileName)
+      if (previewType.kind === 'unsupported') throw new Error('暂不支持预览此文件类型')
+      if (!previewType.supported) throw new Error('已识别此压缩包格式，但当前解压引擎暂不支持读取')
+      if (resolveSource && ['image', 'audio', 'video', 'pdf'].includes(previewType.kind)) {
+        const source = await waitForPreview(resolveSource(request), preparation.signal)
+        assertActive()
+        if (source) {
+          const url = new URL(source.url)
+          if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('网盘预览地址无效')
+          const sessionId = randomUUID()
+          const dto: FilePreviewSessionDto = {
+            sessionId, fileName: sanitizeFileName(request.fileName), kind: previewType.kind,
+            mimeType: previewType.mimeType, size: request.fileSize || 0,
+            delivery: 'stream', assetUrl: `panlite-preview://session/${sessionId}`,
+            expiresAt: this.now() + this.sessionTtlMs,
+          }
+          this.storeSession({ source, dto })
+          return dto
         }
-        const fullContent = parsed.sections.map((section) => {
-          const heading = section.section || (section.pageNumber ? `第 ${section.pageNumber} 页` : '正文')
-          return `【${heading}】\n${section.content}`
-        }).join('\n\n')
-        const contentBuffer = Buffer.from(fullContent, 'utf8')
-        const truncated = contentBuffer.length > this.maxTextBytes
-        const content = truncated
-          ? contentBuffer.subarray(0, this.maxTextBytes).toString('utf8').replace(/�$/, '')
-          : fullContent
-        dto = { ...common, kind: 'office', content, truncated, notice: parsed.message }
-      } else if (previewType.kind === 'archive') {
-        const archive = await listArchiveFiles(filePath, request.password)
-        dto = { ...common, kind: 'archive', archive }
-      } else {
-        dto = { ...common, kind: previewType.kind, assetUrl: `panlite-preview://session/${sessionId}` }
+      }
+      if (request.fileSize !== undefined && request.fileSize > this.maxDownloadBytes) {
+        throw new Error('文件超过预览下载大小限制')
       }
 
-      assertActive()
-      this.storeSession({ directory, filePath, dto })
-      return dto
+      const directory = mkdtempSync(path.join(this.tempRoot, 'session-'))
+      const safeName = sanitizeFileName(request.fileName)
+      try {
+        const downloadResult = await downloader(request, {
+          directory,
+          fileName: safeName,
+          maxBytes: this.maxDownloadBytes,
+          signal: preparation.signal,
+        })
+        assertActive()
+        if (!downloadResult.success || !downloadResult.localPath) {
+          throw new Error(downloadResult.error || '预览文件下载失败')
+        }
+
+        const filePath = this.validateDownloadedFile(directory, downloadResult.localPath)
+        const size = statSync(filePath).size
+        if (size > this.maxDownloadBytes) throw new Error('下载文件超过预览大小限制')
+
+        const sessionId = randomUUID()
+        const expiresAt = this.now() + this.sessionTtlMs
+        const common = {
+          sessionId,
+          fileName: safeName,
+          kind: previewType.kind,
+          mimeType: previewType.mimeType,
+          size,
+          expiresAt,
+          delivery: 'download',
+        } as const
+
+        let dto: FilePreviewSessionDto
+        if (previewType.kind === 'text' || previewType.kind === 'markdown') {
+          const text = readTextPreview(filePath, this.maxTextBytes)
+          dto = { ...common, kind: previewType.kind, content: text.content, truncated: text.truncated }
+        } else if (previewType.kind === 'office') {
+          const parsed = await parseAiDocument(filePath, previewType.extension.slice(1))
+          if (parsed.status !== 'ready' || !parsed.sections?.length) {
+            throw new Error(parsed.message || 'Office 文档未提取到可预览内容')
+          }
+          const fullContent = parsed.sections.map((section) => {
+            const heading = section.section || (section.pageNumber ? `第 ${section.pageNumber} 页` : '正文')
+            return `【${heading}】\n${section.content}`
+          }).join('\n\n')
+          const contentBuffer = Buffer.from(fullContent, 'utf8')
+          const truncated = contentBuffer.length > this.maxTextBytes
+          const content = truncated
+            ? contentBuffer.subarray(0, this.maxTextBytes).toString('utf8').replace(/�$/, '')
+            : fullContent
+          dto = { ...common, kind: 'office', content, truncated, notice: parsed.message }
+        } else if (previewType.kind === 'archive') {
+          const archive = await listArchiveFiles(filePath, request.password)
+          dto = { ...common, kind: 'archive', archive }
+        } else {
+          dto = { ...common, kind: previewType.kind, assetUrl: `panlite-preview://session/${sessionId}` }
+        }
+
+        assertActive()
+        this.storeSession({ directory, filePath, dto })
+        return dto
+      } catch (error) {
+        this.removeManagedDirectory(directory)
+        throw error
+      }
     } catch (error) {
-      this.removeManagedDirectory(directory)
+      assertActive()
       throw error
+    } finally {
+      if (this.preparations.get(preparationId) === preparation) this.preparations.delete(preparationId)
     }
+  }
+
+  cancelPreparation(preparationId: string): boolean {
+    const pending = this.preparations.get(preparationId)
+    if (!pending || pending.signal.aborted) return false
+    pending.abort()
+    return true
   }
 
   getSession(sessionId: string): FilePreviewSessionDto | undefined {
@@ -277,6 +301,7 @@ export class FilePreviewService {
 
   cleanupAll(): number {
     this.cleanupGeneration++
+    for (const preparation of this.preparations.values()) preparation.abort()
     let count = 0
     for (const sessionId of [...this.sessions.keys()]) {
       if (this.cleanupSession(sessionId)) count++
@@ -396,6 +421,9 @@ function validateRequest(request: FilePreviewRequest): void {
   if (request.fileSize !== undefined && (!Number.isSafeInteger(request.fileSize) || request.fileSize < 0)) {
     throw new Error('文件大小无效')
   }
+  if (request.preparationId !== undefined && (typeof request.preparationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.preparationId))) {
+    throw new Error('预览请求标识无效')
+  }
 }
 
 export function createFilePreviewIpcHandlers(
@@ -419,6 +447,9 @@ export function createFilePreviewIpcHandlers(
         return { success: false, error: error instanceof Error ? error.message : String(error) }
       }
     },
+    cancel(preparationId) {
+      return { success: true, cleaned: service.cancelPreparation(preparationId) }
+    },
   }
 }
 
@@ -431,5 +462,6 @@ export function registerFilePreviewIpc(
   const handlers = createFilePreviewIpcHandlers(service, downloader, resolveSource)
   ipcMain.handle(FILE_PREVIEW_IPC_CHANNELS.create, (_event, request: FilePreviewRequest) => handlers.create(request))
   ipcMain.handle(FILE_PREVIEW_IPC_CHANNELS.cleanup, (_event, sessionId: string) => handlers.cleanup(sessionId))
+  ipcMain.handle(FILE_PREVIEW_IPC_CHANNELS.cancel, (_event, preparationId: string) => handlers.cancel(preparationId))
   return handlers
 }

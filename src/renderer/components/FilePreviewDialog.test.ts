@@ -2,13 +2,14 @@
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const api = vi.hoisted(() => ({ prepareFilePreview: vi.fn(), cleanupFilePreview: vi.fn() }))
+const api = vi.hoisted(() => ({ prepareFilePreview: vi.fn(), cleanupFilePreview: vi.fn(), cancelFilePreview: vi.fn() }))
 vi.mock('../api/ipc', () => ({ electronApi: api }))
 import FilePreviewDialog from './FilePreviewDialog.vue'
 
 let wrapper: VueWrapper | undefined
 beforeEach(() => {
   api.cleanupFilePreview.mockResolvedValue({ success: true })
+  api.cancelFilePreview.mockResolvedValue({ success: true })
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
   vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
 })
@@ -36,7 +37,9 @@ describe('preview session lifecycle', () => {
     const pending = deferred<ReturnType<typeof result>>()
     api.prepareFilePreview.mockReturnValue(pending.promise)
     const view = await render()
+    const preparationId = api.prepareFilePreview.mock.calls[0][4]
     await view.setProps({ modelValue: false })
+    expect(api.cancelFilePreview).toHaveBeenCalledWith(preparationId)
     pending.resolve(result('late'))
     await flushPromises()
     expect(api.cleanupFilePreview).toHaveBeenCalledWith('late')
@@ -47,12 +50,27 @@ describe('preview session lifecycle', () => {
     const pending = deferred<ReturnType<typeof result>>()
     api.prepareFilePreview.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(result('new'))
     const view = await render()
+    const firstPreparationId = api.prepareFilePreview.mock.calls[0][4]
     await view.setProps({ fileId: 'two', fileName: 'new.txt' })
+    expect(api.cancelFilePreview).toHaveBeenCalledWith(firstPreparationId)
+    expect(api.prepareFilePreview.mock.calls[1][4]).not.toBe(firstPreparationId)
     await flushPromises()
     pending.reject(new Error('old network failure'))
     await flushPromises()
     expect(view.get('.text-preview').text()).toBe('new')
     expect(view.text()).not.toContain('old network failure')
+  })
+
+  it('cancels pending work on unmount and still cleans a late result', async () => {
+    const pending = deferred<ReturnType<typeof result>>()
+    api.prepareFilePreview.mockReturnValue(pending.promise)
+    const view = await render()
+    const preparationId = api.prepareFilePreview.mock.calls[0][4]
+    view.unmount(); wrapper = undefined
+    expect(api.cancelFilePreview).toHaveBeenCalledWith(preparationId)
+    pending.resolve(result('late-unmounted'))
+    await flushPromises()
+    expect(api.cleanupFilePreview).toHaveBeenCalledWith('late-unmounted')
   })
 
   it('does not allow late successful requests to replace the selected file', async () => {

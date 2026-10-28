@@ -283,6 +283,63 @@ describe('online preview protocol against a real HTTP source', () => {
     expect(readdirSync(previewService.tempRoot)).toEqual([])
   })
 
+  it('cancels an in-flight document download without affecting another preview', async () => {
+    let markStarted!: () => void, markClosed!: () => void
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    const closed = new Promise<void>(resolve => { markClosed = resolve })
+    const url = await upstream((req, res) => {
+      if (req.url?.startsWith('/slow')) {
+        res.on('close', markClosed)
+        res.writeHead(200); res.write('partial'); markStarted()
+      } else { res.writeHead(200); res.end('other preview') }
+    })
+    const previewService = service()
+    const preparationId = 'c08c1fc2-4f2f-445c-a4a6-c8a9485e0f34'
+    const request = { ...sourceRequest, fileName: 'slow.txt', fileSize: undefined, preparationId }
+    const creating = previewService.createSession(request, (_request, context) => downloadPreviewSource({ url: url.replace('/asset?', '/slow?') }, context))
+    await started
+    const other = await previewService.createSession({ ...request, fileId: 'other', fileName: 'other.txt', preparationId: '6d6b5398-8583-470c-8248-48fa36a5850d' },
+      (_request, context) => downloadPreviewSource({ url }, context))
+    expect(previewService.cancelPreparation(preparationId)).toBe(true)
+    expect(previewService.cancelPreparation(preparationId)).toBe(false)
+    await expect(creating).rejects.toThrow('预览已取消')
+    await closed
+    expect(previewService.getSession(other.sessionId)?.content).toBe('other preview')
+    expect(readdirSync(previewService.tempRoot)).toHaveLength(1)
+    previewService.cleanupSession(other.sessionId)
+    expect(readdirSync(previewService.tempRoot)).toEqual([])
+  })
+
+  it('stops waiting for a provider that ignores cancellation before returning headers', async () => {
+    const previewService = service()
+    const preparationId = 'c08c1fc2-4f2f-445c-a4a6-c8a9485e0f34'
+    let resolveResponse!: (response: Response) => void
+    const response = new Promise<Response>(resolve => { resolveResponse = resolve })
+    const cancelled = vi.fn()
+    const creating = previewService.createSession({ ...sourceRequest, fileName: 'slow.txt', fileSize: undefined, preparationId },
+      (_request, context) => downloadPreviewSource({ url: 'https://fixture.test/slow', fetch: () => response }, context))
+    expect(previewService.cancelPreparation(preparationId)).toBe(true)
+    await expect(creating).rejects.toThrow('预览已取消')
+    expect(readdirSync(previewService.tempRoot)).toEqual([])
+    resolveResponse(new Response(new ReadableStream({ cancel: cancelled })))
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce())
+  })
+
+  it('cleans its temporary file when a provider ignores cancellation during a body read', async () => {
+    const previewService = service()
+    const preparationId = 'c08c1fc2-4f2f-445c-a4a6-c8a9485e0f34'
+    let markReading!: () => void
+    const reading = new Promise<void>(resolve => { markReading = resolve })
+    const creating = previewService.createSession({ ...sourceRequest, fileName: 'slow.txt', fileSize: undefined, preparationId },
+      (_request, context) => downloadPreviewSource({ url: 'https://fixture.test/slow', fetch: async () => new Response(new ReadableStream({
+        pull() { markReading(); return new Promise<void>(() => {}) },
+      }, { highWaterMark: 0 })) }, context))
+    await reading
+    expect(previewService.cancelPreparation(preparationId)).toBe(true)
+    await expect(creating).rejects.toThrow('预览已取消')
+    expect(readdirSync(previewService.tempRoot)).toEqual([])
+  })
+
   it('rejects an unsolicited partial document instead of presenting it as complete', async () => {
     const url = await upstream((_req, res) => {
       res.writeHead(206, { 'Content-Range': 'bytes 0-3/10' })

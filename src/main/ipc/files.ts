@@ -6,6 +6,7 @@ import { createAndEnqueueTask } from '../task-runner'
 import log from 'electron-log'
 import { FilePreviewService, registerFilePreviewIpc } from '../file-preview'
 import { downloadPreviewSource } from '../preview-download'
+import { waitForPreview } from '../preview-cancellation'
 import type { IpcRegistrar } from './types'
 import { dbAccountToDriveAccount } from './account-mapping'
 import { handlePreviewCors } from '../preview-cors'
@@ -105,13 +106,15 @@ export function registerFilesIpcHandlers(ipcMain: IpcRegistrar): void {
     const adapter = getAdapter(account.platform)
     if (adapter.getDownloadSource) {
       try {
-        return await downloadPreviewSource(await adapter.getDownloadSource(account, request.fileId), context)
+        const source = await waitForPreview(adapter.getDownloadSource(account, request.fileId), context.signal)
+        context.signal?.throwIfAborted()
+        return await downloadPreviewSource(source, context)
       } catch {
         return { success: false, error: '无法获取预览文件，请检查网络或重新登录账号' }
       }
     }
     if (!adapter.download) return { success: false, error: `${account.platform} 暂不支持下载预览` }
-    return adapter.download(account, request.fileId, context.directory, { fileName: context.fileName })
+    return adapter.download(account, request.fileId, context.directory, { fileName: context.fileName, signal: context.signal })
   }, async (request) => {
     const row = getAccountById(request.accountId)
     if (!row) throw new Error('账号不存在')

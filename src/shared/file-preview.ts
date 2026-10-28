@@ -15,6 +15,7 @@ export interface FilePreviewRequest {
   fileName: string
   fileSize?: number
   password?: string
+  preparationId?: string
 }
 
 export interface FilePreviewSessionDto {

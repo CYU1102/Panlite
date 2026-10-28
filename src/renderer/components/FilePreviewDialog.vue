@@ -200,6 +200,7 @@ function zoomImage(delta: number): void {
   setImageScale(current + delta)
 }
 let loadGeneration = 0
+let pendingPreparationId: string | undefined
 
 const safeAssetUrl = computed(() => {
   const value = preview.value?.assetUrl
@@ -234,6 +235,7 @@ watch(() => [props.modelValue, props.accountId, props.fileId, props.fileName, pr
   if (props.modelValue) void loadPreview()
   else {
     loadGeneration++
+    cancelPendingPreparation()
     loading.value = false
     expanded.value = false
     void cleanupPreview()
@@ -242,11 +244,13 @@ watch(() => [props.modelValue, props.accountId, props.fileId, props.fileName, pr
 
 onBeforeUnmount(() => {
   loadGeneration++
+  cancelPendingPreparation()
   void cleanupPreview()
 })
 
 async function loadPreview(): Promise<void> {
   const generation = ++loadGeneration
+  cancelPendingPreparation()
   void cleanupPreview()
   loading.value = false
   error.value = ''
@@ -262,12 +266,15 @@ async function loadPreview(): Promise<void> {
 
   loading.value = true
   error.value = ''
+  const preparationId = crypto.randomUUID()
+  pendingPreparationId = preparationId
   try {
     const result = await electronApi.prepareFilePreview(
       props.accountId,
       props.fileId,
       props.fileName,
       props.fileSize,
+      preparationId,
     ) as FilePreviewIpcResult
     if (generation !== loadGeneration) {
       if (result.preview?.sessionId) await cleanupSession(result.preview.sessionId)
@@ -281,8 +288,15 @@ async function loadPreview(): Promise<void> {
     void cleanupPreview()
     error.value = loadError instanceof Error ? loadError.message : String(loadError)
   } finally {
+    if (pendingPreparationId === preparationId) pendingPreparationId = undefined
     if (generation === loadGeneration) loading.value = false
   }
+}
+
+function cancelPendingPreparation(): void {
+  const preparationId = pendingPreparationId
+  pendingPreparationId = undefined
+  if (preparationId) void electronApi.cancelFilePreview(preparationId).catch(() => undefined)
 }
 
 async function cleanupPreview(): Promise<void> {
@@ -302,6 +316,7 @@ async function cleanupSession(sessionId: string): Promise<void> {
 
 function closeDialog(): void {
   loadGeneration++
+  cancelPendingPreparation()
   loading.value = false
   expanded.value = false
   emit('update:modelValue', false)
