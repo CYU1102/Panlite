@@ -86,7 +86,7 @@ async function runBenchmark() {
         builder.onLoad({ filter: /.*/, namespace: 'benchmark-dependency' }, args => {
           const contents = {
           registry: "export const getAdapter = platform => { if (platform !== 'quark') throw new Error('Unexpected benchmark platform'); return globalThis.__PANLITE_TASK_BENCHMARK_ADAPTER }",
-          crypto: 'export const decryptCredential = value => value',
+          crypto: "export const decryptCredential = value => value; export const encryptCredential = () => { throw new Error('Encryption not part of fixture') }",
           archive: "export const cleanupTempDir = () => {}; export const createArchive = () => { throw new Error('Archive not part of fixture') }; export const extractArchive = createArchive",
           'runtime-services': 'export const notifyTaskTerminal = () => {}',
           }[args.path]
