@@ -225,21 +225,36 @@ export function resolve7ZipExecutablePath(binaryPath: string): string {
   return binaryPath.replace(/([\\/])app\.asar(?=[\\/]node_modules[\\/]7zip-bin[\\/])/, '$1app.asar.unpacked')
 }
 
+function sevenZipPassword(password?: string): { commandLinePassword?: string; stdinPassword?: string } {
+  if (!password) return {}
+  // 7-Zip reads one line from stdin. Preserve existing newline passwords using
+  // its command-line switch; they cannot be represented by that input protocol.
+  return /[\r\n]/.test(password) ? { commandLinePassword: password } : { stdinPassword: password }
+}
+
+function sendSevenZipPassword(stream: any, password?: string): void {
+  const stdin = stream._childProcess?.stdin
+  if (!stdin) return
+  // Unencrypted archives can exit without reading the supplied password.
+  stdin.on('error', () => {})
+  stdin.end(password === undefined ? undefined : `${password}\n`, 'utf8')
+}
+
 async function list7zFiles(filePath: string, password?: string): Promise<{ files: ArchiveFileInfo[]; isEncrypted: boolean }> {
   try {
     const Seven = require('node-7z')
     const { path7za } = require('7zip-bin')
     const files: ArchiveFileInfo[] = []
 
+    const secret = sevenZipPassword(password)
     const stream = Seven.list(filePath, {
       $bin: resolve7ZipExecutablePath(path7za),
-      password: password || '',
+      password: secret.commandLinePassword,
       techInfo: true,
       $raw: ['-sccUTF-8'],
     })
-    // node-7z leaves stdin open and ignores $spawnOptions in the bundled version.
-    // Close it so encrypted headers without a password cannot wait for a prompt.
-    stream._childProcess?.stdin?.end()
+    // Close stdin even with no password so encrypted headers cannot hang.
+    sendSevenZipPassword(stream, secret.stdinPassword)
     const result = await new Promise<any[]>((resolve, reject) => {
       const entries: any[] = []
       stream.on('data', (entry: any) => entries.push(entry))
@@ -285,13 +300,14 @@ async function extract7z(filePath: string, outputDir: string, password?: string,
     mkdirSync(outputDir, { recursive: true })
 
     throwIfAborted(runtime.signal)
+    const secret = sevenZipPassword(password)
     const stream = Seven.extractFull(filePath, outputDir, {
       $bin: resolve7ZipExecutablePath(path7za),
-      password: password || '',
+      password: secret.commandLinePassword,
       $cherryPick: files || undefined,
       $raw: ['-sccUTF-8'],
     })
-    stream._childProcess?.stdin?.end()
+    sendSevenZipPassword(stream, secret.stdinPassword)
     await new Promise<void>((resolve, reject) => {
       const abort = () => {
         stream._childProcess?.kill()

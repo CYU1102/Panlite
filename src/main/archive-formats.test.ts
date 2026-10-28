@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -12,6 +12,11 @@ const archivePath = join(workDir, 'sample.7z')
 const unicodeDir = join(workDir, '目录')
 const encryptedPath = join(workDir, 'encrypted.7z')
 const encryptedHeadersPath = join(workDir, 'encrypted-headers.7z')
+const unicodePasswordPath = join(workDir, 'unicode-password.7z')
+const newlinePasswordPath = join(workDir, 'newline-password.7z')
+const unicodePassword = ' 口令😀-fixture '
+const newlinePassword = 'fixture\npassword'
+let spawnSpy: ReturnType<typeof vi.spyOn>
 
 beforeAll(() => {
   writeFileSync(sourcePath, 'hello PanLite', 'utf8')
@@ -20,9 +25,12 @@ beforeAll(() => {
   writeFileSync(join(unicodeDir, '中文 文件.txt'), '加密样本', 'utf8')
   execFileSync(path7za, ['a', encryptedPath, '目录', '-p1234'], { cwd: workDir, windowsHide: true })
   execFileSync(path7za, ['a', encryptedHeadersPath, '目录', '-p1234', '-mhe=on'], { cwd: workDir, windowsHide: true })
+  execFileSync(path7za, ['a', unicodePasswordPath, '目录', `-p${unicodePassword}`, '-mhe=on'], { cwd: workDir, windowsHide: true })
+  execFileSync(path7za, ['a', newlinePasswordPath, '目录', `-p${newlinePassword}`, '-mhe=on'], { cwd: workDir, windowsHide: true })
+  spawnSpy = vi.spyOn(require('node:child_process'), 'spawn')
 })
 
-afterAll(() => rmSync(workDir, { recursive: true, force: true }))
+afterAll(() => { spawnSpy?.mockRestore(); rmSync(workDir, { recursive: true, force: true }) })
 
 describe('7z runtime integration', () => {
   it('resolves only packaged 7zip executables outside app.asar and preserves development paths', () => {
@@ -68,5 +76,32 @@ describe('7z runtime integration', () => {
     const output = join(workDir, 'encrypted-header-output')
     await extractArchive(encryptedHeadersPath, output, '1234')
     expect(readFileSync(join(output, '目录', '中文 文件.txt'), 'utf8')).toBe('加密样本')
+  }, 15000)
+
+  it('passes ordinary and Unicode passwords through stdin instead of process arguments', async () => {
+    spawnSpy.mockClear()
+    for (const [archive, password, outputName] of [[encryptedHeadersPath, '1234', 'stdin-ascii'], [unicodePasswordPath, unicodePassword, 'stdin-unicode']]) {
+      const meta = await listArchiveFiles(archive, password)
+      expect(meta.files.some(file => file.path === '目录/中文 文件.txt')).toBe(true)
+      const output = join(workDir, outputName)
+      await extractArchive(archive, output, password)
+      expect(readFileSync(join(output, '目录', '中文 文件.txt'), 'utf8')).toBe('加密样本')
+    }
+    const calls = spawnSpy.mock.calls.filter(call => call[0] === path7za)
+    expect(calls.length).toBeGreaterThanOrEqual(4)
+    for (const call of calls) {
+      const args = call[1] as string[]
+      expect(args.some(value => value.includes('1234') || value.includes(unicodePassword))).toBe(false)
+    }
+  }, 20000)
+
+  it('preserves newline passwords that cannot be represented by 7-Zip stdin', async () => {
+    spawnSpy.mockClear()
+    const meta = await listArchiveFiles(newlinePasswordPath, newlinePassword)
+    expect(meta.isEncrypted).toBe(true)
+    const output = join(workDir, 'newline-output')
+    await extractArchive(newlinePasswordPath, output, newlinePassword)
+    expect(readFileSync(join(output, '目录', '中文 文件.txt'), 'utf8')).toBe('加密样本')
+    expect(spawnSpy.mock.calls.some(call => call[0] === path7za && (call[1] as string[]).includes(`-p${newlinePassword}`))).toBe(true)
   }, 15000)
 })
