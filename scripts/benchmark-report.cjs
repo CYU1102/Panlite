@@ -34,17 +34,27 @@ function readBaseline(filename) {
 
 function compareReports(current, baseline, paths, thresholdPercent = 20) {
   if (!baseline) return { status: 'unavailable', reason: 'No previous candidate report was supplied; no speedup claim is made.' }
+  if (!Number.isFinite(thresholdPercent) || thresholdPercent < 0) throw new Error('Benchmark review threshold must be finite and nonnegative')
+  if (!Array.isArray(paths) || paths.length === 0) return { status: 'incomplete', reason: 'No comparison metrics were supplied.' }
+  if (current.completed === false || baseline.completed === false) return { status: 'incomplete', reason: 'A benchmark run did not complete.' }
   const reasons = []
+  if (!Number.isInteger(current.schema) || !Number.isInteger(baseline.schema) || typeof current.benchmark !== 'string' || !current.benchmark || typeof baseline.benchmark !== 'string' || !baseline.benchmark) reasons.push('benchmark schema/name missing')
   if (current.schema !== baseline.schema || current.benchmark !== baseline.benchmark) reasons.push('benchmark schema/name differ')
   if (!current.fixtureSha256 || current.fixtureSha256 !== baseline.fixtureSha256) reasons.push('fixed fixture/configuration differ')
+  const validEnvironment = value => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
+  if (!validEnvironment(current.environment) || !validEnvironment(baseline.environment)) reasons.push('machine/runtime configuration missing')
   if (JSON.stringify(current.environment) !== JSON.stringify(baseline.environment)) reasons.push('machine/runtime configuration differ')
   if (reasons.length) return { status: 'incompatible', reasons }
   const valueAt = (object, path) => path.split('.').reduce((value, key) => value?.[key], object)
   const metrics = paths.map(path => {
     const before = valueAt(baseline, path), after = valueAt(current, path)
     if (!Number.isFinite(before) || before <= 0 || !Number.isFinite(after) || after < 0) return { path, status: 'unavailable', reason: 'Missing, invalid or zero baseline metric.' }
-    const changePercent = round((after / before - 1) * 100)
-    return { path, before, after, changePercent, status: changePercent > thresholdPercent ? 'review-regression' : 'within-threshold' }
+    const changePercentExact = (after / before - 1) * 100
+    if (!Number.isFinite(changePercentExact)) return { path, status: 'unavailable', reason: 'Metric change cannot be represented as a finite percentage.' }
+    // Ignore only floating-point representation noise at the threshold; do not
+    // round to display precision before deciding whether review is required.
+    const tolerance = Number.EPSILON * Math.max(100, Math.abs(changePercentExact), thresholdPercent) * 4
+    return { path, before, after, changePercent: round(changePercentExact), changePercentExact, status: changePercentExact - thresholdPercent > tolerance ? 'review-regression' : 'within-threshold' }
   })
   return { status: metrics.some(metric => metric.status === 'review-regression') ? 'review-regression' : metrics.some(metric => metric.status === 'unavailable') ? 'incomplete' : 'comparable', thresholdPercent, metrics, caveat: 'Same-machine repeated samples still include OS cache and load noise. Regression flags require review; they do not establish causation or promise speedups.' }
 }

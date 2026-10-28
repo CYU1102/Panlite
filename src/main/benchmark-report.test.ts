@@ -24,6 +24,30 @@ describe('performance candidate comparison', () => {
     expect(comparison.status).toBe('review-regression')
     expect(comparison.metrics[0]).toMatchObject({ before: 20, after: 25, changePercent: 25 })
   })
+  it('checks the unrounded change at the review threshold', () => {
+    const current = report()
+    current.retrieval.p95Ms = 24.0004
+    const comparison = compareReports(current, report(), ['retrieval.p95Ms'])
+    expect(comparison.status).toBe('review-regression')
+    expect(comparison.metrics[0].changePercent).toBe(20)
+    expect(comparison.metrics[0].changePercentExact).toBeGreaterThan(20)
+    current.retrieval.p95Ms = 24
+    expect(compareReports(current, report(), ['retrieval.p95Ms']).status).toBe('comparable')
+    const baseline = report()
+    baseline.retrieval.p95Ms = 100
+    current.retrieval.p95Ms = 110
+    expect(compareReports(current, baseline, ['retrieval.p95Ms'], 10).status).toBe('comparable')
+    current.retrieval.p95Ms = 110.0001
+    expect(compareReports(current, baseline, ['retrieval.p95Ms'], 10).status).toBe('review-regression')
+  })
+  it('does not compare failed runs or missing configuration and metrics', () => {
+    expect(compareReports({ ...report(), completed: false }, report(), ['retrieval.p95Ms']).status).toBe('incomplete')
+    expect(compareReports(report(), { ...report(), completed: false }, ['retrieval.p95Ms']).status).toBe('incomplete')
+    expect(compareReports({ ...report(), environment: undefined }, { ...report(), environment: undefined }, ['retrieval.p95Ms']).status).toBe('incompatible')
+    expect(compareReports({ ...report(), benchmark: undefined }, { ...report(), benchmark: undefined }, ['retrieval.p95Ms']).status).toBe('incompatible')
+    expect(compareReports(report(), report(), []).status).toBe('incomplete')
+    expect(() => compareReports(report(), report(), ['retrieval.p95Ms'], NaN)).toThrow()
+  })
   it('reports a smaller duration only for an identical fixture and machine', () => {
     const current = report()
     current.retrieval.p95Ms = 10
