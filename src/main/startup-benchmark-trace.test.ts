@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import type { BrowserWindow } from 'electron'
 
 vi.mock('electron', () => ({ app: {
@@ -146,6 +147,22 @@ describe('startup benchmark monotonic trace', () => {
     expect(fixture.capturePage).toHaveBeenCalledWith()
     expect(app.quit).toHaveBeenCalledOnce()
     expect(app.exit).not.toHaveBeenCalled()
+  })
+
+  it('measures each animation-frame wait and style read on the renderer clock', async () => {
+    const fixture = await runSyntheticBenchmark()
+    const script = vi.mocked(fixture.window.webContents.executeJavaScript).mock.calls[1][0]
+    const times = [10, 15, 55, 60]
+    let frames = 0
+    const visual = await runInNewContext(script, {
+      performance: { now: () => times.shift() },
+      requestAnimationFrame: (callback: () => void) => { frames++; callback() },
+      document: { querySelector: () => null, documentElement: { classList: { contains: () => false } } },
+      innerHeight: 720,
+    })
+    expect(frames).toBe(2)
+    expect(visual.rendererVisualTiming).toEqual({ clock: 'renderer performance.now', started: 10, firstFrame: 15, secondFrame: 55, stylesComplete: 60 })
+    expect(visual.theme).toBe('light')
   })
 
   it('retains a failed capture as an incomplete stage and exits unsuccessfully', async () => {

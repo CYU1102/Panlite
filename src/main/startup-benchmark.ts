@@ -181,7 +181,13 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
           }
           trace.mark('visual.start')
           const visual = await window.webContents.executeJavaScript(`(async () => {
-            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const started = performance.now();
+            let firstFrame;
+            await new Promise(resolve => requestAnimationFrame(() => {
+              firstFrame = performance.now();
+              requestAnimationFrame(resolve);
+            }));
+            const secondFrame = performance.now();
             const style = selector => {
               const element = document.querySelector(selector);
               return element ? getComputedStyle(element) : null;
@@ -192,7 +198,7 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
             const footerRect = footer?.getBoundingClientRect();
             const tools = document.querySelector('.processing-policy')?.closest('.el-dialog');
             const toolsFooter = tools?.querySelector('.el-dialog__footer')?.getBoundingClientRect();
-            return { theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+            const result = { theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
               header: style('.topbar-wrapper')?.backgroundColor, statusChip: style('.status-chip')?.backgroundColor,
               aiPage: style('.ai-workspace')?.backgroundColor ?? null,
               providerSidebar: style('.provider-manager > aside')?.backgroundColor ?? null,
@@ -205,6 +211,9 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
                 bodyMaxHeight: getComputedStyle(tools.querySelector('.el-dialog__body')).maxHeight } : null,
               localToolsHorizontalOverflow: tools ? tools.scrollWidth > tools.clientWidth + 1 : false,
               topbarOverflow: bar ? bar.scrollWidth > bar.clientWidth + 1 : false };
+            const stylesComplete = performance.now();
+            result.rendererVisualTiming = { clock: 'renderer performance.now', started, firstFrame, secondFrame, stylesComplete };
+            return result;
           })()`)
           trace.mark('visual.end')
           if (theme && visual.theme !== theme) throw new Error('Requested benchmark theme was not applied')
