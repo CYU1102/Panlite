@@ -89,7 +89,7 @@ using System.Threading.Tasks;
 public static class PanLiteWizardNative {
   public delegate bool EnumProc(IntPtr h, IntPtr parameter);
   [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
-  public sealed class Control { public long Handle, Parent; public int Id, Kind; public string Class, Text; public bool Enabled, LocalVisible; public Rect Bounds; }
+  public sealed class Control { public long Handle, Parent; public int Id, Kind, TextReadWin32Error; public string Class, Text; public bool Enabled, LocalVisible, TextReadSucceeded; public Rect Bounds; }
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr parameter);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -103,15 +103,20 @@ public static class PanLiteWizardNative {
   [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr h, uint message, UIntPtr w, IntPtr l, uint flags, uint timeout, out UIntPtr result);
   [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="SendMessageTimeoutW", SetLastError=true)] static extern IntPtr SendText(IntPtr h, uint message, UIntPtr w, string text, uint flags, uint timeout, out UIntPtr result);
   [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="SendMessageTimeoutW", SetLastError=true)] static extern IntPtr ReadText(IntPtr h, uint message, UIntPtr w, StringBuilder text, uint flags, uint timeout, out UIntPtr result);
+  [DllImport("kernel32.dll")] static extern void SetLastError(uint error);
   [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
   public static bool Owned(long handle, int expectedPid) { uint pid; GetWindowThreadProcessId(new IntPtr(handle), out pid); return pid == expectedPid; }
   static Control Describe(IntPtr h) {
     StringBuilder cls = new StringBuilder(128), text = new StringBuilder(2048); UIntPtr result; Rect rect;
     GetClassNameW(h, cls, cls.Capacity); GetWindowRect(h, out rect);
-    ReadText(h, 0x000D, new UIntPtr((uint)text.Capacity), text, 3, 300, out result);
+    // A blank string can be either a valid empty caption or a failed/timed-out
+    // read. Record the call outcome and the immediate last-error separately.
+    SetLastError(0);
+    bool textReadSucceeded = ReadText(h, 0x000D, new UIntPtr((uint)text.Capacity), text, 3, 300, out result) != IntPtr.Zero;
+    int textReadError = textReadSucceeded ? 0 : Marshal.GetLastWin32Error();
     int style = GetWindowLongW(h, -16);
     return new Control { Handle=h.ToInt64(), Parent=GetParent(h).ToInt64(), Id=GetDlgCtrlID(h), Class=cls.ToString(), Text=text.ToString(),
-      Enabled=IsWindowEnabled(h), LocalVisible=(style & 0x10000000)!=0, Kind=style & 15, Bounds=rect };
+      Enabled=IsWindowEnabled(h), LocalVisible=(style & 0x10000000)!=0, Kind=style & 15, Bounds=rect, TextReadSucceeded=textReadSucceeded, TextReadWin32Error=textReadError };
   }
   public static Control[] Windows(int expectedPid) { var list=new List<Control>(); EnumWindows((h,p)=>{if(Owned(h.ToInt64(),expectedPid))list.Add(Describe(h));return list.Count<8;},IntPtr.Zero); return list.ToArray(); }
   public static Control[] Children(long parent, int expectedPid) { var list=new List<Control>(); EnumChildWindows(new IntPtr(parent),(h,p)=>{if(Owned(h.ToInt64(),expectedPid))list.Add(Describe(h));return list.Count<64;},IntPtr.Zero); return list.ToArray(); }
@@ -123,7 +128,14 @@ public static class PanLiteWizardNative {
     // executes the real page callbacks; a later page is required as evidence.
     if(!PostMessageW(parent,0x0111,new IntPtr(id),button))throw new InvalidOperationException("Button notification could not be posted");
   }
-  public static void SetText(long handle,int expectedPid,string value) { UIntPtr result; if(!Owned(handle,expectedPid)||SendText(new IntPtr(handle),0x000C,UIntPtr.Zero,value,3,2000,out result)==IntPtr.Zero)throw new InvalidOperationException("Directory value could not be set"); }
+  public static void SetText(long handle,int expectedPid,string value) {
+    if(!Owned(handle,expectedPid))throw new InvalidOperationException("Directory control ownership changed before setting text; handle="+handle+", expectedPid="+expectedPid);
+    UIntPtr result; SetLastError(0);
+    if(SendText(new IntPtr(handle),0x000C,UIntPtr.Zero,value,3,2000,out result)==IntPtr.Zero) {
+      int error=Marshal.GetLastWin32Error();
+      throw new InvalidOperationException("Directory text message failed; handle="+handle+", expectedPid="+expectedPid+", win32Error="+error+" (zero means unavailable)");
+    }
+  }
   public static void Uncheck(long handle,int expectedPid) { UIntPtr result; if(!Owned(handle,expectedPid)||SendMessageTimeoutW(new IntPtr(handle),0x00F1,UIntPtr.Zero,IntPtr.Zero,3,2000,out result)==IntPtr.Zero)throw new InvalidOperationException("Run checkbox could not be cleared"); }
   public static int Checked(long handle,int expectedPid) { UIntPtr result; if(!Owned(handle,expectedPid)||SendMessageTimeoutW(new IntPtr(handle),0x00F0,UIntPtr.Zero,IntPtr.Zero,3,2000,out result)==IntPtr.Zero)throw new InvalidOperationException("Checkbox state could not be read"); return (int)result.ToUInt64(); }
   public static string Capture(long handle,int expectedPid,string file) {

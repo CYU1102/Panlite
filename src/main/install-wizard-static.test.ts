@@ -32,6 +32,14 @@ it('keeps real non-silent wizard notifications scoped to owned enabled controls 
   expect(source).toContain("$report.status = 'unsupported'")
 })
 
+it('preserves the outcome of control reads and distinguishes ownership from message failures', () => {
+  expect(source).toContain('bool textReadSucceeded = ReadText(')
+  expect(source).toContain('TextReadSucceeded=textReadSucceeded, TextReadWin32Error=textReadError')
+  expect(source).toContain('Directory control ownership changed before setting text')
+  expect(source).toContain('Directory text message failed; handle=')
+  expect(source).toContain('win32Error="+error+" (zero means unavailable)')
+})
+
 it.runIf(process.platform === 'win32')('parses and compiles the native declarations with Windows PowerShell without executing the script or native methods', () => {
   const command = `$ErrorActionPreference='Stop'; $tokens=$null; $errors=$null; $ast=[System.Management.Automation.Language.Parser]::ParseFile($env:PANLITE_WIZARD_AST_SOURCE,[ref]$tokens,[ref]$errors); $add=$ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-Type'},$true)|Select-Object -First 1; $code=$add.CommandElements|Where-Object{$_ -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $_.Value.StartsWith('using System;')}|Select-Object -First 1; Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $code.Value; [ordered]@{errors=@($errors | ForEach-Object {$_.Message}); startProcessCount=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Start-Process'},$true)).Count; compiledType=[PanLiteWizardNative].FullName; scriptExecuted=$false; nativeMethodsInvoked=$false} | ConvertTo-Json -Compress`
   const shell = path.join(process.env.SystemRoot || 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
@@ -40,4 +48,14 @@ it.runIf(process.platform === 'win32')('parses and compiles the native declarati
   })
   expect(result.status, result.stderr).toBe(0)
   expect(JSON.parse(result.stdout.replace(/^\uFEFF/, '').trim())).toEqual({ errors: [], startProcessCount: 1, compiledType: 'PanLiteWizardNative', scriptExecuted: false, nativeMethodsInvoked: false })
+})
+
+it.runIf(process.platform === 'win32')('reports invalid control ownership without sending a window message', () => {
+  const command = `$ErrorActionPreference='Stop'; $tokens=$null; $errors=$null; $ast=[System.Management.Automation.Language.Parser]::ParseFile($env:PANLITE_WIZARD_AST_SOURCE,[ref]$tokens,[ref]$errors); $add=$ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-Type'},$true)|Select-Object -First 1; $code=$add.CommandElements|Where-Object{$_ -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $_.Value.StartsWith('using System;')}|Select-Object -First 1; Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $code.Value; try { [PanLiteWizardNative]::SetText(0,-1,'unused'); throw 'Invalid handle was accepted' } catch { if (-not $_.Exception.Message.Contains('Directory control ownership changed')) { throw }; 'invalid ownership rejected' }`
+  const shell = path.join(process.env.SystemRoot || 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
+  const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', command], {
+    env: { ...process.env, PANLITE_WIZARD_AST_SOURCE: file }, windowsHide: true, encoding: 'utf8', timeout: 15000,
+  })
+  expect(result.status, result.stderr).toBe(0)
+  expect(result.stdout.trim()).toBe('invalid ownership rejected')
 })
