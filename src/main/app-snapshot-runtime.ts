@@ -7,7 +7,7 @@ export function appSnapshotOptions(): AppSnapshotOptions {
   return {
     profilePath: app.getPath('userData'), appVersion: app.getVersion(),
     supportedMigrationIds: getSupportedDatabaseMigrations(),
-    supportedSchemaVersions: { catalog_schema: 1, transfer_plan_schema: 1, file_backup_schema: 1, subscription_schema: 1 },
+    supportedSchemaVersions: { catalog_schema: 2, transfer_plan_schema: 1, file_backup_schema: 1, subscription_schema: 1 },
   }
 }
 export function getAppSnapshotService(): AppSnapshotService { return service ??= new AppSnapshotService(appSnapshotOptions()) }

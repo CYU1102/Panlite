@@ -18,9 +18,8 @@ export function initializeCatalogSchema(db: Database.Database): void {
       INSERT INTO catalog_schema (version) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM catalog_schema);
     `)
     const { version } = db.prepare('SELECT version FROM catalog_schema').get() as { version: number }
-    if (version > 1) throw new Error('Unsupported catalog schema version')
-    if (version === 1) return
-    db.exec(`
+    if (version > 2) throw new Error('Unsupported catalog schema version')
+    if (version === 0) db.exec(`
       CREATE TABLE catalog_accounts (id TEXT PRIMARY KEY, nickname TEXT NOT NULL, platform TEXT NOT NULL, status TEXT NOT NULL);
       CREATE TABLE catalog_scopes (
         id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES catalog_accounts(id) ON DELETE CASCADE,
@@ -73,6 +72,17 @@ export function initializeCatalogSchema(db: Database.Database): void {
       );
       CREATE INDEX catalog_collection_identity ON catalog_collection_members(account_id, file_id);
       UPDATE catalog_schema SET version = 1;
+    `)
+    if (version < 2) db.exec(`
+      CREATE TABLE catalog_staged_entries (
+        scope_id TEXT NOT NULL REFERENCES catalog_scopes(id) ON DELETE CASCADE,
+        directory_id TEXT NOT NULL, file_id TEXT NOT NULL, account_id TEXT NOT NULL,
+        parent_id TEXT NOT NULL, name TEXT NOT NULL, search_name TEXT NOT NULL, path TEXT NOT NULL, search_path TEXT NOT NULL, is_dir INTEGER NOT NULL,
+        size INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        indexed_at INTEGER NOT NULL, file_type TEXT NOT NULL,
+        PRIMARY KEY(scope_id,directory_id,file_id)
+      );
+      UPDATE catalog_schema SET version = 2;
     `)
   })()
 }
@@ -135,6 +145,7 @@ export class CatalogStore {
       const row = this.getScopeRow(id)!
       this.db.prepare('DELETE FROM catalog_queue WHERE scope_id=?').run(id)
       this.db.prepare('DELETE FROM catalog_candidates WHERE scope_id=?').run(id)
+      this.db.prepare('DELETE FROM catalog_staged_entries WHERE scope_id=?').run(id)
       this.db.prepare("UPDATE catalog_scopes SET status='running',generation=generation+1,last_scan_at=?,updated_at=? WHERE id=?").run(this.now(), this.now(), id)
       this.db.prepare('INSERT INTO catalog_queue(scope_id,directory_id,path) VALUES(?,?,?)').run(id, row.root_id, row.root_path)
     })()
@@ -155,23 +166,21 @@ export class CatalogStore {
     return !!this.db.prepare("SELECT 1 FROM catalog_scopes WHERE id=? AND generation=? AND status='running'").get(cursor.scopeId, cursor.generation)
   }
   beginDirectory(cursor: CatalogCursor): void {
-    this.db.prepare('DELETE FROM catalog_candidates WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM catalog_candidates WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
+      this.db.prepare('DELETE FROM catalog_staged_entries WHERE scope_id=? AND directory_id=?').run(cursor.scopeId, cursor.directoryId)
+    })()
   }
-  /** Small transactions allow the service to yield between batches. Until finishDirectory, old edges remain authoritative. */
+  /** Small transactions stage metadata without changing the visible entries or old edges. */
   writeBatch(cursor: CatalogCursor, files: CatalogMetadata[]): void {
-    const upsert = this.db.prepare(`INSERT INTO catalog_entries(account_id,file_id,parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,indexed_at,file_type)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,file_id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,
-      search_name=excluded.search_name,path=excluded.path,search_path=excluded.search_path,is_dir=excluded.is_dir,size=excluded.size,
-      created_at=excluded.created_at,updated_at=excluded.updated_at,indexed_at=excluded.indexed_at,file_type=excluded.file_type`)
+    const stage = this.db.prepare(`INSERT INTO catalog_staged_entries(scope_id,directory_id,file_id,account_id,parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,indexed_at,file_type)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_id,directory_id,file_id) DO UPDATE SET account_id=excluded.account_id,parent_id=excluded.parent_id,
+      name=excluded.name,search_name=excluded.search_name,path=excluded.path,search_path=excluded.search_path,is_dir=excluded.is_dir,size=excluded.size,created_at=excluded.created_at,
+      updated_at=excluded.updated_at,indexed_at=excluded.indexed_at,file_type=excluded.file_type`)
     const candidate = this.db.prepare('INSERT OR IGNORE INTO catalog_candidates(scope_id,parent_id,file_id) VALUES(?,?,?)')
     this.db.transaction(() => {
       for (const file of files) {
-        if (file.isDir) {
-          const old = (this.db.prepare('SELECT path FROM catalog_entries WHERE account_id=? AND file_id=?').get(file.accountId, file.fileId)
-            ?? this.db.prepare('SELECT root_path path FROM catalog_scopes WHERE account_id=? AND root_id=?').get(file.accountId, file.fileId)) as { path: string } | undefined
-          if (old && old.path !== file.path) this.relocateSubtree(file.accountId, file.fileId, old.path, file.path)
-        }
-        upsert.run(file.accountId, file.fileId, file.parentId, file.name, file.name.toLowerCase(), file.path, file.path.toLowerCase(),
+        stage.run(cursor.scopeId, cursor.directoryId, file.fileId, file.accountId, file.parentId, file.name, file.name.toLowerCase(), file.path, file.path.toLowerCase(),
           Number(file.isDir), file.size, file.createdAt, file.updatedAt, this.now(), file.fileType)
         candidate.run(cursor.scopeId, cursor.directoryId, file.fileId)
       }
@@ -198,6 +207,28 @@ export class CatalogStore {
   }
   finishDirectory(cursor: CatalogCursor): void {
     this.db.transaction(() => {
+      const stagedCount = (this.db.prepare('SELECT COUNT(*) count FROM catalog_staged_entries WHERE scope_id=? AND directory_id=?').get(cursor.scopeId, cursor.directoryId) as { count: number }).count
+      const count = (this.db.prepare('SELECT COUNT(*) count FROM catalog_candidates WHERE scope_id=? AND parent_id=?').get(cursor.scopeId, cursor.directoryId) as { count: number }).count
+      const unmatched = this.db.prepare(`SELECT 1 FROM catalog_staged_entries s WHERE s.scope_id=? AND s.directory_id=?
+        AND (s.account_id<>? OR s.parent_id<>? OR NOT EXISTS(SELECT 1 FROM catalog_candidates c WHERE c.scope_id=s.scope_id AND c.parent_id=s.directory_id AND c.file_id=s.file_id)) LIMIT 1`)
+        .get(cursor.scopeId, cursor.directoryId, cursor.accountId, cursor.directoryId)
+      if (stagedCount !== count || unmatched) throw new Error('Staged directory is incomplete or inconsistent')
+      const oldEntry = this.db.prepare('SELECT path FROM catalog_entries WHERE account_id=? AND file_id=?')
+      const oldRoot = this.db.prepare('SELECT root_path path FROM catalog_scopes WHERE account_id=? AND root_id=?')
+      const directories = this.db.prepare('SELECT account_id accountId,file_id fileId,path FROM catalog_staged_entries WHERE scope_id=? AND directory_id=? AND is_dir=1 ORDER BY file_id')
+        .all(cursor.scopeId, cursor.directoryId) as { accountId: string; fileId: string; path: string }[]
+      for (const file of directories) {
+        const old = (oldEntry.get(file.accountId, file.fileId) ?? oldRoot.get(file.accountId, file.fileId)) as { path: string } | undefined
+        if (old && old.path !== file.path) this.relocateSubtree(file.accountId, file.fileId, old.path, file.path)
+      }
+      // Preserve the adapter's staged insertion order instead of sorting by file ID.
+      this.db.prepare(`INSERT INTO catalog_entries(account_id,file_id,parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,indexed_at,file_type)
+        SELECT account_id,file_id,parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,indexed_at,file_type
+        FROM catalog_staged_entries WHERE scope_id=? AND directory_id=? ORDER BY rowid
+        ON CONFLICT(account_id,file_id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,
+        search_name=excluded.search_name,path=excluded.path,search_path=excluded.search_path,is_dir=excluded.is_dir,size=excluded.size,
+        created_at=excluded.created_at,updated_at=excluded.updated_at,indexed_at=excluded.indexed_at,file_type=excluded.file_type`)
+        .run(cursor.scopeId, cursor.directoryId)
       this.db.prepare('DELETE FROM catalog_edges WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
       this.db.prepare('INSERT INTO catalog_edges SELECT scope_id,parent_id,file_id FROM catalog_candidates WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
       this.db.prepare(`INSERT OR IGNORE INTO catalog_members(scope_id,account_id,file_id)
@@ -206,6 +237,7 @@ export class CatalogStore {
         SELECT ?,e.file_id,e.path FROM catalog_candidates c JOIN catalog_entries e ON e.account_id=? AND e.file_id=c.file_id
         WHERE c.scope_id=? AND c.parent_id=? AND e.is_dir=1`).run(cursor.scopeId, cursor.accountId, cursor.scopeId, cursor.directoryId)
       this.db.prepare('DELETE FROM catalog_candidates WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
+      this.db.prepare('DELETE FROM catalog_staged_entries WHERE scope_id=? AND directory_id=?').run(cursor.scopeId, cursor.directoryId)
       this.db.prepare("UPDATE catalog_queue SET state='done',error=NULL WHERE scope_id=? AND directory_id=?").run(cursor.scopeId, cursor.directoryId)
       this.db.prepare('UPDATE catalog_scopes SET updated_at=? WHERE id=?').run(this.now(), cursor.scopeId)
     })()
@@ -213,6 +245,7 @@ export class CatalogStore {
   failDirectory(cursor: CatalogCursor, error: string): void {
     this.db.transaction(() => {
       this.db.prepare('DELETE FROM catalog_candidates WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
+      this.db.prepare('DELETE FROM catalog_staged_entries WHERE scope_id=? AND directory_id=?').run(cursor.scopeId, cursor.directoryId)
       this.db.prepare("UPDATE catalog_queue SET state='failed',error=? WHERE scope_id=? AND directory_id=?").run(error, cursor.scopeId, cursor.directoryId)
       this.db.prepare('UPDATE catalog_scopes SET updated_at=? WHERE id=?').run(this.now(), cursor.scopeId)
     })()

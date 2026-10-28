@@ -207,6 +207,74 @@ describe('persistent catalog scans', () => {
     expect(f.db.prepare('SELECT COUNT(*) count FROM catalog_entries').get()).toEqual({ count: 1 })
   })
 
+  it('preserves existing metadata when a partially staged directory scan is paused', async () => {
+    const f = fixture(), scope = await f.scope()
+    f.trees.set('a:root', listing('root', [file('existing', 'root', { name: 'old.txt', size: 100 })]))
+    await f.scan(scope.id)
+    let paused = false
+    const service = new CatalogService(f.store, {
+      getAccount: id => f.accounts.get(id), listFiles: f.listFiles,
+      yieldControl: async () => {
+        const candidates = (f.db.prepare('SELECT COUNT(*) count FROM catalog_candidates').get() as { count: number }).count
+        if (candidates && !paused) { paused = true; success(await service.pauseScan(scope.id)) }
+      },
+    })
+    f.trees.set('a:root', listing('root', [file('existing', 'root', { name: 'new.txt', size: 200 }), ...Array.from({ length: 250 }, (_, index) => file('new-' + index))]))
+    success(await service.startScan(scope.id)); await service.waitForIdle()
+    expect(paused).toBe(true)
+    expect(await f.entries()).toMatchObject([{ fileId: 'existing', name: 'old.txt', size: 100, path: '/old.txt' }])
+    service.dispose()
+    await f.reopen()
+    expect(await f.entries()).toMatchObject([{ fileId: 'existing', name: 'old.txt', size: 100, path: '/old.txt' }])
+    success(await f.service.resumeScan(scope.id)); await f.service.waitForIdle()
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'existing' })).toMatchObject({ name: 'new.txt', size: 200, path: '/new.txt' })
+    expect(f.store.getScope(scope.id)).toMatchObject({ status: 'completed', entryCount: 251 })
+    expect(f.db.prepare('SELECT COUNT(*) count FROM catalog_staged_entries').get()).toEqual({ count: 0 })
+  })
+
+  it('rolls back metadata and subtree relocation if the final directory transaction fails', async () => {
+    const f = fixture(), scope = await f.scope()
+    f.trees.set('a:root', listing('root', [file('dir', 'root', { isDir: true, name: 'old' })]))
+    f.trees.set('a:dir', listing('dir', [file('child', 'dir')]))
+    await f.scan(scope.id)
+    f.trees.set('a:root', listing('root', [file('dir', 'root', { isDir: true, name: 'new' })]))
+    f.db.exec("CREATE TRIGGER fail_catalog_edge BEFORE INSERT ON catalog_edges BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
+    await f.scan(scope.id)
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'dir' })?.path).toBe('/old')
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })?.path).toBe('/old/child.txt')
+    expect(f.store.getScope(scope.id)?.status).toBe('error')
+    expect(f.db.prepare('SELECT COUNT(*) count FROM catalog_staged_entries').get()).toEqual({ count: 0 })
+    f.db.exec('DROP TRIGGER fail_catalog_edge')
+    success(await f.service.resumeScan(scope.id)); await f.service.waitForIdle()
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })?.path).toBe('/new/child.txt')
+  })
+
+  it('rejects inconsistent staged identities without replacing the previous directory', async () => {
+    const f = fixture(), scope = await f.scope()
+    f.trees.set('a:root', listing('root', [file('existing')]))
+    await f.scan(scope.id)
+    f.store.startScan(scope.id)
+    const cursor = f.store.nextCursor()!
+    f.store.beginDirectory(cursor)
+    f.store.writeBatch(cursor, [{ accountId: 'a', fileId: 'new', parentId: 'root', name: 'new.txt', path: '/new.txt',
+      isDir: false, size: 1, createdAt: 1, updatedAt: 2, fileType: 'document' }])
+    f.db.prepare("UPDATE catalog_staged_entries SET file_id='different' WHERE scope_id=?").run(scope.id)
+    expect(() => f.store.finishDirectory(cursor)).toThrow(/incomplete or inconsistent/)
+    expect((await f.entries()).map(entry => entry.fileId)).toEqual(['existing'])
+    expect(f.store.nextCursor()?.directoryId).toBe('root')
+  })
+
+  it('upgrades a version 1 catalog without changing indexed entries and can be initialized again', async () => {
+    const f = fixture(), scope = await f.scope()
+    f.trees.set('a:root', listing('root', [file('existing')]))
+    await f.scan(scope.id)
+    f.db.exec('DROP TABLE catalog_staged_entries; UPDATE catalog_schema SET version=1')
+    initializeCatalogSchema(f.db); initializeCatalogSchema(f.db)
+    expect(f.db.prepare('SELECT version FROM catalog_schema').get()).toEqual({ version: 2 })
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'existing' })).toMatchObject({ name: 'existing.txt', path: '/existing.txt' })
+    expect(f.db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  })
+
   it('drops obsolete descendants when a provider replaces a directory identity with a regular file', async () => {
     const f = fixture(), scope = await f.scope()
     f.trees.set('a:root', listing('root', [file('dir', 'root', { isDir: true })]))

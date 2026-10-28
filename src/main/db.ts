@@ -417,6 +417,11 @@ const migrations: Migration[] = [
     description: 'Persist complete document processing batches, structured results and extraction templates',
     up: () => { initializeAiWorkflowSchema(db) },
   },
+  {
+    id: '024_stage_catalog_directory_metadata',
+    description: 'Stage catalog metadata until the complete directory can be committed',
+    up: () => { initializeCatalogSchema(db) },
+  },
   // 添加更多迁移...
 ]
 
