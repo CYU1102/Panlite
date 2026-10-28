@@ -36,6 +36,8 @@ jobs:
       - run: npm run build
       - name: Verify protected archive task password across isolated processes
         run: node scripts/smoke-archive-password.mjs
+      - name: Diagnose isolated archive key persistence across forced exit
+        run: node scripts/diagnose-archive-key.mjs
       - name: Run complete regression suite with the application runtime
         run: npm run test:electron -- --reporter=default --reporter=json --outputFile.json=dist/reports/tests.json
       - name: Verify inline login with a hidden synthetic Electron guest
