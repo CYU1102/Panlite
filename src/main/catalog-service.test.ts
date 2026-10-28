@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import type { CatalogQuery, CatalogResult, CatalogScope } from '../shared/catalog'
 import type { FileItem, FileListResult } from '../shared/types'
 import { CatalogService } from './catalog-service'
-import { CatalogStore, initializeCatalogSchema, type CatalogAccount } from './catalog-store'
+import { CatalogStore, initializeCatalogSchema, type CatalogAccount, type CatalogMetadata } from './catalog-store'
+import { initializeStorageAnalysisSchema } from './storage-analysis-store'
 
 const cleanups: Array<() => void> = []
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() })
@@ -230,6 +231,68 @@ describe('persistent catalog scans', () => {
     expect(f.store.getEntry({ accountId: 'a', fileId: 'existing' })).toMatchObject({ name: 'new.txt', size: 200, path: '/new.txt' })
     expect(f.store.getScope(scope.id)).toMatchObject({ status: 'completed', entryCount: 251 })
     expect(f.db.prepare('SELECT COUNT(*) count FROM catalog_staged_entries').get()).toEqual({ count: 0 })
+  })
+
+  it('refreshes timestamps and invalidates old evidence without rewriting unchanged indexed metadata', async () => {
+    const f = fixture(), scope = await f.scope()
+    const files = Array.from({ length: 500 }, (_, index) => file(`f-${index}`))
+    f.trees.set('a:root', listing('root', files)); await f.scan(scope.id)
+    success(await f.service.setTags({ accountId: 'a', fileId: 'f-0', tags: ['keep'] }))
+    success(await f.service.setFavorite({ accountId: 'a', fileId: 'f-0', favorite: true }))
+    initializeStorageAnalysisSchema(f.db)
+    f.db.exec(`UPDATE catalog_entries SET indexed_at=1;
+      INSERT INTO storage_analysis_evidence(account_id,file_id,algorithm,value,size,updated_at,indexed_at,checked_at)
+        VALUES('a','f-0','md5','0123456789abcdef0123456789abcdef',100,2,1,1);
+      CREATE TRIGGER reject_unchanged_metadata BEFORE UPDATE OF parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,file_type
+        ON catalog_entries BEGIN SELECT RAISE(ABORT, 'unchanged metadata was rewritten'); END;`)
+    await f.scan(scope.id)
+    expect(f.store.getScope(scope.id)).toMatchObject({ status: 'completed', entryCount: 500 })
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'f-0' })).toMatchObject({ name: 'f-0.txt', favorite: true, tags: ['keep'] })
+    expect(f.db.prepare('SELECT COUNT(*) count FROM catalog_entries WHERE indexed_at<=1').get()).toEqual({ count: 0 })
+    expect(f.db.prepare(`SELECT COUNT(*) count FROM storage_analysis_evidence h JOIN catalog_entries e
+      ON e.account_id=h.account_id AND e.file_id=h.file_id AND e.size=h.size AND e.updated_at=h.updated_at AND e.indexed_at=h.indexed_at`).get()).toEqual({ count: 0 })
+    expect(f.db.prepare('SELECT COUNT(*) count FROM storage_analysis_evidence').get()).toEqual({ count: 1 })
+  })
+
+  it('retains an unchanged large subtree after its parent folder is renamed', async () => {
+    const f = fixture(), scope = await f.scope()
+    f.trees.set('a:root', listing('root', [file('dir', 'root', { isDir: true, name: 'old' })]))
+    f.trees.set('a:dir', listing('dir', Array.from({ length: 500 }, (_, index) => file(`child-${index}`, 'dir'))))
+    await f.scan(scope.id)
+    success(await f.service.setTags({ accountId: 'a', fileId: 'child-499', tags: ['keep'] }))
+    f.db.exec(`UPDATE catalog_entries SET indexed_at=1 WHERE parent_id='dir';
+      CREATE TRIGGER reject_child_name_rewrite BEFORE UPDATE OF name ON catalog_entries WHEN OLD.parent_id='dir'
+        BEGIN SELECT RAISE(ABORT, 'unchanged child metadata was rewritten'); END;`)
+    f.trees.set('a:root', listing('root', [file('dir', 'root', { isDir: true, name: 'new' })]))
+    await f.scan(scope.id)
+    expect(f.store.getScope(scope.id)).toMatchObject({ status: 'completed', entryCount: 501 })
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child-499' })).toMatchObject({ path: '/new/child-499.txt', tags: ['keep'] })
+    expect(f.db.prepare("SELECT COUNT(*) count FROM catalog_entries WHERE parent_id='dir' AND indexed_at<=1").get()).toEqual({ count: 0 })
+  })
+
+  it.each([
+    ['name', { name: 'renamed.txt' }, 'name', 'renamed.txt'],
+    ['path', { path: '/new-path.txt' }, 'path', '/new-path.txt'],
+    ['directory flag', { isDir: true }, 'is_dir', 1],
+    ['size', { size: 200 }, 'size', 200],
+    ['creation time', { createdAt: 7 }, 'created_at', 7],
+    ['update time', { updatedAt: 8 }, 'updated_at', 8],
+    ['file type', { fileType: 'video' }, 'file_type', 'video'],
+  ] as const)('commits a late change in %s rather than treating a large directory as unchanged', async (_label, change, column, expected) => {
+    const f = fixture(), scope = await f.scope()
+    f.trees.set('a:root', listing('root', Array.from({ length: 500 }, (_, index) => file(`f-${index}`))))
+    await f.scan(scope.id)
+    f.store.startScan(scope.id)
+    const cursor = f.store.nextCursor()!
+    f.store.beginDirectory(cursor)
+    const staged: CatalogMetadata[] = Array.from({ length: 500 }, (_, index) => ({
+      accountId: 'a', fileId: `f-${index}`, parentId: 'root', name: `f-${index}.txt`, path: `/f-${index}.txt`,
+      isDir: false, size: 100, createdAt: 1, updatedAt: 2, fileType: 'document', ...(index === 499 ? change : {}),
+    }))
+    for (let index = 0; index < staged.length; index += 200) f.store.writeBatch(cursor, staged.slice(index, index + 200))
+    f.store.finishDirectory(cursor)
+    const row = f.db.prepare('SELECT * FROM catalog_entries WHERE account_id=? AND file_id=?').get('a', 'f-499') as Record<string, unknown>
+    expect(row[column]).toBe(expected)
   })
 
   it('rolls back metadata and subtree relocation if the final directory transaction fails', async () => {

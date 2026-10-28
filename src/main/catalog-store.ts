@@ -221,14 +221,29 @@ export class CatalogStore {
         const old = (oldEntry.get(file.accountId, file.fileId) ?? oldRoot.get(file.accountId, file.fileId)) as { path: string } | undefined
         if (old && old.path !== file.path) this.relocateSubtree(file.accountId, file.fileId, old.path, file.path)
       }
-      // Preserve the adapter's staged insertion order instead of sorting by file ID.
-      this.db.prepare(`INSERT INTO catalog_entries(account_id,file_id,parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,indexed_at,file_type)
-        SELECT account_id,file_id,parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,indexed_at,file_type
-        FROM catalog_staged_entries WHERE scope_id=? AND directory_id=? ORDER BY rowid
-        ON CONFLICT(account_id,file_id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,
-        search_name=excluded.search_name,path=excluded.path,search_path=excluded.search_path,is_dir=excluded.is_dir,size=excluded.size,
-        created_at=excluded.created_at,updated_at=excluded.updated_at,indexed_at=excluded.indexed_at,file_type=excluded.file_type`)
-        .run(cursor.scopeId, cursor.directoryId)
+      // Avoid rewriting indexed metadata only when every staged entry already matches.
+      // Small directories use the regular upsert without an extra comparison query.
+      const unchanged = stagedCount >= 500 && !this.db.prepare(`SELECT 1 FROM catalog_staged_entries s
+        LEFT JOIN catalog_entries e ON e.account_id=s.account_id AND e.file_id=s.file_id
+        WHERE s.scope_id=? AND s.directory_id=? AND (e.file_id IS NULL OR e.parent_id IS NOT s.parent_id OR e.name IS NOT s.name
+          OR e.search_name IS NOT s.search_name OR e.path IS NOT s.path OR e.search_path IS NOT s.search_path OR e.is_dir IS NOT s.is_dir
+          OR e.size IS NOT s.size OR e.created_at IS NOT s.created_at OR e.updated_at IS NOT s.updated_at OR e.file_type IS NOT s.file_type) LIMIT 1`)
+        .get(cursor.scopeId, cursor.directoryId)
+      if (unchanged) {
+        // Refresh the scan timestamp even for unchanged files: other features use it to invalidate evidence.
+        this.db.prepare(`UPDATE catalog_entries AS e SET indexed_at=s.indexed_at FROM catalog_staged_entries AS s
+          WHERE s.scope_id=? AND s.directory_id=? AND e.account_id=s.account_id AND e.file_id=s.file_id AND e.indexed_at IS NOT s.indexed_at`)
+          .run(cursor.scopeId, cursor.directoryId)
+      } else {
+        // Preserve the adapter's staged insertion order instead of sorting by file ID.
+        this.db.prepare(`INSERT INTO catalog_entries(account_id,file_id,parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,indexed_at,file_type)
+          SELECT account_id,file_id,parent_id,name,search_name,path,search_path,is_dir,size,created_at,updated_at,indexed_at,file_type
+          FROM catalog_staged_entries WHERE scope_id=? AND directory_id=? ORDER BY rowid
+          ON CONFLICT(account_id,file_id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,
+          search_name=excluded.search_name,path=excluded.path,search_path=excluded.search_path,is_dir=excluded.is_dir,size=excluded.size,
+          created_at=excluded.created_at,updated_at=excluded.updated_at,indexed_at=excluded.indexed_at,file_type=excluded.file_type`)
+          .run(cursor.scopeId, cursor.directoryId)
+      }
       this.db.prepare('DELETE FROM catalog_edges WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
       this.db.prepare('INSERT INTO catalog_edges SELECT scope_id,parent_id,file_id FROM catalog_candidates WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
       this.db.prepare(`INSERT OR IGNORE INTO catalog_members(scope_id,account_id,file_id)
