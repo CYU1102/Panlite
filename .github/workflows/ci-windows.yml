@@ -34,6 +34,8 @@ jobs:
       - run: npm run check:engines
       - run: npm run lint
       - run: npm run build
+      - name: Verify protected archive task password across isolated processes
+        run: node scripts/smoke-archive-password.mjs
       - name: Run complete regression suite with the application runtime
         run: npm run test:electron -- --reporter=default --reporter=json --outputFile.json=dist/reports/tests.json
       - name: Verify inline login with a hidden synthetic Electron guest

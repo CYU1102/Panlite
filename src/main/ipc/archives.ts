@@ -10,6 +10,7 @@ import { listArchiveFiles, cleanupTempDir } from '../archive'
 import { sanitizeFileName } from '../file-transfer'
 import type { IpcRegistrar } from './types'
 import { dbAccountToDriveAccount } from './account-mapping'
+import { protectArchiveTaskOptions } from '../archive-task-password'
 
 export function registerArchivesIpcHandlers(ipcMain: IpcRegistrar): void {
   // ---- Archive handlers ----
@@ -64,7 +65,7 @@ export function registerArchivesIpcHandlers(ipcMain: IpcRegistrar): void {
         platform: account.platform,
         fileId,
         fileName: sanitizeFileName(fileName),
-        options: { ...options, targetDir },
+        options: protectArchiveTaskOptions({ ...options, targetDir }),
       }
       const taskId = createAndEnqueueTask(accountId, account.platform, 'archive_extract', `解压 ${fileName}`, payload as unknown as Record<string, unknown>)
       return { success: true, taskId }

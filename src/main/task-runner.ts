@@ -43,6 +43,7 @@ import type { DbAccount, DbTask, TaskStatusTransitionOptions } from './db'
 import log from 'electron-log'
 import { calculateTransferProgress, chooseAvailableName, normalizeConflictPolicy, normalizeRelativePath, resolvePathInside, sanitizeFileName } from './file-transfer'
 import { cleanupTempDir, createArchive, extractArchive } from './archive'
+import { archiveTaskPassword } from './archive-task-password'
 import { isTargetInsideSelectedDirectory, selectCloudTransferMode } from '../shared/cloud-transfer'
 import { notifyTaskTerminal } from './runtime-services'
 import { isTaskStatus, transitionTaskState, type TaskTransition, type TaskTransitionResult } from './task-state-machine'
@@ -1941,6 +1942,7 @@ function ensureDownloadedPathInside(tempDir: string, localPath: string): string 
 
 async function runArchiveExtractTask(task: DbTask): Promise<TaskRunOutcome> {
   const payload: ArchiveExtractTaskPayload = JSON.parse(task.payload)
+  const password = archiveTaskPassword(payload.options)
   const account = dbTaskToAccount(task)
   if (!account) throw new Error('账号不存在')
 
@@ -1968,7 +1970,7 @@ async function runArchiveExtractTask(task: DbTask): Promise<TaskRunOutcome> {
     await extractArchive(
       archivePath,
       payload.options.targetDir,
-      payload.options.password,
+      password,
       payload.options.files,
       {
         signal,

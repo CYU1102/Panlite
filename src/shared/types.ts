@@ -420,7 +420,7 @@ export interface ArchiveExtractTaskPayload {
   platform: Platform
   fileId: string
   fileName: string
-  options: ArchiveExtractOptions
+  options: ArchiveExtractOptions & { encryptedPassword?: string }
 }
 
 export interface ArchiveCompressFileInfo {

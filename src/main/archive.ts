@@ -225,7 +225,7 @@ export function resolve7ZipExecutablePath(binaryPath: string): string {
   return binaryPath.replace(/([\\/])app\.asar(?=[\\/]node_modules[\\/]7zip-bin[\\/])/, '$1app.asar.unpacked')
 }
 
-async function list7zFiles(filePath: string, password?: string): Promise<ArchiveFileInfo[]> {
+async function list7zFiles(filePath: string, password?: string): Promise<{ files: ArchiveFileInfo[]; isEncrypted: boolean }> {
   try {
     const Seven = require('node-7z')
     const { path7za } = require('7zip-bin')
@@ -234,7 +234,12 @@ async function list7zFiles(filePath: string, password?: string): Promise<Archive
     const stream = Seven.list(filePath, {
       $bin: resolve7ZipExecutablePath(path7za),
       password: password || '',
+      techInfo: true,
+      $raw: ['-sccUTF-8'],
     })
+    // node-7z leaves stdin open and ignores $spawnOptions in the bundled version.
+    // Close it so encrypted headers without a password cannot wait for a prompt.
+    stream._childProcess?.stdin?.end()
     const result = await new Promise<any[]>((resolve, reject) => {
       const entries: any[] = []
       stream.on('data', (entry: any) => entries.push(entry))
@@ -242,20 +247,29 @@ async function list7zFiles(filePath: string, password?: string): Promise<Archive
       stream.once('end', () => resolve(entries))
     })
 
+    let isEncrypted = false
     for (const file of result) {
       if (files.length >= ARCHIVE_LIMITS.maxEntries) throw new Error('压缩包文件数量超过限制')
       if (!file.file) continue
+      const info: Map<string, string> = file.techInfo
+      const sizeText = info.get('Size')
+      const packedSizeText = info.get('Packed Size')
+      const modified = info.get('Modified')
+      const attributes = info.get('Attributes') || ''
+      if (!sizeText || !/^\d+$/.test(sizeText) || !Number.isSafeInteger(Number(sizeText))) throw new Error('压缩包条目大小无效')
+      if (packedSizeText !== undefined && (!/^\d+$/.test(packedSizeText) || !Number.isSafeInteger(Number(packedSizeText)))) throw new Error('压缩包条目压缩大小无效')
+      isEncrypted ||= info.get('Encrypted') === '+'
       files.push({
         name: file.file.split('/').pop() || file.file,
         path: file.file,
-        size: file.size || 0,
-        isDir: typeof file.attributes === 'string' && file.attributes.startsWith('D'),
-        compressedSize: file.sizeCompressed,
-        modifiedAt: file.datetime ? new Date(file.datetime).getTime() : undefined,
+        size: Number(sizeText),
+        isDir: attributes.startsWith('D') || info.get('Folder') === '+',
+        compressedSize: packedSizeText === undefined ? undefined : Number(packedSizeText),
+        modifiedAt: modified && Number.isFinite(Date.parse(modified)) ? Date.parse(modified) : undefined,
       })
     }
 
-    return files
+    return { files, isEncrypted }
   } catch {
     log.error('Failed to list 7z files')
     throw new Error('无法读取7z文件内容')
@@ -275,7 +289,9 @@ async function extract7z(filePath: string, outputDir: string, password?: string,
       $bin: resolve7ZipExecutablePath(path7za),
       password: password || '',
       $cherryPick: files || undefined,
+      $raw: ['-sccUTF-8'],
     })
+    stream._childProcess?.stdin?.end()
     await new Promise<void>((resolve, reject) => {
       const abort = () => {
         stream._childProcess?.kill()
@@ -403,9 +419,12 @@ export async function listArchiveFiles(filePath: string, password?: string): Pro
       isEncrypted = result.isEncrypted
       break
     }
-    case '7z':
-      files = await list7zFiles(filePath, password)
+    case '7z': {
+      const result = await list7zFiles(filePath, password)
+      files = result.files
+      isEncrypted = result.isEncrypted
       break
+    }
     case 'tar':
       files = await listTarFiles(filePath)
       break

@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({ adapter: {} as DriveAdapter }))
 vi.mock('electron', () => ({ app: { getPath: () => process.env.PANLITE_TEST_USER_DATA }, BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('electron-log', () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../adapters/registry', () => ({ getAdapter: () => mocks.adapter }))
-vi.mock('./crypto', () => ({ decryptCredential: (value: string) => value }))
+vi.mock('./crypto', () => ({
+  encryptCredential: (value: string) => `protected:${Buffer.from(value).toString('base64')}`,
+  decryptCredential: (value: string) => value.startsWith('protected:') ? Buffer.from(value.slice(10), 'base64').toString('utf8') : value,
+}))
 vi.mock('./archive', () => ({ cleanupTempDir: vi.fn(), createArchive: vi.fn(), extractArchive: vi.fn() }))
 vi.mock('./runtime-services', () => ({ notifyTaskTerminal: vi.fn() }))
 
@@ -20,9 +23,10 @@ import { enqueueTask, getQueueStatus, pauseTask, resumeTask, retryTask, cancelTa
 import { taskOperationKey } from './task-operations'
 import { IPC_CHANNELS, SETTINGS_KEYS } from '../shared/constants'
 import { registerTasksIpcHandlers } from './ipc/tasks'
+import { registerArchivesIpcHandlers } from './ipc/archives'
 import { wrapTrustedIpcHandler, type TrustedIpcHandler } from './ipc-security'
 import type { IpcMainInvokeEvent } from 'electron'
-import { createArchive } from './archive'
+import { createArchive, extractArchive } from './archive'
 
 let sequence = 0
 let remote: FileItem[] = []
@@ -94,6 +98,32 @@ beforeEach(() => {
 })
 
 describe('archive task relative paths', () => {
+  it('persists a protected password through the real IPC and task queue and passes it to extraction', async () => {
+    let tempDir = ''
+    mocks.adapter.download = vi.fn(async (_account, _fileId, saveDir, options) => {
+      tempDir = saveDir
+      const localPath = path.join(saveDir, options!.fileName!)
+      fs.writeFileSync(localPath, 'archive input')
+      return { success: true, localPath }
+    })
+    try {
+      const handlers = new Map<string, TrustedIpcHandler>()
+      registerArchivesIpcHandlers({ handle: (channel, listener) => { handlers.set(channel, listener) } })
+      const result = await handlers.get(IPC_CHANNELS.ARCHIVE_EXTRACT)!({} as IpcMainInvokeEvent, 'account', 'file', 'locked.rar', {
+        targetDir: userData, password: ' confidential password ',
+      }) as { success: boolean; taskId: string }
+      expect(result.success).toBe(true)
+      await terminal(result.taskId, 'success')
+      const payload = JSON.parse(getTaskById(result.taskId)!.payload)
+      expect(JSON.stringify(payload)).not.toContain(' confidential password ')
+      expect(payload.options).not.toHaveProperty('password')
+      expect(payload.options.encryptedPassword).toBeTruthy()
+      expect(vi.mocked(extractArchive).mock.calls.slice(-1)[0]?.[2]).toBe(' confidential password ')
+    } finally {
+      if (tempDir.startsWith(path.join(os.tmpdir(), 'panlite-archive-extract-'))) fs.rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
   it('preserves nested directories after native path normalization', async () => {
     mocks.adapter.download = vi.fn(async (_account, _fileId, saveDir, options) => {
       const localPath = path.join(saveDir, options!.fileName!)
