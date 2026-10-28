@@ -43,6 +43,7 @@ export async function streamPreviewSource(
   request.signal.addEventListener('abort', abort, { once: true })
   if (request.signal.aborted) abort()
   let upstream: Response | undefined
+  let expectedPartialBytes: number | undefined
   try {
     const url = new URL(source.url)
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid source')
@@ -76,20 +77,27 @@ export async function streamPreviewSource(
     }
     if (![200, 206].includes(upstream.status)) throw new Error('Upstream unavailable')
     if (upstream.status === 206) {
+      if (!range) throw new Error('Unexpected upstream partial response')
       const match = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(upstream.headers.get('content-range') || '')
       if (!match) throw new Error('Invalid upstream range')
       const start = Number(match[1])
       const end = Number(match[2])
       const total = match[3] === '*' ? undefined : Number(match[3])
       if (![start, end, ...(total === undefined ? [] : [total])].every(Number.isSafeInteger) || start > end || (total !== undefined && end >= total)) throw new Error('Invalid upstream range')
+      expectedPartialBytes = end - start + 1
+      if (!Number.isSafeInteger(expectedPartialBytes)) throw new Error('Invalid upstream range length')
       const length = upstream.headers.get('content-length')
-      if (length !== null && Number(length) !== end - start + 1) throw new Error('Invalid upstream range length')
-      if (range) {
-        const [left, right] = range.slice(6).split('-')
-        const expectedStart = left ? Number(left) : total === undefined ? undefined : Math.max(0, total - Number(right))
-        if (expectedStart !== undefined && start !== expectedStart) throw new Error('Upstream returned the wrong bytes')
-        if (left && right && end > Number(right)) throw new Error('Upstream returned the wrong bytes')
-      }
+      if (length !== null && Number(length) !== expectedPartialBytes) throw new Error('Invalid upstream range length')
+      const [left, right] = range.slice(6).split('-')
+      // A server may return a subset of a requested range; keep the actual
+      // Content-Range intact so the consumer can request any missing bytes.
+      const requestedStart = left ? Number(left) : total === undefined ? undefined : Math.max(0, total - Number(right))
+      if (requestedStart !== undefined && start < requestedStart) throw new Error('Upstream returned the wrong bytes')
+      if (total !== undefined) {
+        const requestedEnd = left && right ? Math.min(Number(right), total - 1) : total - 1
+        if (end > requestedEnd) throw new Error('Upstream returned the wrong bytes')
+      } else if (left && right && end > Number(right)) throw new Error('Upstream returned the wrong bytes')
+      else if (!left && expectedPartialBytes > Number(right)) throw new Error('Upstream returned the wrong bytes')
     }
     // A provider ignoring Range stays HTTP 200; never label the wrong bytes as a 206 response.
     if (upstream.headers.get('content-encoding') && upstream.headers.get('content-encoding') !== 'identity') {
@@ -102,6 +110,7 @@ export async function streamPreviewSource(
       return new Response(null, { status: upstream.status, headers: responseHeaders })
     }
     const reader = upstream.body.getReader()
+    let streamedBytes = 0
     const stream = new ReadableStream<Uint8Array>({
       async pull(output) {
         const readTimeout = setTimeout(() => controller.abort(), 30_000)
@@ -110,8 +119,14 @@ export async function streamPreviewSource(
           controller.signal.throwIfAborted()
           onActivity?.(true)
           const chunk = await reader.read()
-          if (chunk.done) { output.close(); finish() }
-          else output.enqueue(chunk.value)
+          if (chunk.done) {
+            if (expectedPartialBytes !== undefined && streamedBytes !== expectedPartialBytes) throw new Error('Incomplete upstream body')
+            output.close(); finish()
+          } else {
+            streamedBytes += chunk.value.byteLength
+            if (expectedPartialBytes !== undefined && streamedBytes > expectedPartialBytes) throw new Error('Oversized upstream body')
+            output.enqueue(chunk.value)
+          }
         } catch {
           output.error(new Error('在线预览连接已中断，请重新打开文件'))
           controller.abort()

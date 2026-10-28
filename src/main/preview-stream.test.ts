@@ -50,7 +50,7 @@ describe('online preview protocol against a real HTTP source', () => {
       let end = bytes.length - 1
       if (req.headers.range) {
         const [left, right] = req.headers.range.slice(6).split('-')
-        start = left ? Number(left) : bytes.length - Number(right)
+        start = left ? Number(left) : Math.max(0, bytes.length - Number(right))
         end = left && right ? Math.min(Number(right), end) : end
         if (start >= bytes.length) { res.writeHead(416, { 'Content-Range': `bytes */${bytes.length}` }); res.end(); return }
         res.statusCode = 206
@@ -65,7 +65,7 @@ describe('online preview protocol against a real HTTP source', () => {
     expect(JSON.stringify(dto)).not.toMatch(/private-token|test-cookie|test-token|127\.0\.0\.1/)
     expect(readdirSync(previewService.tempRoot)).toEqual([])
 
-    for (const [range, expected] of [['bytes=4-8', '45678'], ['bytes=17-', 'hij'], ['bytes=-4', 'ghij']]) {
+    for (const [range, expected] of [['bytes=4-8', '45678'], ['bytes=17-', 'hij'], ['bytes=17-100', 'hij'], ['bytes=-4', 'ghij'], ['bytes=-40', '0123456789abcdefghij']]) {
       const response = await previewService.handleRequest(new Request(dto.assetUrl!, { headers: { Range: range, Authorization: 'renderer-injected' } }))
       expect(response.status).toBe(206)
       expect(response.headers.get('Content-Type')).toBe('video/mp4')
@@ -101,7 +101,7 @@ describe('online preview protocol against a real HTTP source', () => {
     expect(await error.text()).not.toContain('secret-token')
   })
 
-  it.each(['bytes 3-5/20', 'bytes 4-3/20', 'bytes 4-5/4', 'invalid'])('rejects inaccurate upstream Content-Range %s', async (contentRange) => {
+  it.each(['bytes 3-5/20', 'bytes 4-3/20', 'bytes 4-5/4', 'bytes 4-6/20', 'invalid'])('rejects inaccurate upstream Content-Range %s', async (contentRange) => {
     const url = await upstream((_req, res) => {
       res.writeHead(206, { 'Content-Range': contentRange })
       res.end('45')
@@ -110,6 +110,43 @@ describe('online preview protocol against a real HTTP source', () => {
     const dto = await previewService.createSession(sourceRequest, noDownload, async () => ({ url }))
     const response = await previewService.handleRequest(new Request(dto.assetUrl!, { headers: { Range: 'bytes=4-5' } }))
     expect(response.status).toBe(502)
+  })
+
+  it.each([
+    ['bytes=-4', 'bytes 14-17/20'],
+    ['bytes=4-', 'bytes 3-5/20'],
+    ['bytes=-4', 'bytes 15-19/*'],
+    [undefined, 'bytes 0-1/20'],
+  ])('rejects an out-of-range or unsolicited partial response for %s', async (range, contentRange) => {
+    const url = await upstream((_req, res) => { res.writeHead(206, { 'Content-Range': contentRange }); res.end('part') })
+    const previewService = service()
+    const dto = await previewService.createSession(sourceRequest, noDownload, async () => ({ url }))
+    const response = await previewService.handleRequest(new Request(dto.assetUrl!, range ? { headers: { Range: range } } : {}))
+    expect(response.status).toBe(502)
+  })
+
+  it.each([
+    ['bytes=4-8', 'bytes 6-7/20', '67'],
+    ['bytes=-4', 'bytes 16-17/20', 'gh'],
+    ['bytes=4-', 'bytes 4-5/*', '45'],
+    ['bytes=-4', 'bytes 16-17/*', 'gh'],
+  ])('preserves a valid subset of %s with its actual Content-Range', async (range, contentRange, body) => {
+    const url = await upstream((_req, res) => { res.writeHead(206, { 'Content-Range': contentRange }); res.end(body) })
+    const previewService = service()
+    const dto = await previewService.createSession(sourceRequest, noDownload, async () => ({ url }))
+    const response = await previewService.handleRequest(new Request(dto.assetUrl!, { headers: { Range: range } }))
+    expect(response.status).toBe(206)
+    expect(response.headers.get('Content-Range')).toBe(contentRange)
+    expect(await response.text()).toBe(body)
+  })
+
+  it.each(['12', '12345'])('fails the stream when an upstream range body has the wrong length', async (body) => {
+    const url = await upstream((_req, res) => { res.writeHead(206, { 'Content-Range': 'bytes 0-3/10' }); res.end(body) })
+    const previewService = service()
+    const dto = await previewService.createSession(sourceRequest, noDownload, async () => ({ url }))
+    const response = await previewService.handleRequest(new Request(dto.assetUrl!, { headers: { Range: 'bytes=0-3' } }))
+    expect(response.status).toBe(206)
+    await expect(response.text()).rejects.toThrow('在线预览连接已中断')
   })
 
   it('rejects malformed ranges, methods, paths and closed/expired sessions without contacting the provider', async () => {
