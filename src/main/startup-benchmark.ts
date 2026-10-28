@@ -257,6 +257,7 @@ export function createStartupBenchmark(): { theme?: 'light' | 'dark'; recordWind
           trace.mark('png.write.end')
           writeReport({ ...runtime,
             platform: process.platform, windowCreatedMs, readyMs, renderer, visual, processingPolicy, windowVisibleAtCreation, windowVisibleAtVisualStart,
+            benchmarkVisibleRequested: process.argv.includes('--benchmark-visible'),
             hiddenAtVerification: !window.isVisible(), mainProcessMemory: process.memoryUsage() }, 'quit')
           app.quit()
         })().catch(error => {

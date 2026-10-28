@@ -139,6 +139,7 @@ describe('startup benchmark monotonic trace', () => {
     expect(main.trace.snapshotPoint).toBe('before-main-report-write')
     expect(main.windowVisibleAtCreation).toBe(false)
     expect(main.windowVisibleAtVisualStart).toBe(false)
+    expect(main.benchmarkVisibleRequested).toBe(false)
     expect(main.trace.stages.reportWrite.complete).toBe(false)
     expect(main.trace.events.some((event: { name: string }) => event.name === 'quit.request')).toBe(false)
     expect(sidecar.snapshotPoint).toBe('before-quit')

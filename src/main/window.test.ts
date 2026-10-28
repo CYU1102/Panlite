@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebContents } from 'electron'
 const mocks = vi.hoisted(() => ({ events: new Map<string, (...args: any[]) => void>(),
-  openExternal: vi.fn(), options: vi.fn(), allowsLogin: vi.fn(), attachLogin: vi.fn(), isLoginSession: vi.fn(), configureResource: vi.fn(),
+  openExternal: vi.fn(), options: vi.fn(), allowsLogin: vi.fn(), attachLogin: vi.fn(), isLoginSession: vi.fn(), configureResource: vi.fn(), isVisible: vi.fn(), showInactive: vi.fn(),
   resourceSession: { setPermissionRequestHandler: vi.fn() }, shareSession: { setPermissionRequestHandler: vi.fn() } }))
 vi.mock('./inline-login', () => ({ inlineLoginManager: { allowsAttachment: mocks.allowsLogin, attach: mocks.attachLogin, isLoginSession: mocks.isLoginSession } }))
 vi.mock('./resource-webview', () => ({ configureResourceWebview: mocks.configureResource }))
@@ -11,6 +11,7 @@ vi.mock('electron', () => ({
   BrowserWindow: class {
     constructor(options: unknown) { mocks.options(options) }
     webContents = { on: (name: string, listener: (...args: any[]) => void) => mocks.events.set(name, listener), setWindowOpenHandler: vi.fn(), openDevTools: vi.fn() }
+    isVisible() { return mocks.isVisible() } showInactive() { mocks.showInactive() }
     removeMenu() {} loadFile() {} loadURL() {}
   },
 }))
@@ -103,8 +104,10 @@ describe('share guest attachment', () => {
       for (const [key, value] of Object.entries({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'Windows',
         RUNNER_TEMP: 'temporary', GITHUB_WORKSPACE: 'workspace', GITHUB_RUN_ID: '123', GITHUB_SHA: 'a'.repeat(40) })) vi.stubEnv(key, value)
       process.argv = [...original, '--benchmark-startup', '--benchmark-visible']
+      mocks.isVisible.mockReturnValueOnce(false)
       createMainWindow()
       expect(mocks.options).toHaveBeenLastCalledWith(expect.objectContaining({ show: true, webPreferences: expect.objectContaining({ backgroundThrottling: false }) }))
+      expect(mocks.showInactive).toHaveBeenCalledOnce()
       vi.stubEnv('RUNNER_ENVIRONMENT', 'self-hosted')
       expect(() => createMainWindow()).toThrow(/disposable GitHub-hosted Windows runner/)
     } finally { process.argv = original; vi.unstubAllEnvs() }

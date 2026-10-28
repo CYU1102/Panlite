@@ -37,6 +37,10 @@ export function createMainWindow(): BrowserWindow {
       webviewTag: true,
     },
   })
+  // Some hosted Windows process-launch settings can keep the requested
+  // benchmark window hidden. Explicitly show it before loading the renderer;
+  // normal and hidden benchmark launches retain their existing behavior.
+  if (visibleBenchmark && !win.isVisible()) win.showInactive()
   // The app provides its own navigation and actions; hide Electron's default
   // English application menu while keeping the native window controls.
   if (process.platform === 'win32') win.removeMenu()

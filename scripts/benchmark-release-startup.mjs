@@ -102,6 +102,10 @@ function plannedRuns(visibilityComparison = false) {
   return plan
 }
 
+// Both experimental conditions use the same launch setting. In the legacy
+// comparison retain windowsHide=true for backward-compatible observations.
+const launchWindowsHide = run => !run.visibility
+
 function statistics(values) {
   const sorted = values.filter(value => Number.isFinite(value) && value >= 0).sort((a, b) => a - b)
   if (!sorted.length) return { count: 0, medianMs: null, p95Ms: null, maxMs: null }
@@ -173,6 +177,9 @@ function staticCheck() {
     assert.equal(visibilityPlan.filter(item => item.phase === 'measured' && item.visibility === visibility && item.version === 'candidate').length, 20)
   }
   assert.equal(visibilityPlan.filter(item => item.phase === 'measured' && item.order === 1 && item.visibility === 'visible').length, 10)
+  assert.equal(launchWindowsHide({ version: 'candidate' }), true)
+  assert.equal(launchWindowsHide({ version: 'candidate', visibility: 'hidden' }), false)
+  assert.equal(launchWindowsHide({ version: 'candidate', visibility: 'visible' }), false)
   assert.equal(argumentsFor(['--visibility-comparison'])['visibility-comparison'], true)
   assert.throws(() => argumentsFor(['--visibility-comparison', '--visibility-comparison']))
   assert.throws(() => argumentsFor(['--check', '--visibility-comparison']))
@@ -254,7 +261,7 @@ async function launch(run, payload, output, scratch, tempRoot) {
   })
   try {
     await new Promise((resolveLaunch, reject) => {
-      child = spawn(payload.executable, ['--benchmark-startup', ...(run.visibility === 'visible' ? ['--benchmark-visible'] : [])], { cwd: dirname(payload.executable), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      child = spawn(payload.executable, ['--benchmark-startup', ...(run.visibility === 'visible' ? ['--benchmark-visible'] : [])], { cwd: dirname(payload.executable), env, windowsHide: launchWindowsHide(run), stdio: ['ignore', 'pipe', 'pipe'] })
       const collect = chunk => { diagnostics = (diagnostics + chunk).slice(-128000) }
       child.stdout.on('data', chunk => { firstStdoutMs ??= performance.now() - started; collect(chunk) })
       child.stderr.on('data', collect)
@@ -278,6 +285,7 @@ async function launch(run, payload, output, scratch, tempRoot) {
       assert.deepEqual(childTrace.events.slice(0, raw.trace.events.length), raw.trace.events, 'Trace sidecar changed already-recorded events')
       rendererVisualTiming = validateRendererVisualTiming(raw.visual?.rendererVisualTiming)
       if (run.visibility) {
+        assert.equal(raw.benchmarkVisibleRequested, run.visibility === 'visible', 'Application did not receive the selected visibility argument')
         assert.equal(raw.windowVisibleAtCreation, run.visibility === 'visible', 'Initial window visibility differs from the selected mode')
         assert.equal(raw.windowVisibleAtVisualStart, run.visibility === 'visible', 'Visual-check window visibility differs from the selected mode')
         assert(['visible', 'hidden'].includes(raw.renderer.visibilityState) && typeof raw.renderer.hasFocus === 'boolean', 'Renderer visibility/focus at ready is missing')
@@ -290,7 +298,7 @@ async function launch(run, payload, output, scratch, tempRoot) {
       reportObservedMs: reportObservedMs === null ? null : round(reportObservedMs), postReportObservationToExitMs: reportObservedMs !== null && exitMs >= reportObservedMs ? round(exitMs - reportObservedMs) : null,
       route: raw.renderer.route, firstContentfulPaintMs: raw.renderer.firstContentfulPaintMs ?? null,
       childTrace, rendererVisualTiming, runtime: { electron: raw.electron ?? null, node: raw.node ?? null, moduleAbi: raw.moduleAbi ?? null, chrome: raw.chrome ?? null },
-      hiddenAtVerification: raw.hiddenAtVerification ?? null, windowVisibleAtCreation: raw.windowVisibleAtCreation ?? null,
+      hiddenAtVerification: raw.hiddenAtVerification ?? null, benchmarkVisibleRequested: raw.benchmarkVisibleRequested ?? null, windowVisibleAtCreation: raw.windowVisibleAtCreation ?? null,
       windowVisibleAtVisualStart: raw.windowVisibleAtVisualStart ?? null, visibilityAtReady: raw.renderer.visibilityState ?? null,
       hasFocusAtReady: raw.renderer.hasFocus ?? null, freshProfile: true })
     writeFileSync(join(directory, 'process.json'), JSON.stringify(processRecord, null, 2) + '\n')
