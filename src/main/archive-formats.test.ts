@@ -87,7 +87,7 @@ describe('7z runtime integration', () => {
       await extractArchive(archive, output, password)
       expect(readFileSync(join(output, '目录', '中文 文件.txt'), 'utf8')).toBe('加密样本')
     }
-    const calls = spawnSpy.mock.calls.filter(call => call[0] === path7za)
+    const calls = spawnSpy.mock.calls.filter((call: unknown[]) => call[0] === path7za)
     expect(calls.length).toBeGreaterThanOrEqual(4)
     for (const call of calls) {
       const args = call[1] as string[]
@@ -102,6 +102,6 @@ describe('7z runtime integration', () => {
     const output = join(workDir, 'newline-output')
     await extractArchive(newlinePasswordPath, output, newlinePassword)
     expect(readFileSync(join(output, '目录', '中文 文件.txt'), 'utf8')).toBe('加密样本')
-    expect(spawnSpy.mock.calls.some(call => call[0] === path7za && (call[1] as string[]).includes(`-p${newlinePassword}`))).toBe(true)
+    expect(spawnSpy.mock.calls.some((call: unknown[]) => call[0] === path7za && (call[1] as string[]).includes(`-p${newlinePassword}`))).toBe(true)
   }, 15000)
 })
