@@ -34,5 +34,6 @@ app.whenReady().then(() => {
       throw new Error('Protected task password could not be recovered in a new process')
     }
   }
-  app.exit(0)
+  // Exercise the application's normal shutdown rather than forcibly exiting.
+  app.quit()
 }).catch(error => { console.error(error.message); app.exit(1) })
