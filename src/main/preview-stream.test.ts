@@ -1,5 +1,5 @@
 import { createServer, type RequestListener, type Server } from 'node:http'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -281,5 +281,50 @@ describe('online preview protocol against a real HTTP source', () => {
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/超过预览/)
     expect(readdirSync(previewService.tempRoot)).toEqual([])
+  })
+
+  it('rejects an unsolicited partial document instead of presenting it as complete', async () => {
+    const url = await upstream((_req, res) => {
+      res.writeHead(206, { 'Content-Range': 'bytes 0-3/10' })
+      res.end('part')
+    })
+    const previewService = service()
+    const result = await downloadPreviewSource({ url }, { directory: previewService.tempRoot, fileName: 'test.txt', maxBytes: 100 })
+    expect(result.success).toBe(false)
+    expect(readdirSync(previewService.tempRoot)).toEqual([])
+  })
+
+  it('saves a complete document when the declared length matches', async () => {
+    const url = await upstream((_req, res) => { res.writeHead(200, { 'Content-Length': '8' }); res.end('complete') })
+    const previewService = service()
+    const result = await downloadPreviewSource({ url }, { directory: previewService.tempRoot, fileName: 'test.txt', maxBytes: 100 })
+    expect(result.success).toBe(true)
+    expect(readFileSync(result.localPath!, 'utf8')).toBe('complete')
+  })
+
+  it.each([200, 403])('preserves a pre-existing file if download did not create it (status %i)', async (status) => {
+    const url = await upstream((_req, res) => { res.writeHead(status); res.end('response') })
+    const previewService = service()
+    const existing = path.join(previewService.tempRoot, 'test.txt')
+    writeFileSync(existing, 'keep existing bytes')
+    const result = await downloadPreviewSource({ url }, { directory: previewService.tempRoot, fileName: 'test.txt', maxBytes: 100 })
+    expect(result.success).toBe(false)
+    expect(readFileSync(existing, 'utf8')).toBe('keep existing bytes')
+  })
+
+  it.each([['short', '10'], ['longbody', '4']])('removes an owned document when its unencoded length is incorrect', async (body, length) => {
+    const previewService = service()
+    const result = await downloadPreviewSource({ url: 'https://fixture.test/file', fetch: async () => new Response(body, { headers: { 'Content-Length': length } }) },
+      { directory: previewService.tempRoot, fileName: 'test.txt', maxBytes: 100 })
+    expect(result.success).toBe(false)
+    expect(readdirSync(previewService.tempRoot)).toEqual([])
+  })
+
+  it('does not compare decoded body length with a compressed wire length', async () => {
+    const previewService = service()
+    const result = await downloadPreviewSource({ url: 'https://fixture.test/file', fetch: async () => new Response('decoded text', { headers: { 'Content-Length': '4', 'Content-Encoding': 'gzip' } }) },
+      { directory: previewService.tempRoot, fileName: 'test.txt', maxBytes: 100 })
+    expect(result.success).toBe(true)
+    expect(readFileSync(result.localPath!, 'utf8')).toBe('decoded text')
   })
 })
