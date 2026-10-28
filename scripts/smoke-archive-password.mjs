@@ -1,7 +1,7 @@
 import { build } from 'esbuild'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,12 +18,15 @@ try {
     bundle: true, platform: 'node', format: 'cjs', external: ['electron'], logLevel: 'silent' })
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
-  for (const mode of ['write', 'read']) {
-    const result = spawnSync(require('electron'), [entry, mode, directory], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 })
-    if (result.error || result.status !== 0) throw new Error(`Protected password ${mode} failed: ${result.error?.message || result.stderr}`)
-    if (mode === 'write') console.log(`Isolated Chromium Local State present after normal shutdown: ${existsSync(path.join(directory, 'profile', 'Local State'))}`)
+  for (const shutdown of ['normal', 'force']) {
+    const isolated = path.join(directory, shutdown)
+    mkdirSync(isolated)
+    for (const mode of ['write', 'read']) {
+      const result = spawnSync(require('electron'), [entry, mode, isolated, shutdown], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 })
+      if (result.error || result.status !== 0) throw new Error(`Protected password ${shutdown}/${mode} failed: ${result.error?.message || result.stderr}`)
+    }
   }
-  console.log('System-protected archive password survived an isolated process restart')
+  console.log('Windows-protected archive passwords survived normal and forced isolated process exits')
 } finally {
   rmSync(directory, { recursive: true, force: true })
 }

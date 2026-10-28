@@ -65,8 +65,9 @@ export function registerArchivesIpcHandlers(ipcMain: IpcRegistrar): void {
         platform: account.platform,
         fileId,
         fileName: sanitizeFileName(fileName),
-        options: protectArchiveTaskOptions({ ...options, targetDir }),
+        options: await protectArchiveTaskOptions({ ...options, targetDir }),
       }
+      if (!getAccountById(accountId)) return { success: false, error: '账号不存在' }
       const taskId = createAndEnqueueTask(accountId, account.platform, 'archive_extract', `解压 ${fileName}`, payload as unknown as Record<string, unknown>)
       return { success: true, taskId }
     } catch (err) {

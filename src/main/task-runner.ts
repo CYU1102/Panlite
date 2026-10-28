@@ -1942,7 +1942,8 @@ function ensureDownloadedPathInside(tempDir: string, localPath: string): string 
 
 async function runArchiveExtractTask(task: DbTask): Promise<TaskRunOutcome> {
   const payload: ArchiveExtractTaskPayload = JSON.parse(task.payload)
-  const password = archiveTaskPassword(payload.options)
+  const password = await archiveTaskPassword(payload.options)
+  throwIfTaskCancelled(task)
   const account = dbTaskToAccount(task)
   if (!account) throw new Error('账号不存在')
 

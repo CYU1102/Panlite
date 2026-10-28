@@ -7,13 +7,18 @@ import type { DriveAccount, FileItem, ShareInfo, ShareTaskPayload, TransferResul
 
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-runner-operations-'))
 process.env.PANLITE_TEST_USER_DATA = userData
-const mocks = vi.hoisted(() => ({ adapter: {} as DriveAdapter }))
+const mocks = vi.hoisted(() => ({ adapter: {} as DriveAdapter, unprotect: vi.fn() }))
 vi.mock('electron', () => ({ app: { getPath: () => process.env.PANLITE_TEST_USER_DATA }, BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('electron-log', () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../adapters/registry', () => ({ getAdapter: () => mocks.adapter }))
 vi.mock('./crypto', () => ({
   encryptCredential: (value: string) => `protected:${Buffer.from(value).toString('base64')}`,
   decryptCredential: (value: string) => value.startsWith('protected:') ? Buffer.from(value.slice(10), 'base64').toString('utf8') : value,
+}))
+vi.mock('./windows-dpapi', () => ({
+  isWindowsTaskPassword: (value: string) => value.startsWith('win-dpapi-v1:'),
+  protectWindowsTaskPassword: async (value: string) => `win-dpapi-v1:${Buffer.from(value).toString('base64')}`,
+  unprotectWindowsTaskPassword: mocks.unprotect,
 }))
 vi.mock('./archive', () => ({ cleanupTempDir: vi.fn(), createArchive: vi.fn(), extractArchive: vi.fn() }))
 vi.mock('./runtime-services', () => ({ notifyTaskTerminal: vi.fn() }))
@@ -86,6 +91,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  mocks.unprotect.mockReset().mockImplementation(async (value: string) => Buffer.from(value.slice('win-dpapi-v1:'.length), 'base64').toString('utf8'))
   remote = []
   setSetting(SETTINGS_KEYS.AD_FILTER_ENABLED, 'true')
   setSetting(SETTINGS_KEYS.BANNED_KEYWORDS, '广告')
@@ -98,6 +104,19 @@ beforeEach(() => {
 })
 
 describe('archive task relative paths', () => {
+  it.skipIf(process.platform !== 'win32')('does not download after cancellation during password decryption', async () => {
+    let release!: (password: string) => void
+    mocks.unprotect.mockReturnValue(new Promise<string>(resolve => { release = resolve }))
+    mocks.adapter.download = vi.fn()
+    const id = task('archive_extract', { fileId: 'file', fileName: 'locked.rar', options: { targetDir: userData, encryptedPassword: 'win-dpapi-v1:fixture' } })
+    enqueueTask(id)
+    await vi.waitFor(() => expect(mocks.unprotect).toHaveBeenCalled())
+    expect(cancelTask(id)).toBe(true)
+    release('fixture')
+    await terminal(id, 'cancelled')
+    expect(mocks.adapter.download).not.toHaveBeenCalled()
+  })
+
   it('persists a protected password through the real IPC and task queue and passes it to extraction', async () => {
     let tempDir = ''
     mocks.adapter.download = vi.fn(async (_account, _fileId, saveDir, options) => {
