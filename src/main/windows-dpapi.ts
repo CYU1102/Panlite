@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 const PREFIX = 'win-dpapi-v1:'
@@ -24,13 +24,34 @@ try {
 `
 const encodedScript = Buffer.from(script, 'utf16le').toString('base64')
 
-async function callDpapi(operation: 'protect' | 'unprotect', input: Buffer): Promise<Buffer> {
-  if (!input.length || input.length > MAX_INPUT_BYTES) throw new Error('系统加密数据大小无效')
+function executablePath(): string {
   const systemRoot = process.env.SystemRoot
   if (!systemRoot || !path.isAbsolute(systemRoot)) throw new Error('系统加密服务不可用')
-  const executable = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  return path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
+function decodeResult(data: string): Buffer {
+  const result = data.trim()
+  if (!result || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(result)) {
+    throw new Error('系统加密服务响应无效')
+  }
+  return Buffer.from(result, 'base64')
+}
+
+function callDpapiSync(operation: 'protect' | 'unprotect', input: Buffer): Buffer {
+  if (!input.length || input.length > MAX_INPUT_BYTES) throw new Error('系统加密数据大小无效')
+  const result = spawnSync(executablePath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript], {
+    windowsHide: true, encoding: 'ascii', input: `${operation}\n${input.toString('base64')}`,
+    timeout: TIMEOUT_MS, maxBuffer: MAX_INPUT_BYTES * 3, stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  if (result.error || result.status !== 0) throw new Error('系统加密服务不可用')
+  return decodeResult(result.stdout)
+}
+
+async function callDpapi(operation: 'protect' | 'unprotect', input: Buffer): Promise<Buffer> {
+  if (!input.length || input.length > MAX_INPUT_BYTES) throw new Error('系统加密数据大小无效')
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript], {
+    const child = spawn(executablePath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript], {
       windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     })
     const chunks: Buffer[] = []
@@ -54,11 +75,8 @@ async function callDpapi(operation: 'protect' | 'unprotect', input: Buffer): Pro
     })
     child.once('close', code => {
       if (code !== 0) { finish(new Error('系统加密服务失败')); return }
-      const result = Buffer.concat(chunks).toString('ascii').trim()
-      if (!result || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(result)) {
-        finish(new Error('系统加密服务响应无效')); return
-      }
-      finish(undefined, Buffer.from(result, 'base64'))
+      try { finish(undefined, decodeResult(Buffer.concat(chunks).toString('ascii'))) }
+      catch { finish(new Error('系统加密服务响应无效')) }
     })
     child.stdin.end(`${operation}\n${input.toString('base64')}`)
   })
@@ -83,3 +101,15 @@ export async function unprotectWindowsTaskPassword(value: string): Promise<strin
 }
 
 export function isWindowsTaskPassword(value: string): boolean { return value.startsWith(PREFIX) }
+
+/** Protect a small random key; synchronous only during first use per database. */
+export function protectWindowsKey(key: Buffer): string {
+  return PREFIX + callDpapiSync('protect', key).toString('base64')
+}
+
+export function unprotectWindowsKey(value: string): Buffer {
+  if (!value.startsWith(PREFIX)) throw new Error('系统加密密钥格式无效')
+  const encoded = value.slice(PREFIX.length)
+  if (!encoded || encoded.length > MAX_INPUT_BYTES * 2 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error('系统加密密钥格式无效')
+  return callDpapiSync('unprotect', Buffer.from(encoded, 'base64'))
+}

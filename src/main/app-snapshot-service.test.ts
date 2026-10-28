@@ -7,6 +7,7 @@ import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AppSnapshotService, processPendingAppSnapshotOperation, type AppSnapshotOptions } from './app-snapshot-service'
 import type { AppSnapshotResult } from '../shared/app-snapshots'
+import { ProtectedCredentialStore } from './protected-credential-store'
 
 const cleanup: Array<() => void> = []
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn() })
@@ -72,6 +73,32 @@ function changeManagedReference(databasePath: string, source: string): void {
 }
 
 describe('application snapshots before database initialization', () => {
+  it('restores the protected credential key and encrypted account together', async () => {
+    const f = fixture()
+    const protection = { protect: (key: Buffer) => `fixture:${key.toString('base64')}`,
+      unprotect: (value: string) => Buffer.from(value.slice('fixture:'.length), 'base64') }
+    let db = new Database(f.databasePath)
+    let encrypted = ''
+    try {
+      db.exec('CREATE TABLE credential_key_protection(id INTEGER PRIMARY KEY, protected_key TEXT NOT NULL); CREATE TABLE accounts(encrypted_credential TEXT); ALTER TABLE settings ADD COLUMN encrypted INTEGER DEFAULT 0')
+      const store = new ProtectedCredentialStore(db, protection)
+      encrypted = store.encrypt('synthetic account cookie')
+      db.prepare('INSERT INTO accounts(encrypted_credential) VALUES (?)').run(encrypted)
+      store.dispose()
+    } finally { db.close() }
+    const id = await f.snapshot()
+    db = new Database(f.databasePath)
+    try { db.exec('DELETE FROM credential_key_protection; DELETE FROM accounts') } finally { db.close() }
+    ok(await f.service.requestRestore(id))
+    await processPendingAppSnapshotOperation(f.profilePath, f.options)
+    db = new Database(f.databasePath)
+    try {
+      const restored = db.prepare('SELECT encrypted_credential FROM accounts').get() as { encrypted_credential: string }
+      expect(restored.encrypted_credential).toBe(encrypted)
+      expect(new ProtectedCredentialStore(db, protection).decrypt(restored.encrypted_credential)).toBe('synthetic account cookie')
+    } finally { db.close() }
+  })
+
   it('captures committed WAL data, protected keys, AI attachments and empty directories in an explicit scope', async () => {
     const f = fixture(), id = await f.snapshot()
     const inspected = ok(await f.service.inspectSnapshot(id))

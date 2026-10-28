@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isWindowsTaskPassword, protectWindowsTaskPassword, unprotectWindowsTaskPassword } from './windows-dpapi'
+import { isWindowsTaskPassword, protectWindowsKey, protectWindowsTaskPassword, unprotectWindowsKey, unprotectWindowsTaskPassword } from './windows-dpapi'
 
 describe.skipIf(process.platform !== 'win32')('Windows DPAPI task password integration', () => {
   it('round trips Unicode, spaces and symbols without storing plaintext', async () => {
@@ -17,5 +17,12 @@ describe.skipIf(process.platform !== 'win32')('Windows DPAPI task password integ
     const data = Buffer.from(encrypted.slice(prefix.length), 'base64')
     data[data.length - 1] ^= 1
     await expect(unprotectWindowsTaskPassword(prefix + data.toString('base64'))).rejects.toThrow()
+  }, 15000)
+
+  it('protects a binary master key with the same system account', () => {
+    const key = Buffer.from(Array.from({ length: 32 }, (_, index) => index))
+    const protectedKey = protectWindowsKey(key)
+    expect(unprotectWindowsKey(protectedKey)).toEqual(key)
+    expect(protectedKey).not.toContain(key.toString('base64'))
   }, 15000)
 })

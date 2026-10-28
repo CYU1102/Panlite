@@ -36,6 +36,8 @@ jobs:
       - run: npm run build
       - name: Verify protected archive task password across isolated processes
         run: node scripts/smoke-archive-password.mjs
+      - name: Verify account and settings credentials across isolated processes
+        run: node scripts/smoke-credential-durability.mjs
       - name: Diagnose isolated archive key persistence across forced exit
         run: node scripts/diagnose-archive-key.mjs
       - name: Run complete regression suite with the application runtime

@@ -422,6 +422,11 @@ const migrations: Migration[] = [
     description: 'Stage catalog metadata until the complete directory can be committed',
     up: () => { initializeCatalogSchema(db) },
   },
+  {
+    id: '025_protected_credential_key',
+    description: 'Store the system-protected credential key inside database snapshots',
+    up: () => { db.exec('CREATE TABLE IF NOT EXISTS credential_key_protection (id INTEGER PRIMARY KEY CHECK (id = 1), protected_key TEXT NOT NULL)') },
+  },
   // 添加更多迁移...
 ]
 

@@ -15,7 +15,8 @@ const directory = mkdtempSync(path.join(process.env.RUNNER_TEMP, 'panlite-passwo
 const entry = path.join(directory, 'smoke.cjs')
 try {
   await build({ entryPoints: [path.join(root, 'scripts/fixtures/archive-password-smoke.ts')], outfile: entry,
-    bundle: true, platform: 'node', format: 'cjs', external: ['electron'], logLevel: 'silent' })
+    bundle: true, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent',
+    banner: { js: `module.paths.push(${JSON.stringify(path.join(root, 'node_modules'))});` } })
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
   for (const shutdown of ['normal', 'force']) {
