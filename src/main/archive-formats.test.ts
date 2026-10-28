@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -75,6 +76,41 @@ describe('7z runtime integration', () => {
     await expect(extractArchive(encryptedPath, output, '1234')).rejects.toThrow(/未覆盖/)
     expect(readFileSync(existing, 'utf8')).toBe('original')
   })
+
+  it('waits for the 7z process to close before cleaning cancelled extraction', async () => {
+    const seven = require('node-7z')
+    const stream = new EventEmitter() as EventEmitter & { _childProcess: { kill: () => boolean } }
+    let stage = '', settled = false, killed = false
+    let signalStarted!: () => void
+    const started = new Promise<void>(resolve => { signalStarted = resolve })
+    stream._childProcess = { kill: () => { killed = true; return true } }
+    const extractSpy = vi.spyOn(seven, 'extractFull').mockImplementation((...args: unknown[]) => {
+      stage = args[1] as string
+      signalStarted()
+      return stream
+    })
+    const controller = new AbortController()
+    const output = join(workDir, 'cancelled-7z-output')
+    const operation = extractArchive(archivePath, output, undefined, undefined, { signal: controller.signal })
+    const observed = operation.then(() => { settled = true }, () => { settled = true })
+    try {
+      await started
+      controller.abort()
+      stream.emit('error', new Error('7z stopped'))
+      await new Promise(resolve => setImmediate(resolve))
+      expect(killed).toBe(true)
+      expect(settled).toBe(false)
+      expect(existsSync(stage)).toBe(true)
+      writeFileSync(join(stage, 'late-partial.txt'), 'late')
+    } finally {
+      stream.emit('end')
+      await observed
+      extractSpy.mockRestore()
+    }
+    await expect(operation).rejects.toMatchObject({ name: 'AbortError' })
+    expect(existsSync(stage)).toBe(false)
+    expect(existsSync(join(output, 'late-partial.txt'))).toBe(false)
+  }, 15000)
 
   it('rejects missing or incorrect header passwords without an interactive prompt and accepts the correct one', async () => {
     await expect(listArchiveFiles(encryptedHeadersPath)).rejects.toThrow(/无法读取7z/)

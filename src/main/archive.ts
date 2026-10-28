@@ -325,22 +325,33 @@ async function extract7z(filePath: string, outputDir: string, password?: string,
     })
     sendSevenZipPassword(stream, secret.stdinPassword)
     await new Promise<void>((resolve, reject) => {
+      let streamError: unknown
+      let cancellationRequested = false
       const abort = () => {
-        stream._childProcess?.kill()
-        const error = new Error('操作已取消')
-        error.name = 'AbortError'
-        reject(error)
+        if (cancellationRequested) return
+        cancellationRequested = true
+        // The child may still be writing after kill() returns. Keep the stage
+        // alive until node-7z emits end, which is driven by child process close.
+        try { stream._childProcess?.kill() }
+        catch (error) { log.warn('Could not stop 7z process; waiting for it to close:', String(error)) }
       }
-      runtime.signal?.addEventListener('abort', abort, { once: true })
       let completed = 0
       stream.on('data', () => runtime.onProgress?.(++completed, 0))
-      stream.once('error', reject)
+      stream.on('error', (error: unknown) => { streamError = error })
       stream.once('end', () => {
         runtime.signal?.removeEventListener('abort', abort)
-        resolve()
+        if (cancellationRequested || runtime.signal?.aborted) {
+          const error = new Error('操作已取消')
+          error.name = 'AbortError'
+          reject(error)
+        } else if (streamError) reject(streamError)
+        else resolve()
       })
+      runtime.signal?.addEventListener('abort', abort, { once: true })
+      if (runtime.signal?.aborted) abort()
     })
   } catch {
+    if (runtime.signal?.aborted) throwIfAborted(runtime.signal)
     log.error('Failed to extract 7z')
     throw new Error('解压7z文件失败')
   }
