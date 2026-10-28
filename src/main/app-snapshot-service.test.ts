@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import Database from 'better-sqlite3'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSnapshotService, processPendingAppSnapshotOperation, type AppSnapshotOptions } from './app-snapshot-service'
 import type { AppSnapshotResult } from '../shared/app-snapshots'
 import { ProtectedCredentialStore } from './protected-credential-store'
@@ -73,6 +73,33 @@ function changeManagedReference(databasePath: string, source: string): void {
 }
 
 describe('application snapshots before database initialization', () => {
+  it('restores an encrypted URL and its protected key as one snapshot', async () => {
+    const f = fixture()
+    fs.unlinkSync(path.join(f.profilePath, 'url-crypto.key'))
+    vi.doMock('electron', () => ({ app: { getPath: () => f.profilePath }, safeStorage: {
+      isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value), decryptString: (value: Buffer) => value.toString('utf8'),
+    } }))
+    try {
+      vi.resetModules()
+      const urlCrypto = await import('./url-crypto')
+      const original = 'https://example.test/synthetic-share'
+      const encrypted = urlCrypto.encryptUrl(original)
+      let db = new Database(f.databasePath)
+      try { db.prepare("INSERT INTO settings(key,value) VALUES('synthetic-url',?)").run(encrypted) } finally { db.close() }
+      const snapshot = await f.snapshot()
+      fs.writeFileSync(path.join(f.profilePath, 'url-crypto.key'), 'changed-invalid-key')
+      db = new Database(f.databasePath)
+      try { db.prepare("UPDATE settings SET value='changed' WHERE key='synthetic-url'").run() } finally { db.close() }
+      ok(await f.service.requestRestore(snapshot))
+      await processPendingAppSnapshotOperation(f.profilePath, f.options)
+      db = new Database(f.databasePath)
+      let restored: string
+      try { restored = (db.prepare("SELECT value FROM settings WHERE key='synthetic-url'").get() as { value: string }).value } finally { db.close() }
+      vi.resetModules()
+      expect((await import('./url-crypto')).decryptUrl(restored)).toBe(original)
+    } finally { vi.doUnmock('electron') }
+  }, 20000)
+
   it('restores the protected credential key and encrypted account together', async () => {
     const f = fixture()
     const protection = { protect: (key: Buffer) => `fixture:${key.toString('base64')}`,

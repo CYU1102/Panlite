@@ -1,8 +1,9 @@
 import { app, safeStorage } from 'electron'
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createCipheriv, createDecipheriv, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import log from 'electron-log'
+import { isWindowsTaskPassword, protectWindowsKey, unprotectWindowsKey } from './windows-dpapi'
 
 const FORMAT_PREFIX = 'pl2'
 const KEY_FILE_NAME = 'url-crypto.key'
@@ -11,24 +12,66 @@ const LEGACY_IV = Buffer.from('1234567890123456')
 
 let cachedKey: Buffer | null = null
 
-function getOrCreateKey(): Buffer {
-  if (cachedKey) return cachedKey
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法保护 URL 加密密钥')
+function readKey(keyPath: string): Buffer {
+  const stored = readFileSync(keyPath, 'utf8')
+  let key: Buffer
+  if (isWindowsTaskPassword(stored)) {
+    if (process.platform !== 'win32') throw new Error('URL 密钥只能在原 Windows 用户环境中解密')
+    key = unprotectWindowsKey(stored)
+  } else {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法读取 URL 加密密钥')
+    key = Buffer.from(safeStorage.decryptString(Buffer.from(stored, 'base64')), 'base64')
+  }
+  if (key.length !== 32) { key.fill(0); throw new Error('URL 加密密钥损坏') }
+  return key
+}
 
+function getOrCreateKey(create: boolean): Buffer {
   const keyPath = join(app.getPath('userData'), KEY_FILE_NAME)
-  if (existsSync(keyPath)) {
-    const protectedKey = Buffer.from(readFileSync(keyPath, 'utf8'), 'base64')
-    cachedKey = Buffer.from(safeStorage.decryptString(protectedKey), 'base64')
-    if (cachedKey.length !== 32) throw new Error('URL 加密密钥损坏')
+  if (cachedKey) {
+    if (!existsSync(keyPath)) throw new Error('URL 加密密钥缺失，请从完整快照恢复')
     return cachedKey
   }
+  if (existsSync(keyPath)) {
+    cachedKey = readKey(keyPath)
+    return cachedKey
+  }
+  if (!create) throw new Error('URL 加密密钥缺失，请从完整快照恢复')
 
   const key = randomBytes(32)
-  const protectedKey = safeStorage.encryptString(key.toString('base64'))
-  mkdirSync(dirname(keyPath), { recursive: true })
-  writeFileSync(keyPath, protectedKey.toString('base64'), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-  cachedKey = key
-  return key
+  const temporary = join(dirname(keyPath), `.${KEY_FILE_NAME}.${randomUUID()}.tmp`)
+  let temporaryCreated = false
+  try {
+    let protectedKey: string
+    let verified: Buffer
+    if (process.platform === 'win32') {
+      protectedKey = protectWindowsKey(key)
+      verified = unprotectWindowsKey(protectedKey)
+    } else {
+      if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法保护 URL 加密密钥')
+      protectedKey = safeStorage.encryptString(key.toString('base64')).toString('base64')
+      verified = Buffer.from(safeStorage.decryptString(Buffer.from(protectedKey, 'base64')), 'base64')
+    }
+    try {
+      if (verified.length !== key.length || !timingSafeEqual(verified, key)) throw new Error('URL 加密密钥校验失败')
+    } finally { verified.fill(0) }
+    mkdirSync(dirname(keyPath), { recursive: true })
+    const fd = openSync(temporary, 'wx', 0o600)
+    temporaryCreated = true
+    try { writeFileSync(fd, protectedKey, 'utf8'); fsyncSync(fd) } finally { closeSync(fd) }
+    try {
+      // Hard-linking publishes the completed file without replacing a competing key.
+      linkSync(temporary, keyPath)
+      cachedKey = Buffer.from(key)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      cachedKey = readKey(keyPath)
+    }
+    return cachedKey
+  } finally {
+    key.fill(0)
+    if (temporaryCreated) unlinkSync(temporary)
+  }
 }
 
 function decryptLegacy(value: string): string {
@@ -40,7 +83,7 @@ function decryptLegacy(value: string): string {
 export function encryptUrl(url: string): string {
   try {
     const nonce = randomBytes(12)
-    const cipher = createCipheriv('aes-256-gcm', getOrCreateKey(), nonce)
+    const cipher = createCipheriv('aes-256-gcm', getOrCreateKey(true), nonce)
     const ciphertext = Buffer.concat([cipher.update(url, 'utf8'), cipher.final()])
     const tag = cipher.getAuthTag()
     return [FORMAT_PREFIX, nonce.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join('.')
@@ -62,7 +105,7 @@ export function decryptUrl(encryptedUrl: string): string {
     const ciphertext = Buffer.from(parts[3], 'base64url')
     if (nonce.length !== 12 || tag.length !== 16) throw new Error('无效的 URL 加密参数')
 
-    const decipher = createDecipheriv('aes-256-gcm', getOrCreateKey(), nonce)
+    const decipher = createDecipheriv('aes-256-gcm', getOrCreateKey(false), nonce)
     decipher.setAuthTag(tag)
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8')
   } catch (err) {

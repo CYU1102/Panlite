@@ -24,5 +24,5 @@ try {
       if (result.error || result.status !== 0) throw new Error(`Credential ${scenario}/${mode} failed: ${result.error?.message || result.stderr}`)
     }
   }
-  console.log('Protected account and setting survived forced exit; legacy credentials survived normal restart')
+  console.log('Protected account, setting and URL survived forced exit; legacy formats survived normal restart')
 } finally { rmSync(scratch, { recursive: true, force: true }) }
