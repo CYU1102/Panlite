@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
+import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertPathInside,
@@ -101,6 +102,36 @@ describe('path and text safety', () => {
 })
 
 describe('preview sessions', () => {
+  it('cancels 7z listing before removing the downloaded preview file', async () => {
+    const root = temporaryRoot(), service = new FilePreviewService({ tempRoot: root })
+    const seven = require('node-7z')
+    const stream = new EventEmitter() as EventEmitter & { _childProcess: { kill: () => boolean } }
+    let killed = false, downloadedPath = ''
+    let signalStarted!: () => void
+    const started = new Promise<void>(resolve => { signalStarted = resolve })
+    stream._childProcess = { kill: () => { killed = true; return true } }
+    const spy = vi.spyOn(seven, 'list').mockImplementation(() => { signalStarted(); return stream })
+    const preparationId = '2ca186ad-a7ea-4f50-98b1-41d365d385a9'
+    const creating = service.createSession({ ...request, fileName: 'sample.7z', preparationId }, async (_source, context) => {
+      downloadedPath = path.join(context.directory, context.fileName)
+      writeFileSync(downloadedPath, 'isolated fixture')
+      return { success: true, localPath: downloadedPath }
+    })
+    const observed = creating.catch(() => undefined)
+    try {
+      await started
+      expect(service.cancelPreparation(preparationId)).toBe(true)
+      expect(killed).toBe(true)
+      expect(existsSync(downloadedPath)).toBe(true)
+    } finally {
+      stream.emit('end')
+      await observed
+      spy.mockRestore()
+    }
+    await expect(creating).rejects.toThrow('预览已取消')
+    expect(existsSync(downloadedPath)).toBe(false)
+  })
+
   it('reads an actual header-encrypted RAR using the supplied password and cleans up failed attempts', async () => {
     const root = temporaryRoot()
     const service = new FilePreviewService({ tempRoot: root })

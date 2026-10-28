@@ -253,12 +253,46 @@ function sendSevenZipPassword(stream: any, password?: string): void {
   stdin.end(password === undefined ? undefined : `${password}\n`, 'utf8')
 }
 
-async function list7zFiles(filePath: string, password?: string): Promise<{ files: ArchiveFileInfo[]; isEncrypted: boolean }> {
+class ArchiveEntryLimitError extends Error {}
+
+async function waitForSevenZip(stream: any, signal?: AbortSignal, onData?: (entry: any) => void): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let streamError: unknown, processingError: unknown, stopRequested = false
+    const stop = () => {
+      if (stopRequested) return
+      stopRequested = true
+      // node-7z emits end on child close; do not release files before then.
+      try { stream._childProcess?.kill() }
+      catch (error) { log.warn('Could not stop 7z process; waiting for it to close:', String(error)) }
+    }
+    stream.on('data', (entry: any) => {
+      if (stopRequested) return
+      try { onData?.(entry) }
+      catch (error) { processingError = error; stop() }
+    })
+    stream.on('error', (error: unknown) => { streamError = error })
+    stream.once('end', () => {
+      signal?.removeEventListener('abort', stop)
+      if (signal?.aborted) {
+        const error = new Error('操作已取消')
+        error.name = 'AbortError'
+        reject(error)
+      } else if (processingError) reject(processingError)
+      else if (streamError) reject(streamError)
+      else resolve()
+    })
+    signal?.addEventListener('abort', stop, { once: true })
+    if (signal?.aborted) stop()
+  })
+}
+
+async function list7zFiles(filePath: string, password?: string, signal?: AbortSignal): Promise<{ files: ArchiveFileInfo[]; isEncrypted: boolean }> {
   try {
     const Seven = require('node-7z')
     const { path7za } = require('7zip-bin')
     const files: ArchiveFileInfo[] = []
 
+    throwIfAborted(signal)
     const secret = sevenZipPassword(password)
     const stream = Seven.list(filePath, {
       $bin: resolve7ZipExecutablePath(path7za),
@@ -268,11 +302,11 @@ async function list7zFiles(filePath: string, password?: string): Promise<{ files
     })
     // Close stdin even with no password so encrypted headers cannot hang.
     sendSevenZipPassword(stream, secret.stdinPassword)
-    const result = await new Promise<any[]>((resolve, reject) => {
-      const entries: any[] = []
-      stream.on('data', (entry: any) => entries.push(entry))
-      stream.once('error', reject)
-      stream.once('end', () => resolve(entries))
+    const result: any[] = []
+    await waitForSevenZip(stream, signal, entry => {
+      if (!entry.file) return
+      if (result.length >= ARCHIVE_LIMITS.maxEntries) throw new ArchiveEntryLimitError(`压缩包文件数量超过限制 (${ARCHIVE_LIMITS.maxEntries})`)
+      result.push(entry)
     })
 
     let isEncrypted = false
@@ -301,7 +335,9 @@ async function list7zFiles(filePath: string, password?: string): Promise<{ files
     }
 
     return { files, isEncrypted }
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throwIfAborted(signal)
+    if (error instanceof ArchiveEntryLimitError) throw error
     log.error('Failed to list 7z files')
     throw new Error('无法读取7z文件内容')
   }
@@ -324,32 +360,8 @@ async function extract7z(filePath: string, outputDir: string, password?: string,
       $raw: ['-sccUTF-8'],
     })
     sendSevenZipPassword(stream, secret.stdinPassword)
-    await new Promise<void>((resolve, reject) => {
-      let streamError: unknown
-      let cancellationRequested = false
-      const abort = () => {
-        if (cancellationRequested) return
-        cancellationRequested = true
-        // The child may still be writing after kill() returns. Keep the stage
-        // alive until node-7z emits end, which is driven by child process close.
-        try { stream._childProcess?.kill() }
-        catch (error) { log.warn('Could not stop 7z process; waiting for it to close:', String(error)) }
-      }
-      let completed = 0
-      stream.on('data', () => runtime.onProgress?.(++completed, 0))
-      stream.on('error', (error: unknown) => { streamError = error })
-      stream.once('end', () => {
-        runtime.signal?.removeEventListener('abort', abort)
-        if (cancellationRequested || runtime.signal?.aborted) {
-          const error = new Error('操作已取消')
-          error.name = 'AbortError'
-          reject(error)
-        } else if (streamError) reject(streamError)
-        else resolve()
-      })
-      runtime.signal?.addEventListener('abort', abort, { once: true })
-      if (runtime.signal?.aborted) abort()
-    })
+    let completed = 0
+    await waitForSevenZip(stream, runtime.signal, () => runtime.onProgress?.(++completed, 0))
   } catch {
     if (runtime.signal?.aborted) throwIfAborted(runtime.signal)
     log.error('Failed to extract 7z')
@@ -443,7 +455,8 @@ async function extractTar(filePath: string, outputDir: string, files?: string[],
 
 // ── 统一接口 ──
 
-export async function listArchiveFiles(filePath: string, password?: string): Promise<ArchiveMeta> {
+export async function listArchiveFiles(filePath: string, password?: string, signal?: AbortSignal): Promise<ArchiveMeta> {
+  throwIfAborted(signal)
   const format = getArchiveFormat(filePath)
 
   let files: ArchiveFileInfo[] = []
@@ -463,7 +476,7 @@ export async function listArchiveFiles(filePath: string, password?: string): Pro
       break
     }
     case '7z': {
-      const result = await list7zFiles(filePath, password)
+      const result = await list7zFiles(filePath, password, signal)
       files = result.files
       isEncrypted = result.isEncrypted
       break
@@ -475,6 +488,7 @@ export async function listArchiveFiles(filePath: string, password?: string): Pro
       throw new Error('不支持的压缩包格式')
   }
 
+  throwIfAborted(signal)
   const totalSize = files.reduce((sum, f) => sum + f.size, 0)
   assertArchiveLimits(files)
 
@@ -497,7 +511,7 @@ export async function extractArchive(
   throwIfAborted(runtime.signal)
   const format = getArchiveFormat(filePath)
 
-  const meta = await listArchiveFiles(filePath, password)
+  const meta = await listArchiveFiles(filePath, password, runtime.signal)
   const requested = files?.length ? files : undefined
   if (requested && requested.some((entryPath) => !meta.files.some((file) => file.path === entryPath))) {
     throw new Error('选择的压缩包条目无效')

@@ -520,7 +520,7 @@ function mimeForExtension(extension: string): string {
 
 async function parseArchiveDocument(filePath: string, depth: number, signal?: AbortSignal): Promise<{ sections: AiParsedSection[]; skipped: number }> {
   if (depth >= AI_ARCHIVE_MAX_DEPTH) throw new Error(`压缩包递归层级超过 ${AI_ARCHIVE_MAX_DEPTH} 层限制`)
-  const meta = await listArchiveFiles(filePath)
+  const meta = await listArchiveFiles(filePath, undefined, signal)
   const files = meta.files.filter(item => !item.isDir)
   if (files.length > AI_ARCHIVE_MAX_ENTRIES) throw new Error(`用于 AI 解析的文件数量不能超过 ${AI_ARCHIVE_MAX_ENTRIES}`)
   const total = files.reduce((sum, item) => sum + item.size, 0)

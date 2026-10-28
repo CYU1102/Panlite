@@ -236,7 +236,7 @@ export class FilePreviewService {
             : fullContent
           dto = { ...common, kind: 'office', content, truncated, notice: parsed.message }
         } else if (previewType.kind === 'archive') {
-          const archive = await listArchiveFiles(filePath, request.password)
+          const archive = await listArchiveFiles(filePath, request.password, preparation.signal)
           dto = { ...common, kind: 'archive', archive }
         } else {
           dto = { ...common, kind: previewType.kind, assetUrl: `panlite-preview://session/${sessionId}` }

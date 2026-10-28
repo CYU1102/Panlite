@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { extractArchive, listArchiveFiles, resolve7ZipExecutablePath } from './archive'
+import { ARCHIVE_LIMITS } from './archive-security'
 
 const { path7za } = require('7zip-bin')
 const workDir = mkdtempSync(join(tmpdir(), 'panlite-archive-test-'))
@@ -111,6 +112,71 @@ describe('7z runtime integration', () => {
     expect(existsSync(stage)).toBe(false)
     expect(existsSync(join(output, 'late-partial.txt'))).toBe(false)
   }, 15000)
+
+  it('cancels 7z listing and waits for the listing process to close', async () => {
+    const seven = require('node-7z')
+    const stream = new EventEmitter() as EventEmitter & { _childProcess: { kill: () => boolean } }
+    let killed = false, settled = false
+    stream._childProcess = { kill: () => { killed = true; return true } }
+    const spy = vi.spyOn(seven, 'list').mockReturnValue(stream)
+    const controller = new AbortController()
+    const operation = listArchiveFiles(archivePath, undefined, controller.signal)
+    const observed = operation.then(() => { settled = true }, () => { settled = true })
+    try {
+      controller.abort()
+      stream.emit('error', new Error('7z stopped'))
+      await new Promise(resolve => setImmediate(resolve))
+      expect(killed).toBe(true)
+      expect(settled).toBe(false)
+    } finally {
+      stream.emit('end')
+      await observed
+      spy.mockRestore()
+    }
+    await expect(operation).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('propagates extraction cancellation while its 7z listing is running', async () => {
+    const seven = require('node-7z')
+    const stream = new EventEmitter() as EventEmitter & { _childProcess: { kill: () => boolean } }
+    let killed = false
+    stream._childProcess = { kill: () => { killed = true; return true } }
+    const spy = vi.spyOn(seven, 'list').mockReturnValue(stream)
+    const controller = new AbortController(), output = join(workDir, 'cancelled-listing-output')
+    const operation = extractArchive(archivePath, output, undefined, undefined, { signal: controller.signal })
+    const observed = operation.catch(() => undefined)
+    try {
+      controller.abort()
+      expect(killed).toBe(true)
+    } finally {
+      stream.emit('end')
+      await observed
+      spy.mockRestore()
+    }
+    await expect(operation).rejects.toMatchObject({ name: 'AbortError' })
+    expect(existsSync(output)).toBe(false)
+  })
+
+  it('stops listing as soon as 7z exceeds the entry limit', async () => {
+    const seven = require('node-7z')
+    const stream = new EventEmitter() as EventEmitter & { _childProcess: { kill: () => boolean } }
+    let killCalls = 0
+    stream._childProcess = { kill: () => { killCalls++; return true } }
+    const spy = vi.spyOn(seven, 'list').mockReturnValue(stream)
+    const operation = listArchiveFiles(archivePath)
+    const observed = operation.catch(() => undefined)
+    try {
+      for (let i = 0; i <= ARCHIVE_LIMITS.maxEntries; i++) {
+        stream.emit('data', { file: `${i}.txt`, techInfo: new Map([['Size', '1']]) })
+      }
+      expect(killCalls).toBe(1)
+    } finally {
+      stream.emit('end')
+      await observed
+      spy.mockRestore()
+    }
+    await expect(operation).rejects.toThrow(/文件数量超过限制/)
+  })
 
   it('rejects missing or incorrect header passwords without an interactive prompt and accepts the correct one', async () => {
     await expect(listArchiveFiles(encryptedHeadersPath)).rejects.toThrow(/无法读取7z/)
