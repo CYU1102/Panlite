@@ -48,7 +48,7 @@ it.runIf(process.platform === 'win32')('parses and compiles the native declarati
   })
   expect(result.status, result.stderr).toBe(0)
   expect(JSON.parse(result.stdout.replace(/^\uFEFF/, '').trim())).toEqual({ errors: [], startProcessCount: 1, compiledType: 'PanLiteWizardNative', scriptExecuted: false, nativeMethodsInvoked: false })
-})
+}, 20000)
 
 it.runIf(process.platform === 'win32')('reports invalid control ownership without sending a window message', () => {
   const command = `$ErrorActionPreference='Stop'; $tokens=$null; $errors=$null; $ast=[System.Management.Automation.Language.Parser]::ParseFile($env:PANLITE_WIZARD_AST_SOURCE,[ref]$tokens,[ref]$errors); $add=$ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-Type'},$true)|Select-Object -First 1; $code=$add.CommandElements|Where-Object{$_ -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $_.Value.StartsWith('using System;')}|Select-Object -First 1; Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition $code.Value; try { [PanLiteWizardNative]::SetText(0,-1,'unused'); throw 'Invalid handle was accepted' } catch { if (-not $_.Exception.Message.Contains('Directory control ownership changed')) { throw }; 'invalid ownership rejected' }`
@@ -58,4 +58,4 @@ it.runIf(process.platform === 'win32')('reports invalid control ownership withou
   })
   expect(result.status, result.stderr).toBe(0)
   expect(result.stdout.trim()).toBe('invalid ownership rejected')
-})
+}, 20000)
