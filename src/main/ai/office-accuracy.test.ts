@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createWriteStream, mkdtempSync, rmSync } from 'node:fs'
+import { createWriteStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseAiDocument } from './document-parser'
@@ -36,6 +36,54 @@ describe('Office extraction accuracy', () => {
   it('preserves Word table row, empty-cell and multi-paragraph cell boundaries', async () => {
     const filePath = await fixture('docx', { 'word/document.xml': `<w:document><w:body>${paragraph('Before table')}<w:tbl><w:tr>${cell('Name')}${cell('Description')}</w:tr><w:tr>${cell('')}<w:tc>${paragraph('Line one')}${paragraph('Line two')}</w:tc></w:tr></w:tbl>${paragraph('After table')}</w:body></w:document>` })
     expect((await parseAiDocument(filePath, 'docx')).sections?.[0].content).toBe('Before table\nName\tDescription\n\t"Line one\\nLine two"\nAfter table')
+  })
+
+  it('closes Office ZIP file readers before the parse result is returned', async () => {
+    const filePath = await fixture('xlsx', {
+      'xl/worksheets/sheet1.xml': '<worksheet><sheetData><row><c t="inlineStr"><is><t>sample</t></is></c></row></sheetData></worksheet>',
+    })
+    const unzipper = require('unzipper')
+    const readers: Array<{ closed: boolean }> = []
+    const original = unzipper.Open.custom
+    const spy = vi.spyOn(unzipper.Open, 'custom').mockImplementation((...args: unknown[]) => {
+      const source = args[0] as { stream: (...values: number[]) => { closed: boolean } }
+      const create = source.stream
+      source.stream = (...values: number[]) => { const reader = create(...values); readers.push(reader); return reader }
+      return original(...args)
+    })
+    try {
+      expect((await parseAiDocument(filePath, 'xlsx')).status).toBe('ready')
+      expect(readers.length).toBeGreaterThan(0)
+      expect(readers.every(reader => reader.closed)).toBe(true)
+    } finally { spy.mockRestore() }
+  })
+
+  it('rejects Office XML when the ZIP checksum does not match its content', async () => {
+    const filePath = await fixture('xlsx', {
+      'xl/worksheets/sheet1.xml': '<worksheet><sheetData><row><c><v>42</v></c></row></sheetData></worksheet>',
+    })
+    const data = readFileSync(filePath), central = data.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+    expect(central).toBeGreaterThanOrEqual(0)
+    data[central + 16] ^= 0xff
+    writeFileSync(filePath, data)
+    const result = await parseAiDocument(filePath, 'xlsx')
+    expect(result.status).toBe('failed')
+    expect(result.message).toMatch(/校验/)
+    expect(result.sections).toBeUndefined()
+  })
+
+  it('rejects Office XML that expands beyond its declared size', async () => {
+    const filePath = await fixture('xlsx', {
+      'xl/worksheets/sheet1.xml': '<worksheet><sheetData><row><c><v>42</v></c></row></sheetData></worksheet>',
+    })
+    const data = readFileSync(filePath), central = data.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+    expect(central).toBeGreaterThanOrEqual(0)
+    data.writeUInt32LE(1, central + 24)
+    writeFileSync(filePath, data)
+    const result = await parseAiDocument(filePath, 'xlsx')
+    expect(result.status).toBe('failed')
+    expect(result.message).toMatch(/大小/)
+    expect(result.sections).toBeUndefined()
   })
 
   it('extracts the current Word revision without deleted or moved-from text and rows', async () => {

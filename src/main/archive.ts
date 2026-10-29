@@ -57,7 +57,7 @@ export function getArchiveFormat(filename: string): string {
 
 // ── ZIP 解压 ──
 
-async function withZipDirectory<T>(filePath: string, operation: (directory: any) => Promise<T>): Promise<T> {
+export async function withZipDirectory<T>(filePath: string, operation: (directory: any) => Promise<T>): Promise<T> {
   const unzipper = require('unzipper')
   const streams = new Set<ReturnType<typeof createReadStream>>()
   try {

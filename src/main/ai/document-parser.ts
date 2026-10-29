@@ -1,10 +1,12 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { Readable } from 'node:stream'
+import { crc32 } from 'node:zlib'
 import PDFParser, { type Output as PdfOutput } from 'pdf2json'
 import type { AiDocumentStatus } from '../../shared/ai-types'
 import type { AiProcessingCoverage } from '../../shared/ai-processing-coverage'
-import { cleanupTempDir, extractArchive, getAllFilesInDir, isSupportedArchive, listArchiveFiles } from '../archive'
+import { cleanupTempDir, extractArchive, getAllFilesInDir, isSupportedArchive, listArchiveFiles, withZipDirectory } from '../archive'
 import { extractTextFromVisualFile, getAiProviderConfig, transcribeMediaFile } from './ai-provider'
 import { convertLegacyOfficeLocally, extractEmbeddedSubtitle, ocrImageLocally, ocrPdfLocally, transcribeMediaLocally, withRenderedPdfPage } from './local-ai-tools'
 import { getAiProcessingPolicy } from './processing-policy'
@@ -57,7 +59,8 @@ type ZipEntry = {
   type: string
   size?: number
   uncompressedSize?: number
-  buffer: () => Promise<Buffer>
+  crc32: number
+  stream: () => Readable
 }
 
 export function decodeXmlText(value: string): string {
@@ -113,22 +116,23 @@ function readTextPreview(filePath: string): string {
   }
 }
 
-async function openOfficeEntries(filePath: string): Promise<ZipEntry[]> {
-  const unzipper = require('unzipper')
-  const directory = await unzipper.Open.file(filePath)
-  return directory.files as ZipEntry[]
-}
-
 async function readXmlEntry(entry: ZipEntry, budget: { total: number }): Promise<string> {
   const declaredSize = Number(entry.uncompressedSize ?? entry.size ?? 0)
+  if (!Number.isSafeInteger(declaredSize) || declaredSize < 0 || !Number.isInteger(entry.crc32)) throw new Error(`Office XML 条目元数据无效: ${entry.path}`)
   if (declaredSize > MAX_XML_ENTRY_SIZE) throw new Error(`Office XML 条目过大: ${entry.path}`)
   budget.total += declaredSize
   if (budget.total > MAX_TOTAL_XML_SIZE) throw new Error('Office 文档展开后的 XML 总量超过安全限制')
-  const buffer = await entry.buffer()
-  if (buffer.length > MAX_XML_ENTRY_SIZE) throw new Error(`Office XML 条目过大: ${entry.path}`)
-  budget.total += Math.max(0, buffer.length - declaredSize)
-  if (budget.total > MAX_TOTAL_XML_SIZE) throw new Error('Office 文档展开后的 XML 总量超过安全限制')
-  return buffer.toString('utf8')
+  const chunks: Buffer[] = []
+  let size = 0, checksum = 0
+  for await (const data of entry.stream()) {
+    const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data)
+    size += chunk.length
+    if (size > declaredSize || size > MAX_XML_ENTRY_SIZE) throw new Error(`Office XML 条目大小超出声明或限制: ${entry.path}`)
+    checksum = crc32(chunk, checksum)
+    chunks.push(chunk)
+  }
+  if (size !== declaredSize || checksum !== (entry.crc32 >>> 0)) throw new Error(`Office XML 条目大小或校验值不匹配: ${entry.path}`)
+  return Buffer.concat(chunks, size).toString('utf8')
 }
 
 function numericSuffix(entryPath: string): number {
@@ -156,7 +160,10 @@ async function officeRelationships(entries: ZipEntry[], owner: string, budget: {
 }
 
 async function parseDocx(filePath: string): Promise<AiParsedSection[]> {
-  const entries = await openOfficeEntries(filePath)
+  return withZipDirectory(filePath, directory => parseDocxEntries(directory.files as ZipEntry[]))
+}
+
+async function parseDocxEntries(entries: ZipEntry[]): Promise<AiParsedSection[]> {
   const selected = entries
     .filter(entry => entry.type !== 'Directory' && /^word\/(document|header\d+|footer\d+|footnotes|endnotes)\.xml$/i.test(entry.path))
     .sort((left, right) => left.path.localeCompare(right.path))
@@ -175,7 +182,10 @@ async function parseDocx(filePath: string): Promise<AiParsedSection[]> {
 }
 
 async function parseXlsx(filePath: string): Promise<AiParsedSection[]> {
-  const entries = await openOfficeEntries(filePath)
+  return withZipDirectory(filePath, directory => parseXlsxEntries(directory.files as ZipEntry[]))
+}
+
+async function parseXlsxEntries(entries: ZipEntry[]): Promise<AiParsedSection[]> {
   const budget = { total: 0 }
   const sharedEntry = entries.find(entry => entry.path === 'xl/sharedStrings.xml')
   const sharedStrings: string[] = []
@@ -264,7 +274,10 @@ async function parseXlsx(filePath: string): Promise<AiParsedSection[]> {
 }
 
 async function parsePptx(filePath: string): Promise<AiParsedSection[]> {
-  const entries = await openOfficeEntries(filePath)
+  return withZipDirectory(filePath, directory => parsePptxEntries(directory.files as ZipEntry[]))
+}
+
+async function parsePptxEntries(entries: ZipEntry[]): Promise<AiParsedSection[]> {
   const budget = { total: 0 }
   const fallbackSlides = entries
     .filter(entry => entry.type !== 'Directory' && /^ppt\/slides\/slide\d+\.xml$/i.test(entry.path))
