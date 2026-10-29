@@ -1,9 +1,10 @@
-import { constants, copyFileSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs'
+import { constants, copyFileSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync } from 'node:fs'
 import type { Stats } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import type { ArchiveFileInfo } from '../shared/types'
 import { normalizeArchiveEntryPath, resolveArchiveEntryPath } from './archive-security'
 import { assertSafeDownloadTarget, prepareSafeDownloadRoot } from './download-target'
+import { removeOwnedDirectory } from './owned-directory'
 import log from 'electron-log'
 
 interface Entry { path: string; size: number; isDir: boolean }
@@ -70,25 +71,6 @@ function verifyStaged(root: string, plan: ReturnType<typeof extractionPlan>): Ma
   return found
 }
 
-function removeOwnedStage(directory: string, expected: Stats): void {
-  const current = lstatSync(directory)
-  if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== expected.dev || current.ino !== expected.ino) {
-    throw new Error('临时目录身份发生变化')
-  }
-  for (const name of readdirSync(directory)) {
-    const child = join(directory, name), stat = lstatSync(child)
-    if (stat.isSymbolicLink()) unlinkSync(child)
-    else if (stat.isDirectory()) {
-      if (stat.dev !== expected.dev) throw new Error('临时目录包含其他文件系统')
-      removeOwnedStage(child, stat)
-    } else if (stat.isFile()) unlinkSync(child)
-    else throw new Error('临时目录包含不支持的文件类型')
-  }
-  const after = lstatSync(directory)
-  if (!after.isDirectory() || after.isSymbolicLink() || after.dev !== expected.dev || after.ino !== expected.ino) throw new Error('临时目录身份发生变化')
-  rmdirSync(directory)
-}
-
 /** Stage every entry before publishing; existing destination files are never replaced. */
 export async function stageArchiveExtraction(
   output: string,
@@ -139,7 +121,7 @@ export async function stageArchiveExtraction(
       const current = lstatSync(stage)
       assertSafeDownloadTarget(root, stage)
       if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== owner.dev || current.ino !== owner.ino || dirname(stage) !== root) throw new Error('临时目录身份发生变化')
-      removeOwnedStage(stage, owner)
+      removeOwnedDirectory(stage, owner)
     } catch (error) { log.warn('Could not safely clean archive staging directory:', String(error)) }
   }
 }

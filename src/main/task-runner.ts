@@ -43,6 +43,7 @@ import type { DbAccount, DbTask, TaskStatusTransitionOptions } from './db'
 import log from 'electron-log'
 import { calculateTransferProgress, chooseAvailableName, normalizeConflictPolicy, normalizeRelativePath, resolvePathInside, sanitizeFileName } from './file-transfer'
 import { cleanupTempDir, createArchive, extractArchive } from './archive'
+import { removeOwnedDirectory } from './owned-directory'
 import { archiveTaskPassword } from './archive-task-password'
 import { isTargetInsideSelectedDirectory, selectCloudTransferMode } from '../shared/cloud-transfer'
 import { notifyTaskTerminal } from './runtime-services'
@@ -2365,6 +2366,7 @@ export async function downloadTransferFile(options: {
     fs.mkdirSync(path.dirname(localPath), { recursive: true })
     assertTarget()
     const staging = fs.mkdtempSync(path.join(path.dirname(localPath), '.panlite-download-'))
+    const stagingOwner = fs.lstatSync(staging)
     const stagedFile = path.join(staging, path.basename(localPath))
     try {
       const result = await downloadFile(account, fileId, staging, {
@@ -2391,7 +2393,7 @@ export async function downloadTransferFile(options: {
       if (path.dirname(absolute) === path.resolve(path.dirname(localPath)) && path.basename(absolute).startsWith('.panlite-download-')) {
         try {
           assertSafeDownloadTarget(options.targetRoot ?? path.parse(absolute).root, absolute)
-          fs.rmSync(absolute, { recursive: true, force: true })
+          removeOwnedDirectory(absolute, stagingOwner)
         } catch {
           taskLog('warn', task.id, task.account_id, task.platform, '下载临时路径发生变化或无法安全清理，已保留缓存，请核对目录')
         }

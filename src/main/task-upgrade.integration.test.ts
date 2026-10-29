@@ -67,6 +67,38 @@ it('keeps an old target if a fallback adapter creates truncated bytes and return
   expect(fs.readdirSync(fixture.directory).filter(name => name.startsWith('.panlite-download-'))).toEqual([])
 })
 
+it('does not follow a staging directory link when a fallback download fails', async () => {
+  const output = path.join(fixture.directory, 'linked-stage.bin')
+  const outside = path.join(fixture.directory, 'synthetic-outside')
+  fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'keep.txt'), 'outside data')
+  fs.writeFileSync(output, 'original')
+  fixture.adapter.download = vi.fn(async (_account, _id, folder) => {
+    fs.symlinkSync(outside, path.join(folder, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    return { success: false, error: 'synthetic failure' }
+  })
+  await expect(downloadTransferFile({ task: task('running'), account, adapter: fixture.adapter, fileId: 'file', fileSize: 8,
+    localPath: output, overwrite: true, onProgress: () => {} })).rejects.toThrow('下载未完成')
+  expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('outside data')
+  expect(fs.readFileSync(output, 'utf8')).toBe('original')
+  expect(fs.readdirSync(fixture.directory).filter(name => name.startsWith('.panlite-download-'))).toEqual([])
+})
+
+it('preserves a replacement staging directory when its identity changes', async () => {
+  const output = path.join(fixture.directory, 'replaced-stage.bin')
+  let staging = ''
+  fixture.adapter.download = vi.fn(async (_account, _id, folder) => {
+    staging = folder
+    fs.renameSync(folder, `${folder}-moved`)
+    fs.mkdirSync(folder)
+    fs.writeFileSync(path.join(folder, 'replacement.txt'), 'keep replacement')
+    return { success: false, error: 'synthetic failure' }
+  })
+  await expect(downloadTransferFile({ task: task('running'), account, adapter: fixture.adapter, fileId: 'file', fileSize: 8,
+    localPath: output, overwrite: true, onProgress: () => {} })).rejects.toThrow('下载未完成')
+  expect(fs.readFileSync(path.join(staging, 'replacement.txt'), 'utf8')).toBe('keep replacement')
+  expect(fs.existsSync(`${staging}-moved`)).toBe(true)
+})
+
 it('publishes verified full fallback bytes but refuses a competing target without overwrite', async () => {
   const output = path.join(fixture.directory, 'race.bin')
   fixture.adapter.download = vi.fn(async (_account, _id, folder, options) => {
