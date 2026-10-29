@@ -53,7 +53,7 @@ it('preserves the AI document source and can reindex it after a later cloud impo
   expect(first.success).toBe(true)
   const document = first.documents[0]
   expect(document.sourcePath).toBeTruthy()
-  const relative = path.relative(fixture.root, document.sourcePath!).split(path.sep).join('/')
+  const relative = path.relative(fs.realpathSync.native(fixture.root), document.sourcePath!).split(path.sep).join('/')
   expect(relative.startsWith('ai-attachments/cloud-downloads/')).toBe(true)
   const old = new Date(Date.now() - 48 * 60 * 60 * 1000)
   fs.utimesSync(path.dirname(document.sourcePath!), old, old)
