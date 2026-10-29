@@ -73,6 +73,21 @@ function changeManagedReference(databasePath: string, source: string): void {
 }
 
 describe('application snapshots before database initialization', () => {
+  it('captures and restores a managed cloud AI source referenced by the database', async () => {
+    const f = fixture(), directory = path.join(f.profilePath, 'ai-attachments', 'cloud-downloads', 'item-test')
+    fs.mkdirSync(directory, { recursive: true })
+    const source = path.join(directory, 'document.txt')
+    fs.writeFileSync(source, 'original cloud source')
+    const db = new Database(f.databasePath)
+    try { db.prepare('INSERT INTO ai_documents VALUES(?,?)').run('cloud-managed', source) } finally { db.close() }
+    const id = await f.snapshot()
+    expect(fs.readFileSync(path.join(f.profilePath, 'app-snapshots', id, 'data', 'ai-attachments', 'cloud-downloads', 'item-test', 'document.txt'), 'utf8')).toBe('original cloud source')
+    fs.writeFileSync(source, 'changed after snapshot')
+    ok(await f.service.requestRestore(id))
+    await processPendingAppSnapshotOperation(f.profilePath, f.options)
+    expect(fs.readFileSync(source, 'utf8')).toBe('original cloud source')
+  })
+
   it('restores an encrypted URL and its protected key as one snapshot', async () => {
     const f = fixture()
     fs.unlinkSync(path.join(f.profilePath, 'url-crypto.key'))
