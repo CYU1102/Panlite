@@ -7,9 +7,9 @@ import {
   openSync,
   readSync,
   realpathSync,
-  rmSync,
   statSync,
 } from 'fs'
+import type { Stats } from 'node:fs'
 import os from 'os'
 import path from 'path'
 import { createReadStream } from 'fs'
@@ -24,6 +24,9 @@ import { listArchiveFiles } from './archive'
 import { sanitizeFileName } from './file-transfer'
 import { parseAiDocument } from './ai/document-parser'
 import { waitForPreview } from './preview-cancellation'
+import { assertSafeDownloadTarget } from './download-target'
+import { removeOwnedDirectory } from './owned-directory'
+import log from 'electron-log'
 
 export interface FilePreviewDownloadContext {
   directory: string
@@ -55,6 +58,7 @@ export interface FilePreviewServiceOptions {
 
 interface StoredPreviewSession {
   directory?: string
+  directoryOwner?: Stats
   filePath?: string
   source?: PreviewSource
   active: Set<AbortController>
@@ -138,16 +142,19 @@ export class FilePreviewService {
 
   private readonly sessions = new Map<string, StoredPreviewSession>()
   private readonly preparations = new Map<string, AbortController>()
+  private readonly tempRootOwner: Stats
   private readonly now: () => number
   private cleanupGeneration = 0
 
   constructor(options: FilePreviewServiceOptions = {}) {
-    this.tempRoot = path.resolve(options.tempRoot || path.join(os.tmpdir(), 'panlite-file-preview'))
+    const tempRoot = path.resolve(options.tempRoot || path.join(os.tmpdir(), 'panlite-file-preview'))
     this.maxTextBytes = positiveLimit(options.maxTextBytes, FILE_PREVIEW_DEFAULTS.maxTextBytes, '文本预览')
     this.maxDownloadBytes = positiveLimit(options.maxDownloadBytes, FILE_PREVIEW_DEFAULTS.maxDownloadBytes, '预览下载')
     this.sessionTtlMs = positiveLimit(options.sessionTtlMs, FILE_PREVIEW_DEFAULTS.sessionTtlMs, '预览会话')
     this.now = options.now || Date.now
-    mkdirSync(this.tempRoot, { recursive: true, mode: 0o700 })
+    mkdirSync(tempRoot, { recursive: true, mode: 0o700 })
+    this.tempRoot = realpathSync(tempRoot)
+    this.tempRootOwner = lstatSync(this.tempRoot)
   }
 
   async createSession(request: FilePreviewRequest, downloader: FilePreviewDownloader, resolveSource?: FilePreviewSourceResolver): Promise<FilePreviewSessionDto> {
@@ -186,7 +193,9 @@ export class FilePreviewService {
         throw new Error('文件超过预览下载大小限制')
       }
 
+      this.assertManagedRoot()
       const directory = mkdtempSync(path.join(this.tempRoot, 'session-'))
+      const directoryOwner = lstatSync(directory)
       const safeName = sanitizeFileName(request.fileName)
       try {
         const downloadResult = await downloader(request, {
@@ -200,7 +209,7 @@ export class FilePreviewService {
           throw new Error(downloadResult.error || '预览文件下载失败')
         }
 
-        const filePath = this.validateDownloadedFile(directory, downloadResult.localPath)
+        const filePath = this.validateDownloadedFile(directory, downloadResult.localPath, directoryOwner)
         const size = statSync(filePath).size
         if (size > this.maxDownloadBytes) throw new Error('下载文件超过预览大小限制')
 
@@ -243,10 +252,11 @@ export class FilePreviewService {
         }
 
         assertActive()
-        this.storeSession({ directory, filePath, dto })
+        this.storeSession({ directory, directoryOwner, filePath, dto })
         return dto
       } catch (error) {
-        this.removeManagedDirectory(directory)
+        try { this.removeManagedDirectory(directory, directoryOwner) }
+        catch (cleanupError) { log.warn('Could not safely clean preview directory:', String(cleanupError)) }
         throw error
       }
     } catch (error) {
@@ -273,8 +283,8 @@ export class FilePreviewService {
   getSessionFilePath(sessionId: string): string {
     this.cleanupExpiredSessions()
     const session = this.sessions.get(String(sessionId || ''))
-    if (!session?.directory || !session.filePath) throw new Error('预览会话不存在或已过期，或使用在线流')
-    return this.validateDownloadedFile(session.directory, session.filePath)
+    if (!session?.directory || !session.directoryOwner || !session.filePath) throw new Error('预览会话不存在或已过期，或使用在线流')
+    return this.validateDownloadedFile(session.directory, session.filePath, session.directoryOwner)
   }
 
   cleanupSession(sessionId: string): boolean {
@@ -286,7 +296,10 @@ export class FilePreviewService {
     for (const controller of session.active) controller.abort()
     session.active.clear()
     session.pendingReads.clear()
-    if (session.directory) this.removeManagedDirectory(session.directory)
+    if (session.directory) {
+      if (!session.directoryOwner) throw new Error('预览临时目录身份缺失，已保留目录')
+      this.removeManagedDirectory(session.directory, session.directoryOwner)
+    }
     return true
   }
 
@@ -294,7 +307,10 @@ export class FilePreviewService {
     const now = this.now()
     let count = 0
     for (const [sessionId, session] of this.sessions) {
-      if (!session.pendingReads.size && session.dto.expiresAt <= now && this.cleanupSession(sessionId)) count++
+      if (!session.pendingReads.size && session.dto.expiresAt <= now) {
+        try { if (this.cleanupSession(sessionId)) count++ }
+        catch (error) { log.warn('Could not safely clean expired preview directory:', String(error)) }
+      }
     }
     return count
   }
@@ -304,7 +320,8 @@ export class FilePreviewService {
     for (const preparation of this.preparations.values()) preparation.abort()
     let count = 0
     for (const sessionId of [...this.sessions.keys()]) {
-      if (this.cleanupSession(sessionId)) count++
+      try { if (this.cleanupSession(sessionId)) count++ }
+      catch (error) { log.warn('Could not safely clean preview directory:', String(error)) }
     }
     return count
   }
@@ -328,7 +345,10 @@ export class FilePreviewService {
       // A pending network read has its own 30-second timeout. Paused consumers have
       // no pending read, so a forgotten/paused stream cannot hold a session forever.
       if (session.pendingReads.size) this.scheduleExpiry(session, Math.min(this.sessionTtlMs, 30_000))
-      else if (session.dto.expiresAt <= this.now()) this.cleanupSession(session.dto.sessionId)
+      else if (session.dto.expiresAt <= this.now()) {
+        try { this.cleanupSession(session.dto.sessionId) }
+        catch (error) { log.warn('Could not safely clean expired preview directory:', String(error)) }
+      }
       else this.scheduleExpiry(session, session.dto.expiresAt - this.now())
     }, Math.max(1, delay))
     session.expiryTimer.unref?.()
@@ -389,9 +409,13 @@ export class FilePreviewService {
     } catch { finish(); return previewError(404, '预览文件不存在') }
   }
 
-  private validateDownloadedFile(directory: string, candidate: string): string {
+  private validateDownloadedFile(directory: string, candidate: string, owner: Stats): string {
     const managedDirectory = assertPathInside(this.tempRoot, directory)
     const candidatePath = assertPathInside(managedDirectory, candidate)
+    this.assertManagedRoot()
+    assertSafeDownloadTarget(this.tempRoot, candidatePath)
+    const current = lstatSync(managedDirectory)
+    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== owner.dev || current.ino !== owner.ino) throw new Error('预览临时目录身份发生变化')
     if (!existsSync(candidatePath)) throw new Error('下载结果不存在')
     if (lstatSync(candidatePath).isSymbolicLink()) throw new Error('下载结果不能是符号链接')
     const realDirectory = realpathSync(managedDirectory)
@@ -401,9 +425,17 @@ export class FilePreviewService {
     return realFilePath
   }
 
-  private removeManagedDirectory(directory: string): void {
+  private removeManagedDirectory(directory: string, owner: Stats): void {
     const managedDirectory = assertPathInside(this.tempRoot, directory)
-    rmSync(managedDirectory, { recursive: true, force: true })
+    this.assertManagedRoot()
+    assertSafeDownloadTarget(this.tempRoot, managedDirectory)
+    removeOwnedDirectory(managedDirectory, owner)
+  }
+
+  private assertManagedRoot(): void {
+    assertSafeDownloadTarget(this.tempRoot)
+    const current = lstatSync(this.tempRoot)
+    if (current.dev !== this.tempRootOwner.dev || current.ino !== this.tempRootOwner.ino) throw new Error('预览临时根目录身份发生变化')
   }
 }
 

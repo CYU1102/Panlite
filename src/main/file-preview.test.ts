@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { EventEmitter } from 'node:events'
@@ -102,6 +102,63 @@ describe('path and text safety', () => {
 })
 
 describe('preview sessions', () => {
+  it('does not follow a directory link while cleaning a failed preview', async () => {
+    const root = temporaryRoot(), outside = path.join(root, 'outside'), sessions = path.join(root, 'sessions')
+    mkdirSync(outside); writeFileSync(path.join(outside, 'keep.txt'), 'outside data')
+    const service = new FilePreviewService({ tempRoot: sessions })
+    await expect(service.createSession(request, async (_source, context) => {
+      symlinkSync(outside, path.join(context.directory, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+      return { success: false, error: 'synthetic failure' }
+    })).rejects.toThrow('synthetic failure')
+    expect(readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('outside data')
+  })
+
+  it('preserves a replacement preview directory instead of deleting it on session cleanup', async () => {
+    const root = temporaryRoot(), service = new FilePreviewService({ tempRoot: root })
+    let directory = ''
+    const session = await service.createSession(request, async (_source, context) => {
+      directory = context.directory
+      const localPath = path.join(directory, context.fileName)
+      writeFileSync(localPath, 'preview')
+      return { success: true, localPath }
+    })
+    renameSync(directory, `${directory}-original`)
+    mkdirSync(directory); writeFileSync(path.join(directory, 'keep.txt'), 'replacement data')
+    expect(() => service.cleanupSession(session.sessionId)).toThrow(/身份|替换/)
+    expect(readFileSync(path.join(directory, 'keep.txt'), 'utf8')).toBe('replacement data')
+  })
+
+  it('continues cleaning other expired sessions when one directory was replaced', async () => {
+    const root = temporaryRoot()
+    let now = 0, firstDirectory = '', secondDirectory = ''
+    const service = new FilePreviewService({ tempRoot: root, sessionTtlMs: 1000, now: () => now })
+    const create = async (first: boolean) => service.createSession(request, async (_source, context) => {
+      if (first) firstDirectory = context.directory
+      else secondDirectory = context.directory
+      const localPath = path.join(context.directory, context.fileName)
+      writeFileSync(localPath, 'preview')
+      return { success: true, localPath }
+    })
+    await create(true); await create(false)
+    renameSync(firstDirectory, `${firstDirectory}-original`)
+    mkdirSync(firstDirectory); writeFileSync(path.join(firstDirectory, 'keep.txt'), 'replacement data')
+    now = 1001
+    expect(service.cleanupExpiredSessions()).toBe(1)
+    expect(readFileSync(path.join(firstDirectory, 'keep.txt'), 'utf8')).toBe('replacement data')
+    expect(existsSync(secondDirectory)).toBe(false)
+  })
+
+  it('rejects a replaced preview root before calling the downloader', async () => {
+    const root = temporaryRoot(), tempRoot = path.join(root, 'sessions')
+    const service = new FilePreviewService({ tempRoot })
+    renameSync(tempRoot, `${tempRoot}-original`)
+    mkdirSync(tempRoot); writeFileSync(path.join(tempRoot, 'keep.txt'), 'replacement data')
+    const download = vi.fn(async () => ({ success: false }))
+    await expect(service.createSession(request, download)).rejects.toThrow(/身份/)
+    expect(download).not.toHaveBeenCalled()
+    expect(readFileSync(path.join(tempRoot, 'keep.txt'), 'utf8')).toBe('replacement data')
+  })
+
   it('cancels 7z listing before removing the downloaded preview file', async () => {
     const root = temporaryRoot(), service = new FilePreviewService({ tempRoot: root })
     const seven = require('node-7z')
@@ -192,7 +249,8 @@ describe('preview sessions', () => {
       symlinkSync(outsideDirectory, linkedDirectory, 'junction')
       return { success: true, localPath: path.join(linkedDirectory, 'outside.txt') }
     })
-    await expect(action).rejects.toThrow(/越界/)
+    await expect(action).rejects.toThrow(/越界|目录联接/)
+    expect(readFileSync(outsidePath, 'utf8')).toBe('secret')
   })
 
   it('enforces declared and downloaded size limits', async () => {
