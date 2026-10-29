@@ -38,10 +38,17 @@ describe('Office extraction accuracy', () => {
     expect((await parseAiDocument(filePath, 'docx')).sections?.[0].content).toBe('Before table\nName\tDescription\n\t"Line one\\nLine two"\nAfter table')
   })
 
-  it('closes Office ZIP file readers before the parse result is returned', async () => {
+  it.each(['valid', 'bad-crc', 'bad-size'])('closes Office ZIP file readers before returning: %s', async variant => {
     const filePath = await fixture('xlsx', {
       'xl/worksheets/sheet1.xml': '<worksheet><sheetData><row><c t="inlineStr"><is><t>sample</t></is></c></row></sheetData></worksheet>',
     })
+    if (variant !== 'valid') {
+      const data = readFileSync(filePath), central = data.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+      expect(central).toBeGreaterThanOrEqual(0)
+      if (variant === 'bad-crc') data[central + 16] ^= 0xff
+      else data.writeUInt32LE(1, central + 24)
+      writeFileSync(filePath, data)
+    }
     const unzipper = require('unzipper')
     const readers: Array<{ closed: boolean }> = []
     const original = unzipper.Open.custom
@@ -52,7 +59,7 @@ describe('Office extraction accuracy', () => {
       return original(...args)
     })
     try {
-      expect((await parseAiDocument(filePath, 'xlsx')).status).toBe('ready')
+      expect((await parseAiDocument(filePath, 'xlsx')).status).toBe(variant === 'valid' ? 'ready' : 'failed')
       expect(readers.length).toBeGreaterThan(0)
       expect(readers.every(reader => reader.closed)).toBe(true)
     } finally { spy.mockRestore() }
