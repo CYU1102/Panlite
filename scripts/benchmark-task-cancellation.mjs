@@ -17,7 +17,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import reportTools from './benchmark-report.cjs'
 import { collectSourceProvenance } from './write-build-provenance.mjs'
-import { parseArguments, createFixture, plannedRuns, digest, fileEvidence, externalEvidence, buildInputEvidence, toolchainEvidence, verifyFilesUnchanged, staticCheck } from './task-cancellation-evidence.mjs'
+import { parseArguments, createFixture, plannedRuns, digest, fileEvidence, externalEvidence, buildInputEvidence, toolchainEvidence, verifyFilesUnchanged, staticCheck, instrumentQueueRelease } from './task-cancellation-evidence.mjs'
 
 const require = createRequire(import.meta.url)
 const root = resolve(import.meta.dirname, '..')
@@ -67,11 +67,17 @@ async function runBenchmark() {
     const compiled = join(scratch, 'queue.cjs')
     const stdin = "export { initDatabase, getDb, insertAccount, insertTask, getTaskById, updateTaskProgressIfOwned, updateTaskPayloadIfOwned, transitionTaskStatusIfCurrent } from './src/main/db.ts'; export { enqueueTask, cancelTask, getQueueStatus } from './src/main/task-runner.ts'"
     const virtualInputs = new Map([['<stdin>', stdin]])
+    let releaseInstrumentation
     const compileOptions = { bundle: true, platform: 'node', format: 'cjs', target: 'node22', logLevel: 'silent', metafile: true }
     const built = await build({
       stdin: { contents: stdin, resolveDir: root, loader: 'ts' },
       outfile: compiled, ...compileOptions,
       plugins: [{ name: 'synthetic-task-shell-and-provider', setup(builder) {
+        builder.onLoad({ filter: /[\\/]task-admission\.ts$/ }, args => {
+          const original = readFileSync(args.path, 'utf8'), instrumented = instrumentQueueRelease(original)
+          releaseInstrumentation = { path: args.path, originalSha256: digest(original), instrumentedSha256: digest(instrumented), method: fixture.queueReleaseInstrumentation }
+          return { contents: instrumented, loader: 'ts' }
+        })
         builder.onResolve({ filter: /^better-sqlite3$/ }, () => ({ path: require.resolve('better-sqlite3'), external: true }))
         builder.onResolve({ filter: /^(electron|electron-log)$/ }, args => ({ path: args.path, namespace: 'benchmark-shell' }))
         builder.onLoad({ filter: /.*/, namespace: 'benchmark-shell' }, args => {
@@ -95,7 +101,9 @@ async function runBenchmark() {
         })
       } }],
     })
-    inputEvidence = { sourceBefore, compileOptions: { ...compileOptions, stdinLoader: 'ts', stdinSha256: digest(stdin), plugin: 'synthetic-task-shell-and-provider', external: require.resolve('better-sqlite3') },
+    assert(releaseInstrumentation, 'Task admission release instrumentation was not applied')
+    assert(releaseInstrumentation.originalSha256 === provenance.source.files['src/main/task-admission.ts'], 'Instrumented source differs from recorded task admission source')
+    inputEvidence = { sourceBefore, releaseInstrumentation, compileOptions: { ...compileOptions, stdinLoader: 'ts', stdinSha256: digest(stdin), plugin: 'synthetic-task-shell-and-provider', external: require.resolve('better-sqlite3') },
       buildInputs: await buildInputEvidence(built.metafile, virtualInputs, root), bundle: await fileEvidence(compiled, root), toolchain: await toolchainEvidence(require, root),
       ownedTemporaryPath: scratch, variableInputLimit: 'Synthetic Electron app.getPath embeds the owned temporary directory. Raw stub and bundle hashes are retained; temporary path differences are not normalized away.' }
 
@@ -150,6 +158,12 @@ async function runBenchmark() {
         }
       },
     }
+    globalThis.__PANLITE_TASK_BENCHMARK_QUEUE_RELEASE = id => {
+      if (activeRun?.id === id) {
+        activeRun.queueReleaseCount = (activeRun.queueReleaseCount ?? 0) + 1
+        activeRun.queueReleasedAt = performance.now()
+      }
+    }
     const queue = require(compiled)
     queue.initDatabase()
     database = queue.getDb()
@@ -188,6 +202,7 @@ async function runBenchmark() {
         const elu = eluBefore ? performance.eventLoopUtilization(eluBefore) : null
         await waitFor(() => run.httpClosedAt !== undefined, `${id} loopback response closed`)
         assert(run.adapterSettledAt !== undefined, 'Queue reported idle before the adapter settled')
+        assert(run.queueReleaseCount === 1 && run.queueReleasedAt >= run.adapterSettledAt && run.queueReleasedAt <= run.queueIdleAt, 'Queue release timestamp is missing or out of order')
         assert(!queue.updateTaskProgressIfOwned(id, token, 100), 'Stale worker changed task progress')
         assert(!queue.updateTaskPayloadIfOwned(id, token, { results: [{ status: 'success' }] }), 'Stale worker changed task payload')
         assert(!queue.transitionTaskStatusIfCurrent(id, 'running', 'success', { expectedExecutionToken: token, executionToken: token }), 'Stale worker resurrected cancelled task')
@@ -205,10 +220,11 @@ async function runBenchmark() {
           enqueueToHttpRequestStartedMs: round(run.httpRequestStartedAt - enqueuedAt), httpRequestToProgressObservedMs: round(run.progressObservedAt - run.httpRequestStartedAt),
           cancelToAdapterAbortMs: round(run.adapterAbortAt - run.cancelRequestedAt), cancelToFetchRejectedMs: round(run.fetchRejectedAt - run.cancelRequestedAt),
           cancelToAdapterSettledMs: round(run.adapterSettledAt - run.cancelRequestedAt), adapterSettledToIdleObservedMs: round(run.queueIdleAt - run.adapterSettledAt),
+          cancelToQueueReleasedMs: round(run.queueReleasedAt - run.cancelRequestedAt), queueReleasedToIdleObservedMs: round(run.queueIdleAt - run.queueReleasedAt),
           cancelToQueueIdleMs: round(run.queueIdleAt - run.cancelRequestedAt), cancelToHttpClosedMs: round(run.httpClosedAt - run.cancelRequestedAt),
           timestampsMs: { enqueuedAt, adapterEnteredAt: run.adapterEnteredAt, httpRequestStartedAt: run.httpRequestStartedAt, progressObservedAt: run.progressObservedAt,
             cancelRequestedAt: run.cancelRequestedAt, cancelReturnedAt: run.cancelReturnedAt, adapterAbortAt: run.adapterAbortAt, fetchRejectedAt: run.fetchRejectedAt, adapterSettledAt: run.adapterSettledAt,
-            queueIdleObservedAt: run.queueIdleAt, httpClosedAt: run.httpClosedAt },
+            queueReleasedAt: run.queueReleasedAt, queueIdleObservedAt: run.queueIdleAt, httpClosedAt: run.httpClosedAt },
           ...(options.controlled ? { resourceWindow: 'cancelRequestedAt through queueIdleObservedAt', cpu: { userMicros: cpu.user, systemMicros: cpu.system }, eventLoopUtilization: { idleMs: elu.idle, activeMs: elu.active, utilization: elu.utilization } } : {}),
           lateProviderResultObserved: scenario === 'late-success-after-abort', staleProgressRejected: true, stalePayloadRejected: true, staleCompletionRejected: true,
           finalStatus: final.status, executionTokenCleared: final.execution_token === null, originalTargetPreserved: true, stagingRemoved: true, queueIdle: idle(),
@@ -224,26 +240,27 @@ async function runBenchmark() {
     inputEvidence.sourceUnchanged = true
     inputEvidence.cleanCommittedSource = !sourceBefore.dirty && !inputEvidence.sourceAfter.dirty
     report = {
-      schema: options.controlled ? 2 : 1, benchmark: 'actual-task-queue-cancellation', recordedAt: new Date().toISOString(), ...provenance,
+      schema: options.controlled ? 3 : 2, benchmark: 'actual-task-queue-cancellation', recordedAt: new Date().toISOString(), ...provenance,
       completed: true, controlled: options.controlled, singleProcessRepetition: true, warmupSamples, inputEvidence,
       environment: { ...provenance.environment, sqlite: database.prepare('SELECT sqlite_version() AS version').get().version },
       scenarios: Object.fromEntries(fixture.scenarios.map(scenario => {
         const rows = samples.filter(sample => sample.scenario === scenario)
-        return [scenario, { adapterAbort: statistics(rows.map(row => row.cancelToAdapterAbortMs)), queueIdle: statistics(rows.map(row => row.cancelToQueueIdleMs)), httpClosed: statistics(rows.map(row => row.cancelToHttpClosedMs)) }]
+        return [scenario, { adapterAbort: statistics(rows.map(row => row.cancelToAdapterAbortMs)), queueReleased: statistics(rows.map(row => row.cancelToQueueReleasedMs)), queueIdle: statistics(rows.map(row => row.cancelToQueueIdleMs)), releaseToIdleObserved: statistics(rows.map(row => row.queueReleasedToIdleObservedMs)), httpClosed: statistics(rows.map(row => row.cancelToHttpClosedMs)) }]
       })),
       samples, memory: { sampledPeakRssBytes: Math.max(...memorySamples.map(sample => sample.rss)), sampledPeakHeapUsedBytes: Math.max(...memorySamples.map(sample => sample.heapUsed)), processPeakRssBytes: process.resourceUsage().maxRSS * 1024, samples: memorySamples, method: 'Stage-boundary process samples; OS maximum includes compilation, database initialization and input/toolchain hashing. No assertion about a per-task peak or absence of leaks.' },
       verified: { realTaskRunner: true, realAdmissionQueue: true, realSqliteStateAndTokens: true, realAbortableLoopbackBodyRead: true, allTasksCancelled: allTaskIds.every(id => queue.getTaskById(id).status === 'cancelled'), lateResultsFenced: true, queueIdleAtEnd: idle(), originalFilesPreserved: true },
       limits: ['Synthetic provider adapter over loopback; not end-to-end cloud-provider cancellation or renderer IPC latency.', 'Late-success scenario intentionally adds a fixed 25ms delay after abort to prove stale callbacks/results are fenced; that delay is included in queue-idle timing.', 'The actual download task uses atomic fallback staging, not the resumable path. Other task types and provider-owned asynchronous jobs need separate workloads.',
         options.controlled ? 'Two warmup observations and thirty measured observations per scenario in a single process. These are not independent process replications; OS cache and competing load remain uncontrolled.' : 'Five samples per scenario, warm process, OS cache and competing load uncontrolled. No speedup claim without a compatible previous candidate.',
         'adapterSettledToIdleObserved includes task cleanup, database/finally work and the 1ms queue polling observation. It is not a pure database duration or the exact admission-deletion instant.',
+        'queueReleasedAt is captured by a benchmark-only callback inserted immediately after the running-map deletion; it adds instrumentation overhead and does not represent UI or provider completion.',
         'Input hashes observe actual files before and after the run, not kernel-level read attestation. Metadata hashing occurs outside cancellation timing and can affect caches.',
         'This new controlled baseline does not restore the missing initial input closure or close the historical 20.33ms to 26.94ms review.'],
     }
-    report.comparison = compareReports(report, baseline, ['scenarios.cooperative-abort.adapterAbort.p95Ms', 'scenarios.cooperative-abort.queueIdle.p95Ms', 'scenarios.late-success-after-abort.queueIdle.p95Ms', 'memory.sampledPeakRssBytes'])
+    report.comparison = compareReports(report, baseline, ['scenarios.cooperative-abort.adapterAbort.p95Ms', 'scenarios.cooperative-abort.queueReleased.p95Ms', 'scenarios.cooperative-abort.queueIdle.p95Ms', 'scenarios.late-success-after-abort.queueReleased.p95Ms', 'scenarios.late-success-after-abort.queueIdle.p95Ms', 'memory.sampledPeakRssBytes'])
     if (options.controlled && !baseline) Object.assign(report.comparison, { kind: 'new-controlled-baseline', reason: 'No compatible controlled candidate baseline supplied; this is a new baseline and does not clear the historical regression review.' })
   } catch (error) {
     failure = error
-    report = { schema: options.controlled ? 2 : 1, benchmark: 'actual-task-queue-cancellation', recordedAt: new Date().toISOString(), ...provenance, completed: false, controlled: options.controlled,
+    report = { schema: options.controlled ? 3 : 2, benchmark: 'actual-task-queue-cancellation', recordedAt: new Date().toISOString(), ...provenance, completed: false, controlled: options.controlled,
       error: error instanceof Error ? error.message : String(error), samples, warmupSamples, inputEvidence,
       failedRun: activeRun ? Object.fromEntries(Object.entries(activeRun).filter(([key]) => key !== 'signal')) : null }
   } finally {
@@ -252,6 +269,7 @@ async function runBenchmark() {
       if (server) { server.closeAllConnections(); await new Promise(done => server.close(done)) }
       database?.close()
       delete globalThis.__PANLITE_TASK_BENCHMARK_ADAPTER
+      delete globalThis.__PANLITE_TASK_BENCHMARK_QUEUE_RELEASE
       const canonicalTemp = realpathSync.native(tmpdir())
       const physicalScratch = realpathSync.native(scratch)
       assert(!lstatSync(scratch).isSymbolicLink() && dirname(physicalScratch).toLowerCase() === canonicalTemp.toLowerCase() && basename(physicalScratch).startsWith('panlite-task-cancellation-bench-'), 'Unsafe benchmark cleanup identity')

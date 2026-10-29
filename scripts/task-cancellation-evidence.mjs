@@ -28,14 +28,22 @@ export function parseArguments(args) {
 }
 
 export function createFixture(controlled) {
-  const fixture = { version: controlled ? 'task-cancellation-controlled-v1' : 'task-cancellation-fixed-v2', runsPerScenario: controlled ? 30 : 5,
+  const fixture = { version: controlled ? 'task-cancellation-controlled-v2' : 'task-cancellation-fixed-v3', runsPerScenario: controlled ? 30 : 5,
     inputEvidenceProtocol: 'bundle-and-loaded-closure-v1',
+    queueReleaseInstrumentation: 'benchmark-only callback directly after running-map deletion',
     scenarios, fileBytes: 1024 * 1024, firstResponseBytes: 1024, lateCompletionDelayMs: 25, idlePollMs: 1, finalStabilityWaitMs: 30,
     account: 'synthetic-quark', taskType: 'download', conflictPolicy: 'overwrite', originalTarget: 'valuable-original-bytes' }
   if (controlled) Object.assign(fixture, { warmupRounds: 2, ordering: 'Each round runs both scenarios; odd rounds start cooperative, even rounds start late-success. The order restarts for the measured phase.',
     repetitionUnit: 'one Electron Node process; 30 correlated warm-process observations per scenario, not 30 independent processes',
     resourceWindow: 'cancel request through queue-idle observation; the 30ms correctness stability wait is excluded', instrumentation: 'cpu-elu-and-input-closure-v1' })
   return fixture
+}
+
+export function instrumentQueueRelease(source) {
+  const marker = 'this.running.delete(task.id)'
+  const first = source.indexOf(marker)
+  if (first < 0 || source.indexOf(marker, first + marker.length) !== -1) throw new Error('Queue release instrumentation anchor must appear exactly once')
+  return source.slice(0, first + marker.length) + '\n        globalThis.__PANLITE_TASK_BENCHMARK_QUEUE_RELEASE(task.id)' + source.slice(first + marker.length)
 }
 
 export function plannedRuns(controlled) {
@@ -134,6 +142,9 @@ export function staticCheck() {
   }
   assert.equal(controlled.filter(row => row.phase === 'measured' && row.round % 2 && row.scenario === scenarios[0]).length, 15)
   assert.notEqual(createFixture(false).version, createFixture(true).version)
+  assert.equal(instrumentQueueRelease('before\nthis.running.delete(task.id)\nafter'), 'before\nthis.running.delete(task.id)\n        globalThis.__PANLITE_TASK_BENCHMARK_QUEUE_RELEASE(task.id)\nafter')
+  assert.throws(() => instrumentQueueRelease('missing'))
+  assert.throws(() => instrumentQueueRelease('this.running.delete(task.id);this.running.delete(task.id)'))
   const first = { filename: resolve('one.js'), children: [] }, second = { filename: resolve('two.node'), children: [first] }
   first.children.push(second, second)
   assert.deepEqual(moduleFileNames(first), [first.filename, second.filename].sort())
