@@ -5,6 +5,7 @@ import type { DriveAccount, FileItem, Platform, TaskStatus } from '../shared/typ
 import { extractSourceHash } from '../shared/cloud-transfer'
 import type { TransferContentHash, TransferPlan, TransferPlanInput, TransferPlanLocation, TransferPlanObject, TransferPlanResult, TransferPlansApi, TransferPreview, TransferPreviewItem, TransferRun } from '../shared/transfer-plan'
 import { TransferPlanStore, type StoredTransferPreview, type TransferSnapshot, type TransferTreeEntry } from './transfer-plan-store'
+import { compileSafeGlob, SafeGlobLimitError } from './safe-glob'
 
 export interface TransferPlanDependencies {
   getAccount(accountId: string): DriveAccount | undefined
@@ -54,17 +55,13 @@ function sorted(entries: TransferTreeEntry[]): TransferTreeEntry[] { return [...
 export function transferSnapshotFingerprint(snapshot: TransferSnapshot): string {
   return hash({ source: sorted(snapshot.source), target: sorted(snapshot.target), failures: snapshot.failures })
 }
-function glob(rule: string): RegExp {
+function glob(rule: string): { test(value: string): boolean } {
   rule = rule.replace(/\/(?:\*\*)?$/, '')
-  let pattern = ''
-  for (let index = 0; index < rule.length; index++) {
-    const character = rule[index]
-    if (character === '*' && rule[index + 1] === '*') { index++; if (rule[index + 1] === '/') { index++; pattern += '(?:.*/)?' } else pattern += '.*' }
-    else if (character === '*') pattern += '[^/]*'
-    else if (character === '?') pattern += '[^/]'
-    else pattern += character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  }
-  return new RegExp(`^${pattern}(?:/.*)?$`, 'u')
+  const matcher = compileSafeGlob(rule, true)
+  return { test(path: string): boolean {
+    try { return matcher.test(path) }
+    catch (error) { if (error instanceof SafeGlobLimitError) throw new TransferPlanError(error.message); throw error }
+  } }
 }
 function parent(relativePath: string): string { const value = path.posix.dirname(relativePath); return value === '.' ? '' : value }
 function safeName(name: string): boolean { return !!name && name !== '.' && name !== '..' && !/[\\/\0]/.test(name) && name.length <= 1024 }

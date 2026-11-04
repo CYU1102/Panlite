@@ -117,6 +117,30 @@ function fixture() {
 }
 
 describe('saved transfer plans and real SQLite operation-journal execution', () => {
+  it('previews pathological exclusion rules without hiding a nonmatching file', async () => {
+    const f = fixture(), excluded = 'a'.repeat(8) + 'b', kept = 'a'.repeat(80)
+    f.add('a', excluded); f.add('a', kept)
+    const plan = await f.plan({ exclude: ['*a'.repeat(8) + 'b'] }), preview = await f.preview(plan)
+    const items = ok(await f.service.getPreview({ previewId: preview.id })).items
+    expect(items.find(item => item.relativePath === excluded)?.category).toBe('excluded')
+    expect(items.find(item => item.relativePath === kept)?.category).toBe('add')
+    expect(preview.complete).toBe(true)
+    expect(f.mutations).toHaveLength(0)
+  })
+
+  it('fails the preview explicitly when an exclusion match exceeds its work budget', async () => {
+    const f = fixture()
+    let parent = 'source'
+    for (let index = 0; index < 7; index++) {
+      const item = f.add('a', 'a'.repeat(1000), parent, { id: `deep-${index}`, isDir: true })
+      parent = item.id
+    }
+    const plan = await f.plan({ exclude: ['**a'.repeat(160) + 'b'] })
+    expect(await f.service.previewPlan(plan.id)).toMatchObject({ success: false, code: 'PLAN_INVALID', error: expect.stringContaining('无法安全匹配') })
+    expect(f.tasks.size).toBe(0)
+    expect(f.mutations).toHaveLength(0)
+  })
+
   it('persists configurations, exclusions, preview versions and paginated evidence without credentials', async () => {
     const f = fixture(); f.add('a', 'a.txt'); f.add('a', 'ignore.tmp')
     const plan = await f.plan({ exclude: ['**/*.tmp'] }), preview = await f.preview(plan)

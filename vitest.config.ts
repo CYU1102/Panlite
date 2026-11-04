@@ -11,6 +11,9 @@ export default defineConfig({
     root: '.',
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // Concurrent database and filesystem integration tests can saturate
+    // Windows hosts, causing unrelated timeouts despite successful isolation.
+    maxWorkers: 2,
     coverage: {
       provider: 'v8',
       include: ['src/main/task-state-machine.ts'],

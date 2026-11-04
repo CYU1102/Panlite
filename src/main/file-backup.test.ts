@@ -128,6 +128,19 @@ function fixture() {
 }
 
 describe('versioned file backup, restore and safe retention', () => {
+  it('previews pathological exclusion rules without losing a nonmatching file', async () => {
+    const f = fixture(), excluded = 'a'.repeat(8) + 'b', kept = 'a'.repeat(80)
+    f.write(excluded, 'excluded'); f.write(kept, 'keep')
+    const original = await f.plan()
+    const plan = ok(await f.service.savePlan({ ...original, expectedVersion: original.version, exclude: ['*a'.repeat(8) + 'b'] })).plan
+    const preview = ok(await f.service.previewBackup(plan.id)).preview
+    const items = ok(await f.service.getBackupPreview({ previewId: preview.id })).items
+    expect(items.find(item => item.relativePath === excluded)?.action).toBe('excluded')
+    expect(items.find(item => item.relativePath === kept)?.action).toBe('upload')
+    expect(preview.complete).toBe(true)
+    expect(f.uploadCount).toBe(0)
+  })
+
   it('backs up three content versions and restores every SHA256 including empty directories; source deletion leaves history', async () => {
     const f = fixture(); f.write('nested/note.txt', 'version one'); fs.mkdirSync(path.join(f.source, 'empty'))
     const plan = await f.plan(), versions: FileBackupSnapshot[] = []

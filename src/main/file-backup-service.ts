@@ -6,6 +6,7 @@ import type { DriveAdapter } from '../adapters/base'
 import type { DriveAccount, FileItem, Platform, TaskStatus } from '../shared/types'
 import type { FileBackupsApi, FileBackupEntry, FileBackupJob, FileBackupPage, FileBackupPlan, FileBackupPlanInput, FileBackupPreviewItem, FileBackupResult, FileBackupSnapshot, FileRestorePreviewItem } from '../shared/file-backup'
 import { FileBackupStore, type LocalBackupEvidence, type RestoreExisting, type StoredBackupPreview, type StoredRestorePreview, type StoredRetentionPreview } from './file-backup-store'
+import { compileSafeGlob, SafeGlobLimitError } from './safe-glob'
 
 export class FileBackupError extends Error {
   constructor(message: string, readonly code = 'BACKUP_INVALID') { super(message); this.name = 'FileBackupError' }
@@ -75,16 +76,12 @@ export async function readStableBackupFile(file: string, signal?: AbortSignal, c
     return { sha256: hash.digest('hex'), size, ...evidence(before) }
   } finally { await output?.close(); await handle.close() }
 }
-function glob(value: string): RegExp {
-  let pattern = '^'
-  for (let index = 0; index < value.length; index++) {
-    const char = value[index]
-    if (char === '*' && value[index + 1] === '*') { index++; if (value[index + 1] === '/') { index++; pattern += '(?:.*/)?' } else pattern += '.*' }
-    else if (char === '*') pattern += '[^/]*'
-    else if (char === '?') pattern += '[^/]'
-    else pattern += char.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
-  }
-  return new RegExp(pattern + '(?:/.*)?$')
+function glob(value: string): { test(value: string): boolean } {
+  const matcher = compileSafeGlob(value, false)
+  return { test(path: string): boolean {
+    try { return matcher.test(path) }
+    catch (error) { if (error instanceof SafeGlobLimitError) throw new FileBackupError(error.message); throw error }
+  } }
 }
 export async function scanBackupSource(plan: FileBackupPlan, signal?: AbortSignal): Promise<{ source: LocalBackupEvidence[]; excluded: FileBackupPreviewItem[]; failures: Array<{ path: string; error: string }> }> {
   await assertBackupNoLinks(plan.sourcePath)
