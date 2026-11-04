@@ -35,6 +35,21 @@ describe('bounded exclusion glob matching', () => {
     expect(compileSafeGlob('?', false).test('😀')).toBe(false)
   })
 
+  it('preserves recursive suffix matches across names, descendants and line breaks', () => {
+    const alphabet = ['a', '/', '.', 't', 'm', 'p', '😀', '\n', '\r', '\u2028']
+    let seed = 0x5a81c1d3
+    const random = (max: number): number => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed >>> 8) % max }
+    for (const unicode of [false, true]) {
+      const matcher = compileSafeGlob('**/*.tmp', unicode), legacy = previous('**/*.tmp', unicode)
+      const special = ['a.tmp', 'dir/a.tmp/child', 'a\n.tmp', 'a\n/b.tmp', 'a.tmp/b\n', 'a\n.tmp/b\n']
+      for (const candidate of special) expect(matcher.test(candidate), JSON.stringify(candidate)).toBe(legacy.test(candidate))
+      for (let sample = 0; sample < 4000; sample++) {
+        const candidate = Array.from({ length: random(20) }, () => alphabet[random(alphabet.length)]).join('') + (random(3) === 0 ? '.tmp' : '')
+        expect(matcher.test(candidate), JSON.stringify(candidate)).toBe(legacy.test(candidate))
+      }
+    }
+  })
+
   it('finishes pathological nonmatching rules without catastrophic backtracking', () => {
     const pattern = '*a'.repeat(12) + 'b'
     for (const unicode of [false, true]) expect(compileSafeGlob(pattern, unicode).test('a'.repeat(80))).toBe(false)

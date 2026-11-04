@@ -14,6 +14,17 @@ export function compileSafeGlob(rule: string, unicode: boolean): { test(value: s
     // The old optional descendant suffix used dot without dotAll.
     return !/[\n\r\u2028\u2029]/u.test(value.slice(rule.length + 1))
   } }
+  const recursiveSuffix = rule.startsWith('**/*') ? rule.slice(4) : ''
+  if (recursiveSuffix && /^[A-Za-z0-9._-]+$/u.test(recursiveSuffix)) return { test(value: string): boolean {
+    const parts = value.split('/')
+    let lineBreakPart = -1
+    for (let index = 0; index < parts.length; index++) {
+      if (!/[\n\r\u2028\u2029]/u.test(parts[index])) continue
+      if (lineBreakPart !== -1) return false
+      lineBreakPart = index
+    }
+    return parts.some((part, index) => part.endsWith(recursiveSuffix) && (lineBreakPart === -1 || lineBreakPart === index))
+  } }
   // The transfer matcher historically used the RegExp u flag; the backup
   // matcher did not, so ? consumes a code point or UTF-16 unit respectively.
   const characters = unicode ? Array.from(rule) : rule.split('')
