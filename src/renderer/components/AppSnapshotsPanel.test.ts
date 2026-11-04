@@ -24,7 +24,7 @@ it('requires explicit restart confirmation before creating a snapshot', async ()
 
 it('inspects the exact snapshot, displays replacement scope and submits only confirmed restoration', async () => {
   const view = await render(); await view.get('select[aria-label="选择应用快照"]').setValue('snapshot-a'); await flushPromises()
-  expect(api.inspectSnapshot).toHaveBeenCalledWith('snapshot-a'); expect(view.get('.snapshot-inspection').text()).toContain('panlite.db、url-crypto.key、ai-attachments'); expect(view.text()).toContain('3 个外部 AI 源文件引用')
+  expect(api.inspectSnapshot).toHaveBeenCalledWith('snapshot-a'); expect(view.get('.snapshot-inspection').text()).toContain('panlite.db、url-crypto.key、ai-attachments'); expect(view.text()).toContain('3 个未备份的 AI 源文件引用')
   expect(button(view, '重启并恢复此快照').attributes('disabled')).toBeDefined(); await view.get('input[aria-label="确认覆盖并重启恢复应用快照"]').setValue(true); await button(view, '重启并恢复此快照').trigger('click'); await flushPromises()
   expect(api.requestRestore).toHaveBeenCalledWith('snapshot-a'); expect(view.text()).toContain('恢复请求已保存')
 })

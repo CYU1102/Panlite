@@ -5,8 +5,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { AppSnapshotEntry } from '../shared/app-snapshots'
 
 export const SNAPSHOT_FORMAT = 'panlite-app-snapshot-v1'
-export const SNAPSHOT_ROOTS = ['panlite.db', 'url-crypto.key', 'ai-attachments'] as const
-export const RESTORE_ROOTS = ['panlite.db-wal', 'panlite.db-shm', 'panlite.db', 'url-crypto.key', 'ai-attachments'] as const
+export const LEGACY_SNAPSHOT_ROOTS = ['panlite.db', 'url-crypto.key', 'ai-attachments'] as const
+export const SNAPSHOT_ROOTS = [...LEGACY_SNAPSHOT_ROOTS, 'ai-cloud-downloads'] as const
+export const RESTORE_ROOTS = ['panlite.db-wal', 'panlite.db-shm', ...SNAPSHOT_ROOTS] as const
 export const UUID_PATTERN = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/
 export class AppSnapshotError extends Error {
   constructor(message: string, readonly code = 'SNAPSHOT_INVALID') { super(message); this.name = 'AppSnapshotError' }
@@ -17,7 +18,8 @@ export const sha256Text = (text: string): string => createHash('sha256').update(
 export function safeRelative(value: unknown, directory = false): string {
   if (typeof value !== 'string' || value.length > 8192 || value.includes('\\') || value.includes('\0') || value.startsWith('/') || path.posix.normalize(value) !== value
     || value.split('/').some(part => !part || part === '.' || part === '..' || /[:<>"|?*]/.test(part) || /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new AppSnapshotError('快照包含不安全的相对路径')
-  if (directory ? value !== 'ai-attachments' && !value.startsWith('ai-attachments/') : value !== 'panlite.db' && value !== 'url-crypto.key' && !value.startsWith('ai-attachments/')) throw new AppSnapshotError('快照包含受管范围以外的文件')
+  const managedDirectory = ['ai-attachments', 'ai-cloud-downloads'].some(root => (directory && value === root) || value.startsWith(`${root}/`))
+  if (directory ? !managedDirectory : value !== 'panlite.db' && value !== 'url-crypto.key' && !managedDirectory) throw new AppSnapshotError('快照包含受管范围以外的文件')
   return value
 }
 export async function syncFile(file: string): Promise<void> { const handle = await fsp.open(file, 'r+'); try { await handle.sync() } finally { await handle.close() } }
@@ -52,7 +54,7 @@ export async function fileDigest(file: string): Promise<AppSnapshotEntry> {
   if (before.size !== size || after.size !== size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino) throw new AppSnapshotError('文件在快照过程中发生变化')
   return { path: '', size, sha256: hash.digest('hex') }
 }
-export async function tree(root: string): Promise<{ files: AppSnapshotEntry[]; directories: string[] }> {
+export async function tree(root: string, roots: readonly string[] = SNAPSHOT_ROOTS): Promise<{ files: AppSnapshotEntry[]; directories: string[] }> {
   const files: AppSnapshotEntry[] = [], directories: string[] = []
   async function walk(relative: string): Promise<void> {
     const full = path.join(root, ...relative.split('/')), stat = await fsp.lstat(full)
@@ -65,7 +67,7 @@ export async function tree(root: string): Promise<{ files: AppSnapshotEntry[]; d
     }
     if (files.length + directories.length > 100_000) throw new AppSnapshotError('快照附件数量超过支持范围')
   }
-  for (const name of SNAPSHOT_ROOTS) if (await exists(path.join(root, name))) await walk(name)
+  for (const name of roots) if (await exists(path.join(root, name))) await walk(name)
   return { files: files.sort((a, b) => a.path.localeCompare(b.path, 'en')), directories: directories.sort() }
 }
 export async function copyVerified(source: string, target: string, entry: AppSnapshotEntry): Promise<void> {

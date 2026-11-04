@@ -5,7 +5,7 @@ import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { canonicalPathWithMissingTail } from './path-identity'
 import type { AppSnapshotInfo, AppSnapshotInspection, AppSnapshotResult, AppSnapshotsApi, PendingAppSnapshotOperation } from '../shared/app-snapshots'
-import { AppSnapshotError, SNAPSHOT_FORMAT, SNAPSHOT_ROOTS, RESTORE_ROOTS, UUID_PATTERN, copyVerified, durableJson, exists, fileDigest, ownedDirectory, readJson, regular, removeOwnedChild, safeRelative, sha256Text, syncDirectory, syncFile, tree } from './app-snapshot-files'
+import { AppSnapshotError, SNAPSHOT_FORMAT, SNAPSHOT_ROOTS, LEGACY_SNAPSHOT_ROOTS, RESTORE_ROOTS, UUID_PATTERN, copyVerified, durableJson, exists, fileDigest, ownedDirectory, readJson, regular, removeOwnedChild, safeRelative, sha256Text, syncDirectory, syncFile, tree } from './app-snapshot-files'
 export { AppSnapshotError } from './app-snapshot-files'
 
 export interface AppSnapshotOptions {
@@ -32,6 +32,9 @@ interface RestoreJournal {
 interface Layout { profile: string; snapshots: string; state: string; pendingPath: string }
 const running = new Set<string>()
 const ROOT_NAMES = [...SNAPSHOT_ROOTS]
+const LEGACY_ROOT_NAMES = [...LEGACY_SNAPSHOT_ROOTS]
+const directoryRoot = (name: string): boolean => name === 'ai-attachments' || name === 'ai-cloud-downloads'
+const restoreRoots = (manifest: Manifest): Array<typeof RESTORE_ROOTS[number]> => RESTORE_ROOTS.filter(name => name.endsWith('-wal') || name.endsWith('-shm') || manifest.snapshot.managedRoots.includes(name))
 const identifier = (value: unknown): string => { if (typeof value !== 'string' || !UUID_PATTERN.test(value)) throw new AppSnapshotError('快照标识不正确'); return value }
 const fixedError = (error: unknown): string => error instanceof AppSnapshotError ? error.message : '应用快照处理失败，原有文件及回滚副本已保留'
 
@@ -64,8 +67,7 @@ function databaseMetadata(database: Database.Database): { migrationIds: string[]
     if (rows.length !== 1 || !Number.isSafeInteger(rows[0].version) || rows[0].version < 0) throw new AppSnapshotError('数据库独立模块版本不正确')
     schemaVersions[name] = rows[0].version
   }
-  // AI imports currently retain references to external originals or temporary
-  // cloud downloads. Their parsed chunks/conversations are in panlite.db.
+  // AI imports retain source references as well as parsed data in panlite.db.
   let externalAiSources = 0
   if (names.includes('ai_documents')) {
     const columns = database.prepare('PRAGMA table_info(ai_documents)').all() as { name: string }[]
@@ -88,7 +90,7 @@ async function aiReferences(database: Database.Database, profile: string): Promi
     // tree() separately rejects links inside managed roots before copying data.
     const identity = await canonicalPathWithMissingTail(row.source_path)
     const relative = path.relative(profile, identity).split(path.sep).join('/')
-    if (relative.startsWith('ai-attachments/')) managed.add(safeRelative(relative))
+    if (relative.startsWith('ai-attachments/') || (relative.startsWith('ai-cloud-downloads/') && await exists(identity))) managed.add(safeRelative(relative))
     else external++
   }
   return { managed: [...managed].sort(), external }
@@ -103,23 +105,23 @@ function validateManifest(value: unknown): Manifest {
   if (manifest?.format !== SNAPSHOT_FORMAT || !info || info.formatVersion !== 1 || info.state !== 'ready' || !info.sameMachineOnly
     || !Array.isArray(manifest.files) || !Array.isArray(manifest.directories) || manifest.files.length + manifest.directories.length > 100_000
     || !Array.isArray(manifest.migrationIds) || !Array.isArray(manifest.managedAiReferences) || !manifest.schemaVersions || typeof manifest.schemaVersions !== 'object' || Array.isArray(manifest.schemaVersions)
-    || !/^[a-f\d]{64}$/.test(manifest.machineHash) || !Array.isArray(info.managedRoots) || JSON.stringify(info.managedRoots) !== JSON.stringify(ROOT_NAMES)) throw new AppSnapshotError('快照格式或完成状态不正确')
+    || !/^[a-f\d]{64}$/.test(manifest.machineHash) || !Array.isArray(info.managedRoots) || ![ROOT_NAMES, LEGACY_ROOT_NAMES].some(roots => JSON.stringify(info.managedRoots) === JSON.stringify(roots))) throw new AppSnapshotError('快照格式或完成状态不正确')
   identifier(info.id)
   const seen = new Set<string>()
   for (const entry of manifest.files) {
     const relative = safeRelative(entry.path), key = relative.toLowerCase()
-    if (seen.has(key) || !Number.isSafeInteger(entry.size) || entry.size < 0 || !/^[a-f\d]{64}$/.test(entry.sha256)) throw new AppSnapshotError('快照文件清单不正确')
+    if (!info.managedRoots.some(root => relative === root || relative.startsWith(root + '/')) || seen.has(key) || !Number.isSafeInteger(entry.size) || entry.size < 0 || !/^[a-f\d]{64}$/.test(entry.sha256)) throw new AppSnapshotError('快照文件清单不正确')
     seen.add(key)
   }
   for (const directory of manifest.directories) {
     const relative = safeRelative(directory, true), key = relative.toLowerCase()
-    if (seen.has(key)) throw new AppSnapshotError('快照路径重复或类型冲突')
+    if (!info.managedRoots.some(root => relative === root || relative.startsWith(root + '/')) || seen.has(key)) throw new AppSnapshotError('快照路径重复或类型冲突')
     seen.add(key)
   }
   if (manifest.files.filter(entry => entry.path === 'panlite.db').length !== 1 || info.fileCount !== manifest.files.length
     || info.totalBytes !== manifest.files.reduce((sum, entry) => sum + entry.size, 0)) throw new AppSnapshotError('快照缺少数据库或文件统计不一致')
   if (manifest.migrationIds.some(id => typeof id !== 'string' || id.length > 256)) throw new AppSnapshotError('数据库迁移清单不正确')
-  for (const reference of manifest.managedAiReferences) if (!safeRelative(reference).startsWith('ai-attachments/') || !manifest.files.some(entry => entry.path === reference)) throw new AppSnapshotError('快照遗漏了数据库引用的持久 AI 附件')
+  for (const reference of manifest.managedAiReferences) if (!info.managedRoots.some(root => directoryRoot(root) && safeRelative(reference).startsWith(root + '/')) || !manifest.files.some(entry => entry.path === reference)) throw new AppSnapshotError('快照遗漏了数据库引用的持久 AI 附件')
   for (const [name, version] of Object.entries(manifest.schemaVersions)) if (!/^[a-z_]+_schema$/.test(name) || !Number.isSafeInteger(version) || version < 0) throw new AppSnapshotError('数据库模块版本清单不正确')
   return manifest
 }
@@ -132,8 +134,8 @@ async function readManifest(directory: string): Promise<Manifest> {
 }
 async function verifyContent(root: string, manifest: Manifest): Promise<void> {
   await regular(root, true)
-  if ((await fsp.readdir(root)).some(name => !ROOT_NAMES.includes(name as typeof ROOT_NAMES[number]))) throw new AppSnapshotError('快照数据目录包含未登记文件')
-  const actual = await tree(root)
+  if ((await fsp.readdir(root)).some(name => !manifest.snapshot.managedRoots.includes(name))) throw new AppSnapshotError('快照数据目录包含未登记文件')
+  const actual = await tree(root, manifest.snapshot.managedRoots)
   if (JSON.stringify(actual.files) !== JSON.stringify(manifest.files) || JSON.stringify(actual.directories) !== JSON.stringify(manifest.directories)) throw new AppSnapshotError('快照文件缺失、损坏或存在未登记文件')
   const metadata = await sqliteMetadata(path.join(root, 'panlite.db'))
   if (JSON.stringify(metadata.migrationIds) !== JSON.stringify(manifest.migrationIds) || JSON.stringify(metadata.schemaVersions) !== JSON.stringify(manifest.schemaVersions)) throw new AppSnapshotError('数据库版本与快照清单不一致')
@@ -203,7 +205,7 @@ async function restore(paths: Layout, options: AppSnapshotOptions, operation: Pe
     manifest = validateManifest(await readJson(manifestPath))
     if (journal.format !== SNAPSHOT_FORMAT || journal.operationId !== operation.id || journal.snapshotId !== operation.snapshotId || journal.appVersion !== options.appVersion
       || journal.manifestHash !== (await fileDigest(manifestPath)).sha256 || !['applying', 'committed'].includes(journal.phase)
-      || !Array.isArray(journal.roots) || JSON.stringify(journal.roots.map(step => step.name)) !== JSON.stringify(RESTORE_ROOTS)
+      || !Array.isArray(journal.roots) || JSON.stringify(journal.roots.map(step => step.name)) !== JSON.stringify(restoreRoots(manifest))
       || journal.roots.some(step => typeof step.hadOriginal !== 'boolean' || typeof step.hasReplacement !== 'boolean' || !['pending', 'original-moved', 'installed'].includes(step.state))) throw new AppSnapshotError('恢复事务记录损坏或应用版本变化，不能打开部分数据')
     identifier(journal.rollbackSnapshotId)
     if (manifest.machineHash !== machineHash(options, paths.profile)) throw new AppSnapshotError('恢复事务不属于当前应用目录')
@@ -220,8 +222,8 @@ async function restore(paths: Layout, options: AppSnapshotOptions, operation: Pe
     await capture(paths, options, rollbackSnapshotId, `恢复前回滚副本 · ${manifest.snapshot.name}`, workspace)
     await fsp.mkdir(path.join(workspace, 'originals'), { recursive: true })
     const roots: RootStep[] = []
-    for (const name of RESTORE_ROOTS) {
-      if (await exists(path.join(paths.profile, name))) await regular(path.join(paths.profile, name), name === 'ai-attachments')
+    for (const name of restoreRoots(manifest)) {
+      if (await exists(path.join(paths.profile, name))) await regular(path.join(paths.profile, name), directoryRoot(name))
       roots.push({ name, hadOriginal: await exists(path.join(paths.profile, name)), hasReplacement: await exists(path.join(staged, name)), state: 'pending' })
     }
     await durableJson(manifestPath, manifest)
@@ -236,7 +238,7 @@ async function restore(paths: Layout, options: AppSnapshotOptions, operation: Pe
       if (step.hadOriginal) {
         if (!await exists(original)) {
           if (!await exists(live)) throw new AppSnapshotError('原数据缺失，恢复事务已停止')
-          await regular(live, step.name === 'ai-attachments'); await fsp.rename(live, original)
+          await regular(live, directoryRoot(step.name)); await fsp.rename(live, original)
         } else if (await exists(live)) throw new AppSnapshotError('原数据与恢复事务发生冲突')
       } else if (await exists(live)) throw new AppSnapshotError('恢复过程中出现未登记的新文件')
       await options.checkpoint?.(`after-original:${step.name}`)
@@ -246,7 +248,7 @@ async function restore(paths: Layout, options: AppSnapshotOptions, operation: Pe
       if (step.hasReplacement) {
         if (await exists(staged)) {
           if (await exists(live)) throw new AppSnapshotError('恢复目标已被其他写入占用')
-          await regular(staged, step.name === 'ai-attachments'); await fsp.rename(staged, live)
+          await regular(staged, directoryRoot(step.name)); await fsp.rename(staged, live)
         } else if (!await exists(live)) throw new AppSnapshotError('待恢复文件缺失')
       }
       await options.checkpoint?.(`after-installed:${step.name}`)
@@ -254,8 +256,8 @@ async function restore(paths: Layout, options: AppSnapshotOptions, operation: Pe
       step.state = 'installed'; await durableJson(journalPath, journal)
     }
   }
-  for (const name of RESTORE_ROOTS) await verifyInstalledRoot(paths.profile, name, manifest)
-  const live = await tree(paths.profile)
+  for (const name of restoreRoots(manifest)) await verifyInstalledRoot(paths.profile, name, manifest)
+  const live = await tree(paths.profile, manifest.snapshot.managedRoots)
   if (JSON.stringify(live.files) !== JSON.stringify(manifest.files) || JSON.stringify(live.directories) !== JSON.stringify(manifest.directories)) throw new AppSnapshotError('恢复后的受管范围与快照不一致')
   await sqliteMetadata(path.join(paths.profile, 'panlite.db'))
   journal.phase = 'committed'; await durableJson(journalPath, journal); await syncDirectory(paths.profile)

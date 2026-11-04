@@ -73,6 +73,63 @@ function changeManagedReference(databasePath: string, source: string): void {
 }
 
 describe('application snapshots before database initialization', () => {
+  it('backs up referenced legacy cloud sources and restores them with a rollback snapshot', async () => {
+    const f = fixture(), source = path.join(f.profilePath, 'ai-cloud-downloads', 'legacy.txt')
+    fs.writeFileSync(source, 'legacy original')
+    const db = new Database(f.databasePath)
+    try { db.prepare('INSERT INTO ai_documents VALUES(?,?)').run('legacy', source) } finally { db.close() }
+    const id = await f.snapshot()
+    const inspection = ok(await f.service.inspectSnapshot(id))
+    expect(inspection.snapshot.externalAiSources).toBe(1)
+    expect(inspection.files.some(file => file.path === 'ai-cloud-downloads/legacy.txt')).toBe(true)
+    fs.writeFileSync(source, 'legacy changed')
+    ok(await f.service.requestRestore(id))
+    const result = await processPendingAppSnapshotOperation(f.profilePath, f.options)
+    expect(fs.readFileSync(source, 'utf8')).toBe('legacy original')
+    ok(await f.service.requestRestore(result.rollbackSnapshotId!))
+    await processPendingAppSnapshotOperation(f.profilePath, f.options)
+    expect(fs.readFileSync(source, 'utf8')).toBe('legacy changed')
+  })
+
+  it('restores old-format snapshots without replacing legacy cloud files', async () => {
+    const f = fixture(), id = await f.snapshot(), snapshotRoot = path.join(f.profilePath, 'app-snapshots', id)
+    fs.rmSync(path.join(snapshotRoot, 'data', 'ai-cloud-downloads'), { recursive: true })
+    rewriteManifest(snapshotRoot, manifest => {
+      manifest.snapshot.managedRoots = manifest.snapshot.managedRoots.filter((root: string) => root !== 'ai-cloud-downloads')
+      manifest.files = manifest.files.filter((file: { path: string }) => !file.path.startsWith('ai-cloud-downloads/'))
+      manifest.directories = manifest.directories.filter((directory: string) => directory !== 'ai-cloud-downloads' && !directory.startsWith('ai-cloud-downloads/'))
+      manifest.snapshot.fileCount = manifest.files.length
+      manifest.snapshot.totalBytes = manifest.files.reduce((sum: number, file: { size: number }) => sum + file.size, 0)
+    })
+    const legacy = path.join(f.profilePath, 'ai-cloud-downloads', 'temporary')
+    fs.writeFileSync(legacy, 'must remain')
+    expect(ok(await f.service.inspectSnapshot(id)).verified).toBe(true)
+    f.change(); ok(await f.service.requestRestore(id))
+    await expect(processPendingAppSnapshotOperation(f.profilePath, { ...f.options, checkpoint: point => { if (point === 'after-original:panlite.db') throw new Error('interrupted') } })).rejects.toMatchObject({ code: 'SNAPSHOT_STARTUP_FAILED' })
+    expect(fs.readFileSync(legacy, 'utf8')).toBe('must remain')
+    await processPendingAppSnapshotOperation(f.profilePath, f.options)
+    expect(f.readValue()).toBe('before')
+    expect(fs.readFileSync(legacy, 'utf8')).toBe('must remain')
+  })
+
+  it('reports missing legacy cloud sources as external without claiming they were backed up', async () => {
+    const f = fixture(), db = new Database(f.databasePath)
+    try { db.prepare('INSERT INTO ai_documents VALUES(?,?)').run('missing-legacy', path.join(f.profilePath, 'ai-cloud-downloads', 'missing.txt')) } finally { db.close() }
+    const id = await f.snapshot()
+    expect(ok(await f.service.inspectSnapshot(id)).snapshot.externalAiSources).toBe(2)
+  })
+
+  it('rejects links inside the legacy cloud tree without copying external data', async () => {
+    const f = fixture(), outside = fs.mkdtempSync(path.join(os.tmpdir(), 'panlite-snapshot-external-'))
+    cleanup.push(() => fs.rmSync(outside, { recursive: true, force: true }))
+    fs.writeFileSync(path.join(outside, 'private.txt'), 'external')
+    fs.symlinkSync(outside, path.join(f.profilePath, 'ai-cloud-downloads', 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+    ok(await f.service.requestSnapshot('禁止链接'))
+    await expect(processPendingAppSnapshotOperation(f.profilePath, f.options)).rejects.toThrow('符号链接或目录联接')
+    expect(fs.readFileSync(path.join(outside, 'private.txt'), 'utf8')).toBe('external')
+    expect(ok(await f.service.listSnapshots()).snapshots).toHaveLength(0)
+  })
+
   it('captures and restores a managed cloud AI source referenced by the database', async () => {
     const f = fixture(), directory = path.join(f.profilePath, 'ai-attachments', 'cloud-downloads', 'item-test')
     fs.mkdirSync(directory, { recursive: true })
@@ -145,7 +202,7 @@ describe('application snapshots before database initialization', () => {
     const f = fixture(), id = await f.snapshot()
     const inspected = ok(await f.service.inspectSnapshot(id))
     expect(inspected).toMatchObject({ verified: true, migrationIds: ['001_base'], schemaVersions: { catalog_schema: 1 }, snapshot: { state: 'ready', sameMachineOnly: true, externalAiSources: 1 } })
-    expect(inspected.files.map(file => file.path)).toEqual(['ai-attachments/documents/note.txt', 'panlite.db', 'url-crypto.key'])
+    expect(inspected.files.map(file => file.path)).toEqual(['ai-attachments/documents/note.txt', 'ai-cloud-downloads/temporary', 'panlite.db', 'url-crypto.key'])
     const snapshotRoot = path.join(f.profilePath, 'app-snapshots', id)
     const db = new Database(path.join(snapshotRoot, 'data', 'panlite.db'), { readonly: true })
     try {
@@ -187,7 +244,7 @@ describe('application snapshots before database initialization', () => {
     expect(f.readValue()).toBe('after')
     expect(fs.existsSync(path.join(f.profilePath, 'ai-attachments', 'added.txt'))).toBe(true)
   })
-  it.each(['after-original:panlite.db', 'after-installed:panlite.db', 'after-installed:ai-attachments', 'restore-committed'])('resumes an interrupted restore at %s before allowing database initialization', async point => {
+  it.each(['after-original:panlite.db', 'after-installed:panlite.db', 'after-installed:ai-attachments', 'after-original:ai-cloud-downloads', 'after-installed:ai-cloud-downloads', 'restore-committed'])('resumes an interrupted restore at %s before allowing database initialization', async point => {
     const f = fixture(), id = await f.snapshot()
     f.change(); ok(await f.service.requestRestore(id))
     await expect(processPendingAppSnapshotOperation(f.profilePath, { ...f.options, checkpoint: name => { if (name === point) throw new Error('simulated process interruption') } })).rejects.toMatchObject({ code: 'SNAPSHOT_STARTUP_FAILED' })
@@ -235,7 +292,7 @@ describe('application snapshots before database initialization', () => {
     finally { database.close() }
     const id = await f.snapshot(), inspection = ok(await f.service.inspectSnapshot(id))
     expect(inspection.snapshot.externalAiSources).toBe(2)
-    expect(inspection.files.map(file => file.path)).toEqual(['ai-attachments/documents/note.txt', 'panlite.db', 'url-crypto.key'])
+    expect(inspection.files.map(file => file.path)).toEqual(['ai-attachments/documents/note.txt', 'ai-cloud-downloads/temporary', 'panlite.db', 'url-crypto.key'])
     expect(fs.readFileSync(external, 'utf8')).toBe('external bytes must stay outside the snapshot')
   })
   it.each(['temporary', 'missing/source.txt'])('still rejects an aliased managed tree that escapes through a junction at %s', async suffix => {
