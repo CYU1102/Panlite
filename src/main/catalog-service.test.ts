@@ -512,6 +512,25 @@ describe('persistent catalog scans', () => {
 })
 
 describe('local catalog queries and annotations', () => {
+  it('returns current tags and collections per account when identical IDs share a result page', async () => {
+    const f = fixture(), first = await f.scope()
+    f.accounts.set('b', { id: 'b', nickname: '乙账号', platform: 'webdav', status: 'active' })
+    const second = await f.scope('b')
+    f.trees.set('a:root', listing('root', [file('same')]))
+    f.trees.set('b:root', listing('root', [file('same', 'root', { accountId: 'b' })]))
+    await f.scan(first.id); await f.scan(second.id)
+    const collection = success(await f.service.saveCollection({ name: '测试集合' })).collection
+    success(await f.service.setTags({ accountId: 'a', fileId: 'same', tags: ['甲'] }))
+    success(await f.service.setTags({ accountId: 'b', fileId: 'same', tags: ['乙'] }))
+    success(await f.service.setEntryCollections({ accountId: 'a', fileId: 'same', collectionIds: [collection.id] }))
+    const before = await f.entries({ pageSize: 2 })
+    expect(before.map(entry => [entry.accountId, entry.tags, entry.collectionIds])).toEqual([['a', ['甲'], [collection.id]], ['b', ['乙'], []]])
+    success(await f.service.setTags({ accountId: 'a', fileId: 'same', tags: ['更新'] }))
+    success(await f.service.setEntryCollections({ accountId: 'a', fileId: 'same', collectionIds: [] }))
+    const after = await f.entries({ pageSize: 2 })
+    expect(after.map(entry => [entry.accountId, entry.tags, entry.collectionIds])).toEqual([['a', ['更新'], []], ['b', ['乙'], []]])
+  })
+
   it('supports Chinese short literals, literal wildcards, combined filters and stable server-side pagination offline', async () => {
     const f = fixture(), scope = await f.scope()
     f.trees.set('a:root', listing('root', [

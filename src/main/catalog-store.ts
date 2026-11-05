@@ -325,18 +325,23 @@ export class CatalogStore {
       AND NOT EXISTS(SELECT 1 FROM catalog_scopes s WHERE s.account_id=e.account_id AND s.root_id=e.file_id)
       AND NOT EXISTS(SELECT 1 FROM catalog_candidates c JOIN catalog_scopes s ON s.id=c.scope_id WHERE s.account_id=e.account_id AND c.file_id=e.file_id)`).run()
   }
-  private toEntry(row: EntryRow): CatalogEntry {
-    return {
+  private toEntries(rows: EntryRow[]): CatalogEntry[] {
+    if (!rows.length) return []
+    // Prepare annotation lookups once per result page, rather than compiling
+    // the same two statements for every returned file.
+    const tags = this.db.prepare<[string, string], { tag: string }>('SELECT tag FROM catalog_tags WHERE account_id=? AND file_id=? ORDER BY tag')
+    const collections = this.db.prepare<[string, string], { collection_id: string }>('SELECT collection_id FROM catalog_collection_members WHERE account_id=? AND file_id=? ORDER BY collection_id')
+    return rows.map(row => ({
       accountId: row.account_id, fileId: row.file_id, parentId: row.parent_id, name: row.name, path: row.path, isDir: !!row.is_dir,
       size: row.size, createdAt: row.created_at, updatedAt: row.updated_at, indexedAt: row.indexed_at, fileType: row.file_type,
       favorite: !!row.favorite, platform: row.platform, accountNickname: row.nickname, accountStatus: row.status,
-      tags: (this.db.prepare('SELECT tag FROM catalog_tags WHERE account_id=? AND file_id=? ORDER BY tag').all(row.account_id, row.file_id) as { tag: string }[]).map(item => item.tag),
-      collectionIds: (this.db.prepare('SELECT collection_id FROM catalog_collection_members WHERE account_id=? AND file_id=? ORDER BY collection_id').all(row.account_id, row.file_id) as { collection_id: string }[]).map(item => item.collection_id),
-    }
+      tags: tags.all(row.account_id, row.file_id).map(item => item.tag),
+      collectionIds: collections.all(row.account_id, row.file_id).map(item => item.collection_id),
+    }))
   }
   getEntry(ref: CatalogRef): CatalogEntry | undefined {
     const row = this.db.prepare(`${ENTRY_SELECT} WHERE e.account_id=? AND e.file_id=? AND ${IS_VISIBLE}`).get(ref.accountId, ref.fileId) as EntryRow | undefined
-    return row ? this.toEntry(row) : undefined
+    return row ? this.toEntries([row])[0] : undefined
   }
   search(query: CatalogQuery): CatalogSearchPage {
     const where: string[] = [IS_VISIBLE], values: (string | number)[] = []
@@ -364,7 +369,7 @@ export class CatalogStore {
     const page = query.page ?? 1, pageSize = query.pageSize ?? 50
     const rows = this.db.prepare(`${ENTRY_SELECT} WHERE ${clause} ORDER BY e.${column} ${query.sortOrder === 'desc' ? 'DESC' : 'ASC'},e.account_id,e.file_id LIMIT ? OFFSET ?`)
       .all(...values, pageSize, (page - 1) * pageSize) as EntryRow[]
-    return { entries: rows.map(row => this.toEntry(row)), total, page, pageSize }
+    return { entries: this.toEntries(rows), total, page, pageSize }
   }
   listTags(): string[] { return (this.db.prepare('SELECT DISTINCT tag FROM catalog_tags ORDER BY tag').all() as { tag: string }[]).map(row => row.tag) }
   setTags(ref: CatalogRef, tags: string[]): void {
