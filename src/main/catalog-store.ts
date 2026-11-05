@@ -186,20 +186,23 @@ export class CatalogStore {
       }
     })()
   }
-  private relocateSubtree(accountId: string, fileId: string, oldPath: string, newPath: string): void {
+  private relocateSubtree(accountId: string, fileId: string, oldPaths: string[], newPath: string): void {
     // Rewrite descendants by identity, never by a path prefix shared by another account/folder.
     const children = this.db.prepare(`WITH RECURSIVE tree(id) AS (
       SELECT file_id FROM catalog_entries WHERE account_id=? AND parent_id=? AND file_id<>?
       UNION SELECT e.file_id FROM tree t CROSS JOIN catalog_entries e WHERE e.parent_id=t.id AND e.account_id=? AND e.file_id<>?
     ) SELECT e.file_id,e.path FROM tree t CROSS JOIN catalog_entries e WHERE t.id=e.file_id AND e.account_id=?`)
       .all(accountId, fileId, fileId, accountId, fileId, accountId) as { file_id: string; path: string }[]
-    const paths = [{ file_id: fileId, path: oldPath }, ...children]
+    const paths = [{ file_id: fileId, path: oldPaths[0] }, ...children]
+    const prefixes = [...new Set(oldPaths)].sort((a, b) => b.length - a.length)
     const updateEntry = this.db.prepare('UPDATE catalog_entries SET path=?,search_path=? WHERE account_id=? AND file_id=?')
     const updateRoot = this.db.prepare('UPDATE catalog_scopes SET root_path=? WHERE account_id=? AND root_id=?')
     const updateQueue = this.db.prepare('UPDATE catalog_queue SET path=? WHERE directory_id=? AND scope_id IN (SELECT id FROM catalog_scopes WHERE account_id=?)')
     for (const child of paths) {
-      if (child.path !== oldPath && !child.path.startsWith(oldPath + '/')) continue
-      const path = newPath + child.path.slice(oldPath.length)
+      const oldPath = prefixes.find(prefix => child.path === prefix || (prefix === '/' ? child.path.startsWith('/') : child.path.startsWith(prefix + '/')))
+      if (oldPath === undefined) continue
+      const suffix = child.path === oldPath ? '' : oldPath === '/' ? child.path : child.path.slice(oldPath.length)
+      const path = newPath === '/' ? suffix || '/' : newPath + suffix
       updateEntry.run(path, path.toLowerCase(), accountId, child.file_id)
       updateRoot.run(path, accountId, child.file_id)
       updateQueue.run(path, child.file_id, accountId)
@@ -229,8 +232,11 @@ export class CatalogStore {
         WHERE scope_id=? AND directory_id=? AND is_dir=1 AND file_id>=? ORDER BY file_id`)
         .all(cursor.scopeId, cursor.directoryId, firstMoved.fileId) as { accountId: string; fileId: string; path: string }[] : []
       for (const file of directories) {
-        const old = (oldEntry.get(file.accountId, file.fileId) ?? oldRoot.get(file.accountId, file.fileId)) as { path: string } | undefined
-        if (old && old.path !== file.path) this.relocateSubtree(file.accountId, file.fileId, old.path, file.path)
+        const entry = oldEntry.get(file.accountId, file.fileId) as { path: string } | undefined
+        if (entry?.path === file.path) continue
+        const root = oldRoot.get(file.accountId, file.fileId) as { path: string } | undefined
+        const old = entry ?? root
+        if (old && old.path !== file.path) this.relocateSubtree(file.accountId, file.fileId, [old.path, ...(root && root.path !== old.path ? [root.path] : [])], file.path)
       }
       // Avoid rewriting indexed metadata only when every staged entry already matches.
       // Small directories use the regular upsert without an extra comparison query.

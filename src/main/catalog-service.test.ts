@@ -303,6 +303,42 @@ describe('persistent catalog scans', () => {
     expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })).toMatchObject({ path: '/new/child.txt' })
   })
 
+  it('relocates descendants when an independently indexed root path is slash', async () => {
+    const f = fixture(), nested = await f.scope('a', 'folder', '/')
+    f.accounts.set('b', { id: 'b', nickname: '乙账号', platform: 'webdav', status: 'active' })
+    const other = await f.scope('b', 'folder', '/')
+    f.trees.set('a:folder', listing('folder', [file('child', 'folder'), file('sub', 'folder', { isDir: true, name: 'sub' })]))
+    f.trees.set('a:sub', listing('sub', [file('deep', 'sub')]))
+    f.trees.set('b:folder', listing('folder', [file('child', 'folder', { accountId: 'b' })]))
+    await f.scan(nested.id); await f.scan(other.id)
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })).toMatchObject({ path: '/child.txt' })
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'deep' })).toMatchObject({ path: '/sub/deep.txt' })
+    const broad = await f.scope()
+    f.trees.set('a:root', listing('root', [file('folder', 'root', { isDir: true, name: 'new' })]))
+    f.trees.set('a:folder', new Error('temporarily unavailable'))
+    await f.scan(broad.id)
+    expect(f.store.getScope(nested.id)?.rootPath).toBe('/new')
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })).toMatchObject({ path: '/new/child.txt' })
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'deep' })).toMatchObject({ path: '/new/sub/deep.txt' })
+    expect(f.store.getEntry({ accountId: 'b', fileId: 'child' })).toMatchObject({ path: '/child.txt' })
+    expect(f.store.getScope(other.id)?.rootPath).toBe('/')
+  })
+
+  it.each([['/', '/child.txt'], ['/alternate', '/alternate/child.txt']])('relocates descendants from overlapping root %s when the folder is also indexed at another path', async (rootPath, oldChildPath) => {
+    const f = fixture(), broad = await f.scope()
+    f.trees.set('a:root', listing('root', [file('folder', 'root', { isDir: true, name: 'old' })]))
+    f.trees.set('a:folder', listing('folder', [file('child', 'folder')]))
+    await f.scan(broad.id)
+    const nested = await f.scope('a', 'folder', rootPath)
+    await f.scan(nested.id)
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })?.path).toBe(oldChildPath)
+    f.trees.set('a:root', listing('root', [file('folder', 'root', { isDir: true, name: 'new' })]))
+    f.trees.set('a:folder', new Error('temporarily unavailable'))
+    await f.scan(broad.id)
+    expect(f.store.getScope(nested.id)?.rootPath).toBe('/new')
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })?.path).toBe('/new/child.txt')
+  })
+
   it.each([
     ['name', { name: 'renamed.txt' }, 'name', 'renamed.txt'],
     ['path', { path: '/new-path.txt' }, 'path', '/new-path.txt'],
