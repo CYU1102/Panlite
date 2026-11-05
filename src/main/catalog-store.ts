@@ -213,10 +213,21 @@ export class CatalogStore {
         AND (s.account_id<>? OR s.parent_id<>? OR NOT EXISTS(SELECT 1 FROM catalog_candidates c WHERE c.scope_id=s.scope_id AND c.parent_id=s.directory_id AND c.file_id=s.file_id)) LIMIT 1`)
         .get(cursor.scopeId, cursor.directoryId, cursor.accountId, cursor.directoryId)
       if (stagedCount !== count || unmatched) throw new Error('Staged directory is incomplete or inconsistent')
+      // Find the first potentially relocated directory in SQL. The old per-directory
+      // lookups made even a completely unchanged listing cross into SQLite twice
+      // for every folder. After the first relocation, keep checking all following
+      // entries against live state: relocation can itself change another path.
+      const firstMoved = this.db.prepare(`SELECT s.file_id fileId FROM catalog_staged_entries s
+        LEFT JOIN catalog_entries e ON e.account_id=s.account_id AND e.file_id=s.file_id
+        LEFT JOIN catalog_scopes r ON r.account_id=s.account_id AND r.root_id=s.file_id
+        WHERE s.scope_id=? AND s.directory_id=? AND s.is_dir=1
+          AND COALESCE(e.path,r.root_path) IS NOT NULL AND COALESCE(e.path,r.root_path)<>s.path
+        ORDER BY s.file_id LIMIT 1`).get(cursor.scopeId, cursor.directoryId) as { fileId: string } | undefined
       const oldEntry = this.db.prepare('SELECT path FROM catalog_entries WHERE account_id=? AND file_id=?')
       const oldRoot = this.db.prepare('SELECT root_path path FROM catalog_scopes WHERE account_id=? AND root_id=?')
-      const directories = this.db.prepare('SELECT account_id accountId,file_id fileId,path FROM catalog_staged_entries WHERE scope_id=? AND directory_id=? AND is_dir=1 ORDER BY file_id')
-        .all(cursor.scopeId, cursor.directoryId) as { accountId: string; fileId: string; path: string }[]
+      const directories = firstMoved ? this.db.prepare(`SELECT account_id accountId,file_id fileId,path FROM catalog_staged_entries
+        WHERE scope_id=? AND directory_id=? AND is_dir=1 AND file_id>=? ORDER BY file_id`)
+        .all(cursor.scopeId, cursor.directoryId, firstMoved.fileId) as { accountId: string; fileId: string; path: string }[] : []
       for (const file of directories) {
         const old = (oldEntry.get(file.accountId, file.fileId) ?? oldRoot.get(file.accountId, file.fileId)) as { path: string } | undefined
         if (old && old.path !== file.path) this.relocateSubtree(file.accountId, file.fileId, old.path, file.path)

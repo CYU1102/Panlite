@@ -270,6 +270,39 @@ describe('persistent catalog scans', () => {
     expect(f.db.prepare("SELECT COUNT(*) count FROM catalog_entries WHERE parent_id='dir' AND indexed_at<=1").get()).toEqual({ count: 0 })
   })
 
+  it('relocates multiple renamed directories after unchanged siblings without touching another account', async () => {
+    const f = fixture(), scope = await f.scope()
+    f.accounts.set('b', { id: 'b', nickname: '乙账号', platform: 'webdav', status: 'active' })
+    const otherScope = await f.scope('b')
+    const dirs = Array.from({ length: 40 }, (_, index) => file(`dir-${String(index).padStart(2, '0')}`, 'root', { isDir: true, name: `old-${index}` }))
+    f.trees.set('a:root', listing('root', dirs))
+    f.trees.set('a:dir-35', listing('dir-35', [file('child-35', 'dir-35')]))
+    f.trees.set('a:dir-39', listing('dir-39', [file('child-39', 'dir-39')]))
+    f.trees.set('b:root', listing('root', [file('dir-35', 'root', { accountId: 'b', isDir: true, name: 'other' })]))
+    f.trees.set('b:dir-35', listing('dir-35', [file('child-35', 'dir-35', { accountId: 'b' })]))
+    await f.scan(scope.id); await f.scan(otherScope.id)
+    success(await f.service.setTags({ accountId: 'a', fileId: 'child-35', tags: ['keep'] }))
+    f.trees.set('a:root', listing('root', dirs.map((entry, index) => index === 35 || index === 39 ? { ...entry, name: `new-${index}` } : entry)))
+    await f.scan(scope.id)
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child-35' })).toMatchObject({ path: '/new-35/child-35.txt', tags: ['keep'] })
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child-39' })).toMatchObject({ path: '/new-39/child-39.txt' })
+    expect(f.store.getEntry({ accountId: 'b', fileId: 'child-35' })).toMatchObject({ path: '/other/child-35.txt' })
+    expect(f.store.getScope(scope.id)).toMatchObject({ status: 'completed', entryCount: 42 })
+  })
+
+  it('relocates a nested scope root even when the root has no indexed entry', async () => {
+    const f = fixture(), nested = await f.scope('a', 'folder', '/old')
+    f.trees.set('a:folder', listing('folder', [file('child', 'folder')]))
+    await f.scan(nested.id)
+    expect(f.db.prepare("SELECT COUNT(*) count FROM catalog_entries WHERE account_id='a' AND file_id='folder'").get()).toEqual({ count: 0 })
+    const broad = await f.scope()
+    f.trees.set('a:root', listing('root', [file('folder', 'root', { isDir: true, name: 'new' })]))
+    f.trees.set('a:folder', new Error('temporarily unavailable'))
+    await f.scan(broad.id)
+    expect(f.store.getScope(nested.id)?.rootPath).toBe('/new')
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })).toMatchObject({ path: '/new/child.txt' })
+  })
+
   it.each([
     ['name', { name: 'renamed.txt' }, 'name', 'renamed.txt'],
     ['path', { path: '/new-path.txt' }, 'path', '/new-path.txt'],
