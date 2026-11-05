@@ -186,26 +186,37 @@ export class CatalogStore {
       }
     })()
   }
-  private relocateSubtree(accountId: string, fileId: string, oldPaths: string[], newPath: string): void {
-    // Rewrite descendants by identity, never by a path prefix shared by another account/folder.
+  private relocateSubtree(accountId: string, fileId: string, newPath: string): void {
+    // Rebuild paths by parent identity and name. Independently indexed scopes
+    // can give descendants paths that do not share the ancestor's old prefix.
     const children = this.db.prepare(`WITH RECURSIVE tree(id) AS (
       SELECT file_id FROM catalog_entries WHERE account_id=? AND parent_id=? AND file_id<>?
       UNION SELECT e.file_id FROM tree t CROSS JOIN catalog_entries e WHERE e.parent_id=t.id AND e.account_id=? AND e.file_id<>?
-    ) SELECT e.file_id,e.path FROM tree t CROSS JOIN catalog_entries e WHERE t.id=e.file_id AND e.account_id=?`)
-      .all(accountId, fileId, fileId, accountId, fileId, accountId) as { file_id: string; path: string }[]
-    const paths = [{ file_id: fileId, path: oldPaths[0] }, ...children]
-    const prefixes = [...new Set(oldPaths)].sort((a, b) => b.length - a.length)
+    ) SELECT e.file_id,e.parent_id,e.name FROM tree t CROSS JOIN catalog_entries e WHERE t.id=e.file_id AND e.account_id=?`)
+      .all(accountId, fileId, fileId, accountId, fileId, accountId) as { file_id: string; parent_id: string; name: string }[]
+    const byParent = new Map<string, typeof children>()
+    for (const child of children) {
+      const siblings = byParent.get(child.parent_id) ?? []
+      siblings.push(child)
+      byParent.set(child.parent_id, siblings)
+    }
+    const paths = [{ file_id: fileId, path: newPath }], visited = new Set<string>()
     const updateEntry = this.db.prepare('UPDATE catalog_entries SET path=?,search_path=? WHERE account_id=? AND file_id=?')
     const updateRoot = this.db.prepare('UPDATE catalog_scopes SET root_path=? WHERE account_id=? AND root_id=?')
     const updateQueue = this.db.prepare('UPDATE catalog_queue SET path=? WHERE directory_id=? AND scope_id IN (SELECT id FROM catalog_scopes WHERE account_id=?)')
-    for (const child of paths) {
-      const oldPath = prefixes.find(prefix => child.path === prefix || (prefix === '/' ? child.path.startsWith('/') : child.path.startsWith(prefix + '/')))
-      if (oldPath === undefined) continue
-      const suffix = child.path === oldPath ? '' : oldPath === '/' ? child.path : child.path.slice(oldPath.length)
-      const path = newPath === '/' ? suffix || '/' : newPath + suffix
-      updateEntry.run(path, path.toLowerCase(), accountId, child.file_id)
-      updateRoot.run(path, accountId, child.file_id)
-      updateQueue.run(path, child.file_id, accountId)
+    for (let index = 0; index < paths.length; index++) {
+      const parent = paths[index]
+      if (visited.has(parent.file_id)) throw new Error('Invalid catalog directory cycle')
+      visited.add(parent.file_id)
+      updateEntry.run(parent.path, parent.path.toLowerCase(), accountId, parent.file_id)
+      updateRoot.run(parent.path, accountId, parent.file_id)
+      updateQueue.run(parent.path, parent.file_id, accountId)
+      for (const child of byParent.get(parent.file_id) ?? []) {
+        if (!child.name || child.name === '.' || child.name === '..' || /[\/\\\0]/.test(child.name)) throw new Error('Invalid catalog entry name')
+        const path = (parent.path === '/' ? '' : parent.path) + '/' + child.name
+        if (path.length > 16_384) throw new Error('Catalog path exceeds maximum length')
+        paths.push({ file_id: child.file_id, path })
+      }
     }
   }
   finishDirectory(cursor: CatalogCursor): void {
@@ -236,7 +247,7 @@ export class CatalogStore {
         if (entry?.path === file.path) continue
         const root = oldRoot.get(file.accountId, file.fileId) as { path: string } | undefined
         const old = entry ?? root
-        if (old && old.path !== file.path) this.relocateSubtree(file.accountId, file.fileId, [old.path, ...(root && root.path !== old.path ? [root.path] : [])], file.path)
+        if (old && old.path !== file.path) this.relocateSubtree(file.accountId, file.fileId, file.path)
       }
       // Avoid rewriting indexed metadata only when every staged entry already matches.
       // Small directories use the regular upsert without an extra comparison query.

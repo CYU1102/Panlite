@@ -8,7 +8,7 @@ import { decryptCredential } from '../crypto'
 import { getAdapter } from '../../adapters/registry'
 import { importAiFiles } from './ai-service'
 import { assertSafeDownloadTarget, prepareSafeDownloadRoot } from '../download-target'
-import { removeOwnedDirectory } from '../owned-directory'
+import { removeOwnedDirectory, sameDirectoryIdentity } from '../owned-directory'
 import { sanitizeFileName } from '../file-transfer'
 import log from 'electron-log'
 
@@ -56,24 +56,24 @@ export async function importAiCloudFiles(requests: AiCloudImportRequest[]): Prom
     return { success: false, documents: [], taskIds: [], error: `一次最多导入 ${MAX_CLOUD_IMPORT_FILES} 个网盘文件` }
   }
   const dir = cloudDownloadDir()
-  const rootOwner = fs.lstatSync(dir)
+  const rootOwner = fs.lstatSync(dir, { bigint: true })
   const assertRoot = () => {
     assertSafeDownloadTarget(dir)
-    const current = fs.lstatSync(dir)
-    if (current.dev !== rootOwner.dev || current.ino !== rootOwner.ino) throw new Error('网盘导入根目录身份发生变化')
+    const current = fs.lstatSync(dir, { bigint: true })
+    if (!sameDirectoryIdentity(current, rootOwner)) throw new Error('网盘导入根目录身份发生变化')
   }
-  const assertOwnedFile = (requestDir: string, owner: fs.Stats, candidate: string) => {
+  const assertOwnedFile = (requestDir: string, owner: fs.BigIntStats, candidate: string) => {
     assertRoot()
     assertSafeDownloadTarget(dir, candidate)
     assertSafeDownloadTarget(requestDir, candidate)
-    const current = fs.lstatSync(requestDir)
-    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== owner.dev || current.ino !== owner.ino) throw new Error('网盘导入临时目录身份发生变化')
+    const current = fs.lstatSync(requestDir, { bigint: true })
+    if (!current.isDirectory() || current.isSymbolicLink() || !sameDirectoryIdentity(current, owner)) throw new Error('网盘导入临时目录身份发生变化')
     const stat = fs.lstatSync(candidate)
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('网盘导入结果不是普通文件')
   }
   // Successfully imported documents retain these files as their source paths.
   // Old directories cannot be safely removed by age without checking references.
-  const downloads: Array<{ input: { localPath: string; fileName: string; sourceAccountId: string; sourceFileId: string }; directory: string; owner: fs.Stats }> = []
+  const downloads: Array<{ input: { localPath: string; fileName: string; sourceAccountId: string; sourceFileId: string }; directory: string; owner: fs.BigIntStats }> = []
   const errors: string[] = []
 
   for (const request of requests) {
@@ -93,11 +93,11 @@ export async function importAiCloudFiles(requests: AiCloudImportRequest[]): Prom
     // same filename; sharing one directory would make the later download
     // overwrite the bytes that the earlier document is meant to index.
     let requestDir = ''
-    let requestOwner: fs.Stats | undefined
+    let requestOwner: fs.BigIntStats | undefined
     try {
       assertRoot()
       requestDir = fs.mkdtempSync(path.join(dir, 'item-'))
-      requestOwner = fs.lstatSync(requestDir)
+      requestOwner = fs.lstatSync(requestDir, { bigint: true })
       const result = await adapter.download(account, String(request.fileId), requestDir, { fileName })
       if (!result.success || typeof result.localPath !== 'string' || !result.localPath) throw new Error(result.error || '下载失败')
       const candidate = path.resolve(result.localPath)

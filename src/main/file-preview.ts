@@ -9,7 +9,7 @@ import {
   realpathSync,
   statSync,
 } from 'fs'
-import type { Stats } from 'node:fs'
+import type { BigIntStats } from 'node:fs'
 import os from 'os'
 import path from 'path'
 import { createReadStream } from 'fs'
@@ -25,7 +25,7 @@ import { sanitizeFileName } from './file-transfer'
 import { parseAiDocument } from './ai/document-parser'
 import { waitForPreview } from './preview-cancellation'
 import { assertSafeDownloadTarget } from './download-target'
-import { removeOwnedDirectory } from './owned-directory'
+import { removeOwnedDirectory, sameDirectoryIdentity } from './owned-directory'
 import log from 'electron-log'
 
 export interface FilePreviewDownloadContext {
@@ -58,7 +58,7 @@ export interface FilePreviewServiceOptions {
 
 interface StoredPreviewSession {
   directory?: string
-  directoryOwner?: Stats
+  directoryOwner?: BigIntStats
   filePath?: string
   source?: PreviewSource
   active: Set<AbortController>
@@ -142,7 +142,7 @@ export class FilePreviewService {
 
   private readonly sessions = new Map<string, StoredPreviewSession>()
   private readonly preparations = new Map<string, AbortController>()
-  private readonly tempRootOwner: Stats
+  private readonly tempRootOwner: BigIntStats
   private readonly now: () => number
   private cleanupGeneration = 0
 
@@ -154,7 +154,7 @@ export class FilePreviewService {
     this.now = options.now || Date.now
     mkdirSync(tempRoot, { recursive: true, mode: 0o700 })
     this.tempRoot = realpathSync(tempRoot)
-    this.tempRootOwner = lstatSync(this.tempRoot)
+    this.tempRootOwner = lstatSync(this.tempRoot, { bigint: true })
   }
 
   async createSession(request: FilePreviewRequest, downloader: FilePreviewDownloader, resolveSource?: FilePreviewSourceResolver): Promise<FilePreviewSessionDto> {
@@ -195,7 +195,7 @@ export class FilePreviewService {
 
       this.assertManagedRoot()
       const directory = mkdtempSync(path.join(this.tempRoot, 'session-'))
-      const directoryOwner = lstatSync(directory)
+      const directoryOwner = lstatSync(directory, { bigint: true })
       const safeName = sanitizeFileName(request.fileName)
       try {
         const downloadResult = await downloader(request, {
@@ -409,13 +409,13 @@ export class FilePreviewService {
     } catch { finish(); return previewError(404, '预览文件不存在') }
   }
 
-  private validateDownloadedFile(directory: string, candidate: string, owner: Stats): string {
+  private validateDownloadedFile(directory: string, candidate: string, owner: BigIntStats): string {
     const managedDirectory = assertPathInside(this.tempRoot, directory)
     const candidatePath = assertPathInside(managedDirectory, candidate)
     this.assertManagedRoot()
     assertSafeDownloadTarget(this.tempRoot, candidatePath)
-    const current = lstatSync(managedDirectory)
-    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== owner.dev || current.ino !== owner.ino) throw new Error('预览临时目录身份发生变化')
+    const current = lstatSync(managedDirectory, { bigint: true })
+    if (!current.isDirectory() || current.isSymbolicLink() || !sameDirectoryIdentity(current, owner)) throw new Error('预览临时目录身份发生变化')
     if (!existsSync(candidatePath)) throw new Error('下载结果不存在')
     if (lstatSync(candidatePath).isSymbolicLink()) throw new Error('下载结果不能是符号链接')
     const realDirectory = realpathSync(managedDirectory)
@@ -425,7 +425,7 @@ export class FilePreviewService {
     return realFilePath
   }
 
-  private removeManagedDirectory(directory: string, owner: Stats): void {
+  private removeManagedDirectory(directory: string, owner: BigIntStats): void {
     const managedDirectory = assertPathInside(this.tempRoot, directory)
     this.assertManagedRoot()
     assertSafeDownloadTarget(this.tempRoot, managedDirectory)
@@ -434,8 +434,8 @@ export class FilePreviewService {
 
   private assertManagedRoot(): void {
     assertSafeDownloadTarget(this.tempRoot)
-    const current = lstatSync(this.tempRoot)
-    if (current.dev !== this.tempRootOwner.dev || current.ino !== this.tempRootOwner.ino) throw new Error('预览临时根目录身份发生变化')
+    const current = lstatSync(this.tempRoot, { bigint: true })
+    if (!sameDirectoryIdentity(current, this.tempRootOwner)) throw new Error('预览临时根目录身份发生变化')
   }
 }
 

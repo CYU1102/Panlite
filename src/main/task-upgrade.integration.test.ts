@@ -99,6 +99,25 @@ it('preserves a replacement staging directory when its identity changes', async 
   expect(fs.existsSync(`${staging}-moved`)).toBe(true)
 })
 
+it('refuses to publish bytes from a replacement staging directory even when the adapter reports success', async () => {
+  const output = path.join(fixture.directory, 'replaced-success.bin')
+  fs.writeFileSync(output, 'original')
+  let staging = ''
+  fixture.adapter.download = vi.fn(async (_account, _id, folder, options) => {
+    staging = folder
+    fs.renameSync(folder, `${folder}-moved`)
+    fs.mkdirSync(folder)
+    const localPath = path.join(folder, options!.fileName!)
+    fs.writeFileSync(localPath, 'replaced')
+    return { success: true, localPath }
+  })
+  await expect(downloadTransferFile({ task: task('running'), account, adapter: fixture.adapter, fileId: 'file', fileSize: 8,
+    localPath: output, overwrite: true, onProgress: () => {} })).rejects.toThrow(/临时目录身份/)
+  expect(fs.readFileSync(output, 'utf8')).toBe('original')
+  expect(fs.readFileSync(path.join(staging, 'replaced-success.bin'), 'utf8')).toBe('replaced')
+  expect(fs.existsSync(`${staging}-moved`)).toBe(true)
+})
+
 it('publishes verified full fallback bytes but refuses a competing target without overwrite', async () => {
   const output = path.join(fixture.directory, 'race.bin')
   fixture.adapter.download = vi.fn(async (_account, _id, folder, options) => {

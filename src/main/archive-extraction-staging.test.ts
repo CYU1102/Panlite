@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -38,6 +38,19 @@ describe('staged archive publication', () => {
     })).rejects.toThrow(/链接/)
     expect(readdirSync(target)).toEqual([])
     expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('keep')
+  })
+
+  it('does not publish files from a replaced staging directory', async () => {
+    const target = join(root, 'target')
+    let replaced = ''
+    await expect(stageArchiveExtraction(target, [file], async stage => {
+      replaced = stage
+      renameSync(stage, `${stage}-moved`)
+      mkdirSync(stage)
+      writeFileSync(join(stage, 'sample.txt'), 'bad')
+    })).rejects.toThrow(/临时目录身份/)
+    expect(readFileSync(join(replaced, 'sample.txt'), 'utf8')).toBe('bad')
+    expect(readdirSync(target).filter(name => !name.startsWith('.panlite-extract-'))).toEqual([])
   })
 
   it('rejects duplicate or conflicting archive paths before extraction starts', async () => {

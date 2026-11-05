@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 import type { ArchiveFileInfo } from '../shared/types'
 import { normalizeArchiveEntryPath, resolveArchiveEntryPath } from './archive-security'
 import { assertSafeDownloadTarget, prepareSafeDownloadRoot } from './download-target'
-import { removeOwnedDirectory } from './owned-directory'
+import { removeOwnedDirectory, sameDirectoryIdentity } from './owned-directory'
 import log from 'electron-log'
 
 interface Entry { path: string; size: number; isDir: boolean }
@@ -82,17 +82,27 @@ export async function stageArchiveExtraction(
   prepareSafeDownloadRoot(root)
   checkDestinations(root, plan)
   const stage = mkdtempSync(join(root, '.panlite-extract-'))
-  const owner = lstatSync(stage)
+  const owner = lstatSync(stage, { bigint: true })
+  const assertStage = (checkAncestors = true): void => {
+    // Each publication also checks its target and ancestors; avoid traversing
+    // that same path a second time for every entry while retaining exact identity checks.
+    if (checkAncestors) assertSafeDownloadTarget(root, stage)
+    const current = lstatSync(stage, { bigint: true })
+    if (!current.isDirectory() || current.isSymbolicLink() || !sameDirectoryIdentity(current, owner) || dirname(stage) !== root) throw new Error('临时目录身份发生变化')
+  }
   let published = 0
   try {
     await extract(stage)
     if (signal?.aborted) throw new Error('操作已取消')
+    assertStage()
     const found = verifyStaged(stage, plan)
+    assertStage()
     checkDestinations(root, plan)
     try {
       const directories = [...plan.directories.values()].sort((a, b) => a.path.split('/').length - b.path.split('/').length)
       for (const directory of directories) {
         if (signal?.aborted) throw new Error('操作已取消')
+        assertStage(false)
         const target = resolveArchiveEntryPath(root, directory.path)
         assertSafeDownloadTarget(root, target)
         mkdirSync(target, { recursive: true })
@@ -100,6 +110,7 @@ export async function stageArchiveExtraction(
       }
       for (const [id, item] of plan.files) {
         if (signal?.aborted) throw new Error('操作已取消')
+        assertStage(false)
         const target = resolveArchiveEntryPath(root, item.path), source = found.get(id)!
         assertSafeDownloadTarget(root, target)
         try { linkSync(source, target) }
@@ -118,9 +129,7 @@ export async function stageArchiveExtraction(
     }
   } finally {
     try {
-      const current = lstatSync(stage)
-      assertSafeDownloadTarget(root, stage)
-      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== owner.dev || current.ino !== owner.ino || dirname(stage) !== root) throw new Error('临时目录身份发生变化')
+      assertStage()
       removeOwnedDirectory(stage, owner)
     } catch (error) { log.warn('Could not safely clean archive staging directory:', String(error)) }
   }

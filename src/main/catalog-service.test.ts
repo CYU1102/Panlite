@@ -339,6 +339,37 @@ describe('persistent catalog scans', () => {
     expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })?.path).toBe('/new/child.txt')
   })
 
+  it.each(['/custom', '/new'])('relocates descendants of a deeper independently rooted scope %s after an ancestor is renamed', async rootPath => {
+    const f = fixture(), broad = await f.scope()
+    f.trees.set('a:root', listing('root', [file('A', 'root', { isDir: true, name: 'old' })]))
+    f.trees.set('a:A', listing('A', [file('B', 'A', { isDir: true, name: 'folder' })]))
+    f.trees.set('a:B', listing('B', [file('child', 'B')]))
+    await f.scan(broad.id)
+    const nested = await f.scope('a', 'B', rootPath)
+    await f.scan(nested.id)
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })?.path).toBe(`${rootPath}/child.txt`)
+    f.trees.set('a:root', listing('root', [file('A', 'root', { isDir: true, name: 'new' })]))
+    f.trees.set('a:A', new Error('temporarily unavailable'))
+    await f.scan(broad.id)
+    expect(f.store.getScope(nested.id)?.rootPath).toBe('/new/folder')
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })?.path).toBe('/new/folder/child.txt')
+  })
+
+  it('rolls back a relocation when a stored descendant name is invalid', async () => {
+    const f = fixture(), broad = await f.scope()
+    f.trees.set('a:root', listing('root', [file('A', 'root', { isDir: true, name: 'old' })]))
+    f.trees.set('a:A', listing('A', [file('child', 'A')]))
+    await f.scan(broad.id)
+    const nested = await f.scope('a', 'A', '/old')
+    f.db.prepare("UPDATE catalog_entries SET name='invalid/name' WHERE account_id='a' AND file_id='child'").run()
+    f.trees.set('a:root', listing('root', [file('A', 'root', { isDir: true, name: 'new' })]))
+    await f.scan(broad.id)
+    expect(f.store.getScope(broad.id)?.status).toBe('error')
+    expect(f.store.getScope(nested.id)?.rootPath).toBe('/old')
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'A' })?.path).toBe('/old')
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'child' })?.path).toBe('/old/child.txt')
+  })
+
   it.each([
     ['name', { name: 'renamed.txt' }, 'name', 'renamed.txt'],
     ['path', { path: '/new-path.txt' }, 'path', '/new-path.txt'],

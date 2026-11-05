@@ -43,7 +43,7 @@ import type { DbAccount, DbTask, TaskStatusTransitionOptions } from './db'
 import log from 'electron-log'
 import { calculateTransferProgress, chooseAvailableName, normalizeConflictPolicy, normalizeRelativePath, resolvePathInside, sanitizeFileName } from './file-transfer'
 import { cleanupTempDir, createArchive, extractArchive } from './archive'
-import { removeOwnedDirectory } from './owned-directory'
+import { removeOwnedDirectory, sameDirectoryIdentity } from './owned-directory'
 import { archiveTaskPassword } from './archive-task-password'
 import { isTargetInsideSelectedDirectory, selectCloudTransferMode } from '../shared/cloud-transfer'
 import { notifyTaskTerminal } from './runtime-services'
@@ -2366,8 +2366,13 @@ export async function downloadTransferFile(options: {
     fs.mkdirSync(path.dirname(localPath), { recursive: true })
     assertTarget()
     const staging = fs.mkdtempSync(path.join(path.dirname(localPath), '.panlite-download-'))
-    const stagingOwner = fs.lstatSync(staging)
+    const stagingOwner = fs.lstatSync(staging, { bigint: true })
     const stagedFile = path.join(staging, path.basename(localPath))
+    const assertStaging = (): void => {
+      assertSafeDownloadTarget(options.targetRoot ?? path.parse(staging).root, staging)
+      const current = fs.lstatSync(staging, { bigint: true })
+      if (!current.isDirectory() || current.isSymbolicLink() || !sameDirectoryIdentity(current, stagingOwner)) throw new Error('下载临时目录身份发生变化')
+    }
     try {
       const result = await downloadFile(account, fileId, staging, {
         signal, fileName: path.basename(localPath),
@@ -2376,11 +2381,13 @@ export async function downloadTransferFile(options: {
       throwIfTaskCancelled(task)
       assertTarget()
       if (!result.success || !result.localPath || path.resolve(result.localPath) !== path.resolve(stagedFile)) throw new Error('下载未完成或返回了目标范围外的文件')
+      assertStaging()
       const stagedStat = fs.lstatSync(stagedFile)
       if (!stagedStat.isFile() || stagedStat.isSymbolicLink()) throw new Error('下载产物不是普通文件')
       await verifyDownloadedFile(stagedFile, fileSize, options.expectedHash)
       throwIfTaskCancelled(task)
       assertTarget()
+      assertStaging()
       if (options.overwrite) {
         if (fs.existsSync(localPath)) {
           const target = fs.lstatSync(localPath)
