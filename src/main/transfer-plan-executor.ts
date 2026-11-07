@@ -69,6 +69,8 @@ export async function executeTransferPlanTask(context: TaskExtensionContext, dep
     const directories = new Map<string, string>([['', plan.target.rootId]])
     for (const entry of document.snapshot.target) if (entry.object.isDir) directories.set(entry.relativePath, entry.object.fileId)
     const recorded = new Map(store.results(run.id).map(result => [result.itemId, result]))
+    // Reconcile counters once on resume in case an older run stopped between writes.
+    store.summarizeRun(run.id, token)
     for (const result of recorded.values()) if (result.status === 'success' && result.object?.isDir) directories.set(result.outputPath, result.remoteId!)
     let done = 0
     const progress = (fraction = 0, label?: string): void => {
@@ -77,7 +79,7 @@ export async function executeTransferPlanTask(context: TaskExtensionContext, dep
     }
     const save = (item: TransferPreviewItem, value: Omit<StoredTransferResult, 'itemId' | 'relativePath' | 'outputPath' | 'updatedAt'>): StoredTransferResult => {
       const result: StoredTransferResult = { itemId: item.id, relativePath: item.relativePath, outputPath: item.outputPath, updatedAt: store.now(), ...value }
-      store.putResult(run.id, result, token); recorded.set(item.id, result); store.summarizeRun(run.id, token)
+      store.putResult(run.id, result, token); recorded.set(item.id, result)
       return result
     }
     const sourceUnchanged = async (item: TransferPreviewItem): Promise<void> => {
@@ -172,13 +174,16 @@ export async function executeTransferPlanTask(context: TaskExtensionContext, dep
               verifyUploaded: file => {
                 const uploadedHash = service.evidence(targetAccount, file).hash, expected = item.source.hash
                 if (expected && uploadedHash && expected.algorithm === uploadedHash.algorithm && expected.value !== uploadedHash.value) throw new UncertainTransferWrite()
+                return !!(expected && uploadedHash && expected.algorithm === uploadedHash.algorithm && expected.value === uploadedHash.value)
               },
               uploadOptions: { signal: context.signal, onProgress: value => progress(0.5 + value.percent / 200, `上传：${item.relativePath} (${Math.round(value.percent)}%)`) },
               onPreserved: (backupName, temporaryName) => {
                 dispatched = true; touched.add(parentId)
                 context.log('info', `安全替换预留名称：原内容 ${backupName}，临时上传 ${temporaryName}；中断时请核对`)
               },
+              onRetained: retained => { preserved = service.evidence(targetAccount, retained) },
               onCleanupError: backupName => context.log('warn', `新文件已确认发布，原内容副本 ${backupName} 未清理，请核对后处理`),
+              onUnverified: backupName => context.log('warn', `缺少可比较的内容哈希，原内容副本 ${backupName} 已保留，请核对后处理`),
             }))
             remoteId = uploaded.fileId
           } else if (item.mode === 'native_copy') {
@@ -211,18 +216,22 @@ export async function executeTransferPlanTask(context: TaskExtensionContext, dep
           }
           touched.add(parentId)
           const object = await confirmWritten(item, parentId, remoteId)
-          if (preserved) {
-            try {
+          if (preserved && item.mode === 'native_copy') {
+            const retainedBackup = preserved
+            const hashVerified = item.source.hash && object.hash && item.source.hash.algorithm === object.hash.algorithm && item.source.hash.value === object.hash.value
+            if (!hashVerified) context.log('warn', `缺少可比较的内容哈希，原内容副本 ${preserved.name} 已保留，请核对后处理`)
+            else try {
               const files = await service.directory(targetAccount, targetAdapter, parentId, context.signal)
               const matches = files.filter(file => file.name === preserved!.name)
               if (matches.length !== 1 || !sameTransferObject(preserved, service.evidence(targetAccount, matches[0]))) throw new UncertainTransferWrite()
               context.assertActive()
               await targetAdapter.delete(targetAccount, [matches[0].id])
+              preserved = undefined
             } catch {
-              context.log('warn', `新文件已确认复制，原内容副本 ${preserved.name} 未清理，请核对后处理`)
+              context.log('warn', `新文件已确认复制，原内容副本 ${retainedBackup.name} 未清理，请核对后处理`)
             }
           }
-          return save(item, { status: 'success', remoteId: object.fileId, object })
+          return save(item, { status: 'success', remoteId: object.fileId, object, ...(preserved ? { preserved: { relativePath: path.posix.join(parent(item.outputPath), preserved.name), object: preserved } } : {}) })
         })
         context.assertActive()
         if (!result || result.itemId !== item.id) throw new UncertainTransferWrite()

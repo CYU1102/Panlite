@@ -11,16 +11,17 @@ const source = path.join(scratch, 'report.txt')
 const account = { id: 'synthetic', platform: 'quark' } as DriveAccount
 interface RemoteFile extends FileItem { content: string }
 let remote: RemoteFile[], adapter: DriveAdapter, aborted: boolean
-const preserve = vi.fn(), cleanup = vi.fn()
+const preserve = vi.fn(), cleanup = vi.fn(), unverified = vi.fn()
 function item(id: string, name: string, content: string): RemoteFile {
   return { id, name, content, size: Buffer.byteLength(content), isDir: false, parentId: 'target', platform: account.platform, accountId: account.id, createdAt: 1, updatedAt: 1 }
 }
-function execute(platform: DriveAccount['platform'] = 'quark') {
+function execute(platform: DriveAccount['platform'] = 'quark', contentVerified = true) {
   return uploadPreservingExisting({ adapter, account: { ...account, platform }, localPath: source, parentId: 'target', existing: { ...remote[0] }, expectedSize: 3,
-    uploadOptions: {}, assertActive() { if (aborted) throw new Error('cancelled') }, onPreserved: preserve, onCleanupError: cleanup })
+    uploadOptions: {}, assertActive() { if (aborted) throw new Error('cancelled') }, onPreserved: preserve, onCleanupError: cleanup, onUnverified: unverified,
+    verifyUploaded: file => contentVerified && (file as RemoteFile).content === 'new' })
 }
 beforeEach(() => {
-  fs.writeFileSync(source, 'new'); aborted = false; preserve.mockClear(); cleanup.mockClear()
+  fs.writeFileSync(source, 'new'); aborted = false; preserve.mockClear(); cleanup.mockClear(); unverified.mockClear()
   remote = [item('original', 'report.txt', 'old')]
   adapter = {
     listFiles: vi.fn(async () => ({ files: remote.map(value => ({ ...value })), parentId: 'target', hasMore: false })),
@@ -108,6 +109,13 @@ describe('upload replacement preserves old bytes until a confirmed publish', () 
     await expect(execute()).resolves.toMatchObject({ success: true })
     expect(remote.find(value => value.name === 'report.txt')?.content).toBe('new')
     expect(remote.some(value => value.content === 'old')).toBe(true); expect(cleanup).toHaveBeenCalledWith(expect.stringMatching(/^\.panlite-preserved-/))
+  })
+  it('keeps the old copy and reports missing content evidence after publish', async () => {
+    await expect(execute('quark', false)).resolves.toMatchObject({ success: true })
+    expect(remote.find(value => value.name === 'report.txt')?.content).toBe('new')
+    expect(remote.some(value => value.name.startsWith('.panlite-preserved-') && value.content === 'old')).toBe(true)
+    expect(adapter.delete).not.toHaveBeenCalled()
+    expect(unverified).toHaveBeenCalledWith(expect.stringMatching(/^\.panlite-preserved-/))
   })
   it('serializes replacements and releases the lock after a failed operation', async () => {
     let release!: () => void

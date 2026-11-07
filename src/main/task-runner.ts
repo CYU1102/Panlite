@@ -1,4 +1,4 @@
-import { runTaskOperation as journalTaskOperation, guardTaskAdapterMutations, isWithinTaskOperation, invalidateTaskOperationResult } from './task-operations'
+import { runTaskOperation as journalTaskOperation, guardTaskAdapterMutations, isWithinTaskOperation, invalidateTaskOperationResult, uncertainTaskOperation } from './task-operations'
 import { TaskAdmissionQueue } from './task-admission'
 import { assertTaskOperationSchedule, taskScheduleInfo, TaskWindowClosedError } from './task-scheduling'
 import { BrowserWindow } from 'electron'
@@ -1075,6 +1075,8 @@ async function runUploadTask(task: DbTask): Promise<TaskRunOutcome> {
               `安全替换预留名称：原内容保留名 ${backupName}，临时上传名 ${temporaryName}；中断时请核对这些文件`),
             onCleanupError: backupName => taskLog('warn', task.id, task.account_id, task.platform,
               `新文件已确认发布；原文件保留副本 ${backupName} 未清理，请核对后手动处理`),
+            onUnverified: backupName => taskLog('warn', task.id, task.account_id, task.platform,
+              `缺少可比较的内容哈希，原文件保留副本 ${backupName} 已保留，请核对后手动处理`),
           }))
           : await adapter.upload!(account, file.localPath, remoteDirId, uploadOptions)
         throwIfTaskCancelled(task)
@@ -1354,8 +1356,10 @@ async function expandCloudTransferFiles(
     if (ancestors.has(directoryId)) throw new Error('云端目录结构包含循环引用')
     if (++discovered > 10_000) throw new Error('单次迁移最多包含 10000 个项目')
     directories.push({ relativePath, key: `dir:${relativePath}` })
-    const entries = (await sourceAdapter.listFiles(sourceAccount, directoryId)).files
+    const listing = await sourceAdapter.listFiles(sourceAccount, directoryId)
     throwIfTaskCancelled(task)
+    if (listing.hasMore !== false) throw new Error('源目录未完整列出，无法安全执行迁移')
+    const entries = listing.files
     const allocated = new Set<string>()
     const nextAncestors = new Set(ancestors).add(directoryId)
     for (const entry of entries) {
@@ -1408,8 +1412,6 @@ async function runNativeCloudCopyTask(
 ): Promise<TaskRunOutcome> {
   if (!sourceAdapter.copy) throw new Error('当前平台不支持云端复制')
   throwIfTaskCancelled(task)
-  const entries = (await sourceAdapter.listFiles(sourceAccount, payload.targetDirId)).files
-  throwIfTaskCancelled(task)
   const finishedKeys = cloudTransferFinishedKeys(payload)
   let completed = payload.files.filter((item) => finishedKeys.has(item.fileId)).length
   let failedCount = 0
@@ -1418,10 +1420,13 @@ async function runNativeCloudCopyTask(
   for (const item of payload.files) {
     throwIfTaskCancelled(task)
     if (finishedKeys.has(item.fileId)) continue
-    const existing = entries.find((entry) => entry.name === item.fileName)
     try {
       await runTaskOperation(task, '云端复制', item.fileId, async () => {
         throwIfTaskCancelled(task)
+        const listing = await sourceAdapter.listFiles(sourceAccount, payload.targetDirId)
+        throwIfTaskCancelled(task)
+        if (listing.hasMore !== false) throw new Error('目标目录未完整列出，无法安全执行迁移')
+        const existing = listing.files.find(entry => entry.name === item.fileName)
         if (existing && payload.conflictPolicy === 'skip') {
           saveCloudTransferResult(task, payload, { key: item.fileId, name: item.fileName, status: 'skipped' })
           completed++
@@ -1429,17 +1434,22 @@ async function runNativeCloudCopyTask(
         }
         if (existing && payload.conflictPolicy === 'overwrite') {
           if (existing.id === item.fileId) throw new Error('不能在原目录中覆盖迁移源文件')
-          throwIfTaskCancelled(task)
-          await sourceAdapter.delete(sourceAccount, [existing.id])
-          throwIfTaskCancelled(task)
-          entries.splice(entries.indexOf(existing), 1)
+          throw new Error('此迁移入口无法安全覆盖已有文件，请选择自动重命名、跳过或使用迁移计划')
+        }
+        if (existing && payload.conflictPolicy === 'rename') {
+          throw new Error('云端复制无法安全处理同名文件，请使用迁移计划或选择跳过')
         }
         throwIfTaskCancelled(task)
         await sourceAdapter.copy!(sourceAccount, [item.fileId], payload.targetDirId)
         throwIfTaskCancelled(task)
-        saveCloudTransferResult(task, payload, { key: item.fileId, name: item.fileName, status: 'success' })
-        completed++
-        taskLog('info', task.id, task.account_id, task.platform, `云端复制成功: ${item.fileName}`)
+        const after = await sourceAdapter.listFiles(sourceAccount, payload.targetDirId)
+        throwIfTaskCancelled(task)
+        const previousIds = new Set(listing.files.map(entry => entry.id))
+        const candidates = after.files.filter(entry => !previousIds.has(entry.id) && entry.name === item.fileName && entry.isDir === Boolean(item.isDir))
+        if (after.hasMore !== false || candidates.length !== 1) throw uncertainTaskOperation('云端复制：无法唯一确认目标对象')
+        // The adapter's copy contract returns no target ID. A subsequent
+        // same-name listing cannot distinguish our copy from a concurrent write.
+        throw uncertainTaskOperation('云端复制：平台未返回可核对的新文件标识')
       })
     } catch (err) {
       if (err instanceof TaskCancelledError) throw err
@@ -1468,8 +1478,10 @@ async function runSharedCloudTransferTask(
 ): Promise<TaskRunOutcome> {
   if (!sourceAdapter.createShare || !targetAdapter.saveSharedFiles) throw new Error('当前平台不支持云端迁移')
   throwIfTaskCancelled(task)
-  const entries = (await targetAdapter.listFiles(targetAccount, payload.targetDirId)).files
+  const targetListing = await targetAdapter.listFiles(targetAccount, payload.targetDirId)
   throwIfTaskCancelled(task)
+  if (targetListing.hasMore !== false) throw new Error('目标目录未完整列出，无法安全执行迁移')
+  const entries = targetListing.files
   const finishedKeys = cloudTransferFinishedKeys(payload)
   let completed = payload.files.filter((item) => finishedKeys.has(item.fileId)).length
   let failedCount = 0
@@ -1488,18 +1500,14 @@ async function runSharedCloudTransferTask(
           completed++
           return
         }
-        let requestedName = item.fileName
         if (existing && payload.conflictPolicy === 'rename') {
-          requestedName = chooseAvailableName(item.fileName, item.isDir, (candidate) => entries.some((entry) => entry.name === candidate))
+          throw new Error('云端转存无法安全处理同名文件，请使用迁移计划或选择跳过')
         }
         if (existing && payload.conflictPolicy === 'overwrite') {
           if (sourceAccount.id === targetAccount.id && existing.id === item.fileId) {
             throw new Error('不能在原目录中覆盖迁移源文件')
           }
-          throwIfTaskCancelled(task)
-          await targetAdapter.delete(targetAccount, [existing.id])
-          throwIfTaskCancelled(task)
-          entries.splice(entries.indexOf(existing), 1)
+          throw new Error('此迁移入口无法安全覆盖已有文件，请选择自动重命名、跳过或使用迁移计划')
         }
         throwIfTaskCancelled(task)
         const share = await sourceAdapter.createShare!(sourceAccount, [{
@@ -1524,22 +1532,19 @@ async function runSharedCloudTransferTask(
             temporaryShareId = undefined
           }
         }
-        if (requestedName !== item.fileName) {
-          throwIfTaskCancelled(task)
-          const refreshedEntries = (await targetAdapter.listFiles(targetAccount, payload.targetDirId)).files
-          throwIfTaskCancelled(task)
-          const savedIds = new Set((result.savedFileIds || []).map((id) => String(id)))
-          const candidate = refreshedEntries.find((entry) =>
-            savedIds.has(String(entry.id)) || (entry.name === item.fileName && (!existing || entry.id !== existing.id)))
-          if (candidate && candidate.name !== requestedName) {
-            throwIfTaskCancelled(task)
-            await targetAdapter.rename(targetAccount, candidate.id, requestedName)
-            throwIfTaskCancelled(task)
-          }
-          entries.splice(0, entries.length, ...refreshedEntries.map((entry) => (
-            candidate && entry.id === candidate.id ? { ...entry, name: requestedName } : entry
-          )))
+        throwIfTaskCancelled(task)
+        const listing = await targetAdapter.listFiles(targetAccount, payload.targetDirId)
+        throwIfTaskCancelled(task)
+        if (listing.hasMore !== false) throw uncertainTaskOperation('云端转存：目标目录未完整列出')
+        const savedIds = new Set((result.savedFileIds || []).map((id) => String(id)))
+        const savedPaths = new Set(result.savedFilePaths || [])
+        const oldIds = new Set(entries.map(entry => String(entry.id)))
+        const candidates = listing.files.filter(entry => !oldIds.has(String(entry.id)) &&
+          (savedIds.has(String(entry.id)) || (entry.path !== undefined && savedPaths.has(entry.path))))
+        if (candidates.length !== 1 || candidates[0].name !== item.fileName || candidates[0].isDir !== Boolean(item.isDir)) {
+          throw uncertainTaskOperation('云端转存：无法唯一确认新文件')
         }
+        entries.splice(0, entries.length, ...listing.files)
         saveCloudTransferResult(task, payload, { key: item.fileId, name: item.fileName, status: 'success' })
         completed++
         taskLog('info', task.id, task.account_id, task.platform, `云端迁移成功: ${item.fileName}`)
@@ -1617,8 +1622,10 @@ async function runStagedCloudTransferTask(
     throwIfTaskCancelled(task)
     let entries = targetEntries.get(parentId)
     if (!entries) {
-      entries = (await targetAdapter.listFiles(targetAccount, parentId)).files
+      const listing = await targetAdapter.listFiles(targetAccount, parentId)
       throwIfTaskCancelled(task)
+      if (listing.hasMore !== false) throw new Error('目标目录未完整列出，无法安全执行迁移')
+      entries = listing.files
       targetEntries.set(parentId, entries)
     }
     return entries
@@ -1656,10 +1663,7 @@ async function runStagedCloudTransferTask(
         } else {
           if (existing && payload.conflictPolicy === 'skip') return null
           if (existing && payload.conflictPolicy === 'overwrite') {
-            throwIfTaskCancelled(task)
-            await targetAdapter.delete(targetAccount, [existing.id])
-            throwIfTaskCancelled(task)
-            entries.splice(entries.indexOf(existing), 1)
+            throw new Error(`无法用目录安全覆盖远端文件，请选择自动重命名或跳过: ${requestedPath}`)
           } else if (existing || payload.conflictPolicy === 'rename') {
             actualName = chooseAvailableName(actualName, true, (candidate) => entries.some((entry) => entry.name === candidate))
           }
@@ -1770,16 +1774,14 @@ async function runStagedCloudTransferTask(
                 if (sourceAccount.id === targetAccount.id && existing.id === file.fileId) {
                   throw new Error('不能在原目录中覆盖迁移源文件')
                 }
-                throwIfTaskCancelled(task)
-                await targetAdapter.delete(targetAccount, [existing.id])
-                throwIfTaskCancelled(task)
-                entries.splice(entries.indexOf(existing), 1)
+                throw new Error('此迁移入口无法安全覆盖已有文件，请选择自动重命名、跳过或使用迁移计划')
               } else {
                 uploadName = chooseAvailableName(uploadName, false, (candidate) => entries.some((entry) => entry.name === candidate))
               }
             }
+            const beforeIds = new Set(entries.map(entry => entry.id))
             entries.push({ id: `pending:${file.key}`, parentId: targetDirId, name: uploadName, isDir: false, size: file.fileSize, createdAt: Date.now(), updatedAt: Date.now(), platform: targetAccount.platform, accountId: targetAccount.id })
-            return { skip: false as const, targetDirId, uploadName }
+            return { skip: false as const, targetDirId, uploadName, beforeIds }
           })
           if (resolved.skip) {
             saveCloudTransferResult(task, payload, { key: file.key, name: file.fileName, status: 'skipped' })
@@ -1787,7 +1789,7 @@ async function runStagedCloudTransferTask(
             completedBytes += file.fileSize
             return
           }
-          const { targetDirId, uploadName } = resolved
+          const { targetDirId, uploadName, beforeIds } = resolved
 
           throwIfTaskCancelled(task)
           fs.mkdirSync(path.dirname(localPath), { recursive: true })
@@ -1828,7 +1830,7 @@ async function runStagedCloudTransferTask(
           const uploadResult = await uploadToTarget(targetAccount, downloadedPath, targetDirId, {
             signal: getTaskController(task)?.signal,
             fileName: uploadName,
-            overwrite: payload.conflictPolicy === 'overwrite',
+            overwrite: false,
             onProgress: (progress) => {
               const percent = progress.percent > 0
                 ? progress.percent
@@ -1839,13 +1841,26 @@ async function runStagedCloudTransferTask(
           throwIfTaskCancelled(task)
           if (!uploadResult.success) throw new Error(uploadResult.error || '上传失败')
 
+          if (!uploadResult.fileId || beforeIds.has(uploadResult.fileId)) throw uncertainTaskOperation('迁移上传：平台未返回可确认的新文件标识')
+          const confirmed = await targetAdapter.listFiles(targetAccount, targetDirId)
+          throwIfTaskCancelled(task)
+          if (confirmed.hasMore !== false) throw uncertainTaskOperation('迁移上传：目标目录未完整列出')
+          const matches = confirmed.files.filter(entry => entry.id === uploadResult.fileId && entry.name === uploadName && !entry.isDir && entry.size === file.fileSize)
+          if (matches.length !== 1 || confirmed.files.filter(entry => entry.name === uploadName).length !== 1) throw uncertainTaskOperation('迁移上传：无法确认目标文件身份')
+          const verified = matches[0]
+          const targetHash = extractSourceHash(targetAccount.platform, verified.raw)
+          if (file.hash && targetHash && file.hash.algorithm === targetHash.algorithm && file.hash.value.toLowerCase() !== targetHash.value.toLowerCase()) {
+            throw uncertainTaskOperation('迁移上传：目标内容哈希不一致')
+          }
+          if (!file.hash || !targetHash || file.hash.algorithm !== targetHash.algorithm) {
+            taskLog('warn', task.id, task.account_id, task.platform, `目标文件缺少可比较的内容哈希，需人工核对: ${file.relativePath}`)
+          }
           const entries = await getTargetEntries(targetDirId)
           throwIfTaskCancelled(task)
           const pendingId = `pending:${file.key}`
-          const realEntry = { id: uploadResult.fileId || `migrated:${file.key}`, parentId: targetDirId, name: uploadName, isDir: false, size: file.fileSize, createdAt: Date.now(), updatedAt: Date.now(), platform: targetAccount.platform, accountId: targetAccount.id }
           const placeholderIndex = entries.findIndex((entry) => entry.id === pendingId)
-          if (placeholderIndex >= 0) entries.splice(placeholderIndex, 1, realEntry)
-          else entries.push(realEntry)
+          if (placeholderIndex >= 0) entries.splice(placeholderIndex, 1, verified)
+          else entries.push(verified)
           saveCloudTransferResult(task, payload, { key: file.key, name: file.fileName, status: 'success', outputPath: path.join(relativeDir, uploadName) })
           completedWork++
           completedBytes += file.fileSize

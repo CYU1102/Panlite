@@ -174,9 +174,13 @@ it('finishes nested upload directory receipts as one admitted operation before w
 it('waits for all in-flight staged uploads to write their receipts before releasing the task worker', async () => {
   setSetting('transferPauseAtWindowEnd', 'true')
   const secondStarted = gate(), finishSecond = gate()
+  const uploaded: FileItem[] = []
+  fixture.adapter.listFiles = vi.fn(async (_account, parentId) => ({ parentId, files: structuredClone(uploaded), hasMore: false }))
   fixture.adapter.upload = vi.fn(async (_account, _file, _parent, options) => {
     if (options?.fileName === 'parallel-one.txt') { await secondStarted.promise; setSetting('transferScheduledWindow', closedWindow()) }
     if (options?.fileName === 'parallel-two.txt') { secondStarted.release(); await finishSecond.promise }
+    uploaded.push({ id: `uploaded-${options?.fileName}`, parentId: 'target', name: options!.fileName!, isDir: false, size: 4,
+      createdAt: 1, updatedAt: 1, accountId: 'scheduling-target', platform: account.platform })
     return { success: true, fileId: `uploaded-${options?.fileName}` }
   })
   const task = row('cloud_transfer', { sourceAccountId: account.id, targetAccountId: 'scheduling-target', targetDirId: 'target', conflictPolicy: 'overwrite',

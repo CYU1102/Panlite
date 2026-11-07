@@ -27,8 +27,10 @@ interface ReplacementOptions {
   assertActive(): void
   onPreserved(backupName: string, temporaryName: string): void
   onCleanupError(backupName: string): void
+  onUnverified(backupName: string): void
+  onRetained?(retained: FileItem): void
   /** Callers with authoritative source hashes can require stronger confirmation before old-byte cleanup. */
-  verifyUploaded?(file: FileItem): void | Promise<void>
+  verifyUploaded?(file: FileItem): boolean | Promise<boolean>
 }
 
 /**
@@ -79,9 +81,10 @@ export async function uploadPreservingExisting(options: ReplacementOptions): Pro
     const published = await listing(), output = named(published, existing.name), retained = named(published, backupName)
     if (!output || output.isDir || output.size !== options.expectedSize || named(published, temporaryName)
       || !unchanged(retained, backup)) throw new Error('替换发布结果待核对')
-    await options.verifyUploaded?.(output)
+    const contentVerified = await options.verifyUploaded?.(output) ?? false
     // A cleanup failure does not invalidate an already confirmed upload. Never retry it blindly.
-    try { assertActive(); await adapter.delete(account, [retained!.id]) } catch { options.onCleanupError(backupName) }
+    if (!contentVerified) { options.onRetained?.(retained!); options.onUnverified(backupName) }
+    else try { assertActive(); await adapter.delete(account, [retained!.id]) } catch { options.onRetained?.(retained!); options.onCleanupError(backupName) }
     return { ...uploaded, fileId: output.id, fileName: output.name, fileSize: output.size }
   } catch (error) {
     // Cancellation/ownership errors must retain their identity for the task lifecycle.

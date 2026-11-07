@@ -88,6 +88,8 @@ beforeAll(() => {
     user_agent: null, status: 'active', bind_machine: 0, created_at: Date.now(), updated_at: Date.now(), last_check_at: null })
   insertAccount({ id: 'baidu-account', platform: 'baidu', nickname: 'Mock Baidu', login_type: 'cookie', encrypted_credential: '{}',
     user_agent: null, status: 'active', bind_machine: 0, created_at: Date.now(), updated_at: Date.now(), last_check_at: null })
+  insertAccount({ id: 'second-account', platform: 'quark', nickname: 'Second', login_type: 'cookie', encrypted_credential: '{}',
+    user_agent: null, status: 'active', bind_machine: 0, created_at: Date.now(), updated_at: Date.now(), last_check_at: null })
 })
 
 beforeEach(() => {
@@ -320,6 +322,209 @@ afterAll(() => {
 })
 
 describe('task runner remote operation fencing', () => {
+  it.each(['native', 'shared', 'staged'] as const)('preserves the old target on a legacy %s overwrite collision', async mode => {
+    remote = [remoteFile('old-target', 'report.txt')]
+    const isShared = mode === 'shared'
+    if (isShared) {
+      mocks.adapter.createShare = vi.fn(async () => ({ id: 'share', platform: 'quark' as const, accountId: 'account', fileIds: ['source'], shareUrl: 'https://mock.invalid/share', createdAt: 0 }))
+      mocks.adapter.saveSharedFiles = vi.fn()
+    }
+    mocks.adapter.download = vi.fn()
+    const targetAccountId = mode === 'native' ? 'account' : mode === 'shared' ? 'second-account' : 'baidu-account'
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId, targetDirId: 'target', conflictPolicy: 'overwrite',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 42, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('无法安全覆盖')
+    expect(mocks.adapter.delete).not.toHaveBeenCalled()
+    expect(mocks.adapter.copy).not.toHaveBeenCalled()
+    expect(mocks.adapter.download).not.toHaveBeenCalled()
+    expect(mocks.adapter.upload).not.toHaveBeenCalled()
+    if (isShared) {
+      expect(mocks.adapter.createShare).not.toHaveBeenCalled()
+      expect(mocks.adapter.saveSharedFiles).not.toHaveBeenCalled()
+    }
+  })
+
+  it('preserves a file when a staged directory conflicts with it', async () => {
+    remote = [remoteFile('old-target', 'folder')]
+    mocks.adapter.download = vi.fn()
+    vi.mocked(mocks.adapter.listFiles).mockImplementation(async (_account, parentId) => ({
+      files: parentId === 'source-dir' ? [] : remote.map(item => ({ ...item })), parentId, hasMore: false,
+    }))
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'baidu-account', targetDirId: 'target', conflictPolicy: 'overwrite',
+      files: [{ fileId: 'source-dir', fileName: 'folder', fileSize: 0, isDir: true }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('无法用目录安全覆盖远端文件')
+    expect(mocks.adapter.delete).not.toHaveBeenCalled()
+    expect(mocks.adapter.mkdir).not.toHaveBeenCalled()
+  })
+
+  it('never writes when the target directory listing is incomplete', async () => {
+    vi.mocked(mocks.adapter.listFiles).mockImplementation(async (_account, parentId) => ({ files: [], parentId, hasMore: true }))
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'account', targetDirId: 'target', conflictPolicy: 'overwrite',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 4, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('目标目录未完整列出')
+    expect(mocks.adapter.copy).not.toHaveBeenCalled()
+    expect(mocks.adapter.delete).not.toHaveBeenCalled()
+  })
+
+  it('never migrates a partially listed source directory', async () => {
+    mocks.adapter.download = vi.fn()
+    vi.mocked(mocks.adapter.listFiles).mockImplementation(async (_account, parentId) => ({ files: [], parentId, hasMore: true }))
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'baidu-account', targetDirId: 'target', conflictPolicy: 'rename',
+      files: [{ fileId: 'source-dir', fileName: 'folder', fileSize: 0, isDir: true }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('源目录未完整列出')
+    expect(mocks.adapter.mkdir).not.toHaveBeenCalled()
+    expect(mocks.adapter.upload).not.toHaveBeenCalled()
+  })
+
+  it('marks a void native copy response uncertain and does not repeat the copy', async () => {
+    mocks.adapter.copy = vi.fn(async () => { remote.push(remoteFile('new-target', 'report.txt', { size: 4 })) })
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'account', targetDirId: 'target', conflictPolicy: 'skip',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 4, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('远端操作结果待核对')
+    expect(getTaskById(id)?.error_message).toContain('平台未返回可核对的新文件标识')
+    expect(mocks.adapter.copy).toHaveBeenCalledTimes(1)
+    retryTask(id)
+    await terminal(id, 'failed')
+    expect(mocks.adapter.copy).toHaveBeenCalledTimes(1)
+  })
+
+  it('rechecks the target before each native copy in the same task', async () => {
+    mocks.adapter.copy = vi.fn(async () => { remote.push(remoteFile('new-target', 'report.txt')) })
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'account', targetDirId: 'target', conflictPolicy: 'overwrite',
+      files: [{ fileId: 'source-a', fileName: 'report.txt', fileSize: 4, isDir: false }, { fileId: 'source-b', fileName: 'report.txt', fileSize: 4, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(mocks.adapter.copy).toHaveBeenCalledTimes(1)
+    expect(mocks.adapter.delete).not.toHaveBeenCalled()
+    expect(remote).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'new-target', name: 'report.txt' })]))
+  })
+
+  it('uses a non-overwriting upload when a staged transfer finds no conflict', async () => {
+    mocks.adapter.download = vi.fn(async (_account, _fileId, dir, options) => {
+      fs.mkdirSync(dir, { recursive: true })
+      const localPath = path.join(dir, options!.fileName!)
+      fs.writeFileSync(localPath, 'test')
+      return { success: true, localPath }
+    })
+    mocks.adapter.upload = vi.fn(async (_account, _path, _dir, options) => {
+      remote.push(remoteFile('uploaded', options!.fileName!, { size: 4, platform: 'baidu', accountId: 'baidu-account' }))
+      return { success: true, fileId: 'uploaded' }
+    })
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'baidu-account', targetDirId: 'target', conflictPolicy: 'overwrite',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 4, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'success')
+    expect(mocks.adapter.upload).toHaveBeenCalledWith(expect.anything(), expect.any(String), 'target', expect.objectContaining({ overwrite: false }))
+    expect(mocks.adapter.delete).not.toHaveBeenCalled()
+  })
+
+  it('does not report a staged upload successful without a provider target ID', async () => {
+    mocks.adapter.download = vi.fn(async (_account, _fileId, dir, options) => {
+      fs.mkdirSync(dir, { recursive: true })
+      const localPath = path.join(dir, options!.fileName!)
+      fs.writeFileSync(localPath, 'test')
+      return { success: true, localPath }
+    })
+    mocks.adapter.upload = vi.fn(async () => ({ success: true }))
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'baidu-account', targetDirId: 'target', conflictPolicy: 'rename',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 4, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('远端操作结果待核对')
+    retryTask(id)
+    await terminal(id, 'failed')
+    expect(mocks.adapter.upload).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not accept a pre-existing target ID as proof of a staged upload', async () => {
+    remote = [remoteFile('old-target', 'other.txt')]
+    mocks.adapter.download = vi.fn(async (_account, _fileId, dir, options) => {
+      fs.mkdirSync(dir, { recursive: true })
+      const localPath = path.join(dir, options!.fileName!)
+      fs.writeFileSync(localPath, 'test')
+      return { success: true, localPath }
+    })
+    mocks.adapter.upload = vi.fn(async () => ({ success: true, fileId: 'old-target' }))
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'baidu-account', targetDirId: 'target', conflictPolicy: 'rename',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 4, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('远端操作结果待核对')
+    expect(mocks.adapter.delete).not.toHaveBeenCalled()
+  })
+
+  it('marks an unidentifiable shared transfer as uncertain and does not repeat it', async () => {
+    remote = []
+    mocks.adapter.createShare = vi.fn(async () => ({ id: 'share', platform: 'quark' as const, accountId: 'account', fileIds: ['source'], shareUrl: 'https://mock.invalid/share', createdAt: 0 }))
+    mocks.adapter.cancelShare = vi.fn(async () => {})
+    mocks.adapter.saveSharedFiles = vi.fn(async () => ({ success: true, platform: 'quark' as const, accountId: 'second-account', sourceUrl: 'https://mock.invalid/share', savedFileIds: ['not-visible'] }))
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'second-account', targetDirId: 'target', conflictPolicy: 'rename',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 42, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('远端操作结果待核对')
+    expect(mocks.adapter.rename).not.toHaveBeenCalled()
+    retryTask(id)
+    await terminal(id, 'failed')
+    expect(mocks.adapter.saveSharedFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it('confirms the newly transferred object after a shared transfer', async () => {
+    remote = []
+    mocks.adapter.createShare = vi.fn(async () => ({ id: 'share', platform: 'quark' as const, accountId: 'account', fileIds: ['source'], shareUrl: 'https://mock.invalid/share', createdAt: 0 }))
+    mocks.adapter.cancelShare = vi.fn(async () => {})
+    mocks.adapter.saveSharedFiles = vi.fn(async () => {
+      remote.push(remoteFile('new-target', 'report.txt'))
+      return { success: true, platform: 'quark' as const, accountId: 'second-account', sourceUrl: 'https://mock.invalid/share', savedFileIds: ['new-target'] }
+    })
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'second-account', targetDirId: 'target', conflictPolicy: 'rename',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 42, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'success')
+    expect(mocks.adapter.rename).not.toHaveBeenCalled()
+    expect(remote).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'new-target', name: 'report.txt' })]))
+  })
+
+  it('rejects shared rename conflicts before sending any remote mutations', async () => {
+    remote = [remoteFile('old-target', 'report.txt')]
+    mocks.adapter.createShare = vi.fn(async () => ({ id: 'share', platform: 'quark' as const, accountId: 'account', fileIds: ['source'], shareUrl: 'https://mock.invalid/share', createdAt: 0 }))
+    mocks.adapter.cancelShare = vi.fn(async () => {})
+    mocks.adapter.saveSharedFiles = vi.fn()
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'second-account', targetDirId: 'target', conflictPolicy: 'rename',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 42, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('无法安全处理同名文件')
+    expect(mocks.adapter.createShare).not.toHaveBeenCalled()
+    expect(mocks.adapter.saveSharedFiles).not.toHaveBeenCalled()
+    expect(mocks.adapter.delete).not.toHaveBeenCalled()
+  })
+
+  it('does not identify a concurrent same-name object without provider evidence', async () => {
+    remote = []
+    mocks.adapter.createShare = vi.fn(async () => ({ id: 'share', platform: 'quark' as const, accountId: 'account', fileIds: ['source'], shareUrl: 'https://mock.invalid/share', createdAt: 0 }))
+    mocks.adapter.cancelShare = vi.fn(async () => {})
+    mocks.adapter.saveSharedFiles = vi.fn(async () => {
+      remote.push(remoteFile('unrelated-target', 'report.txt'))
+      return { success: true, platform: 'quark' as const, accountId: 'second-account', sourceUrl: 'https://mock.invalid/share' }
+    })
+    const id = task('cloud_transfer', { sourceAccountId: 'account', targetAccountId: 'second-account', targetDirId: 'target', conflictPolicy: 'rename',
+      files: [{ fileId: 'source', fileName: 'report.txt', fileSize: 42, isDir: false }] })
+    enqueueTask(id)
+    await terminal(id, 'failed')
+    expect(getTaskById(id)?.error_message).toContain('远端操作结果待核对')
+    expect(mocks.adapter.rename).not.toHaveBeenCalled()
+  })
   it('revokes a share created by an in-flight request after its task was cancelled', async () => {
     let release!: (value: Awaited<ReturnType<NonNullable<DriveAdapter['createShare']>>>) => void
     mocks.adapter.createShare = vi.fn(() => new Promise<ShareInfo>(resolve => { release = resolve }))

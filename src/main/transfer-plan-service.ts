@@ -318,15 +318,38 @@ export class TransferPlanService implements TransferPlansApi {
     if (plan.version !== document.preview.planVersion || plan.latestPreviewId !== document.preview.id || !document.preview.executable) throw new TransferPlanError(MESSAGES.STALE_PREVIEW, 'STALE_PREVIEW')
     const fresh = await this.scan(plan, signal)
     if (fresh.failures.length || hash(sorted(fresh.source)) !== hash(sorted(document.snapshot.source))) throw new TransferPlanError(MESSAGES.STALE_PREVIEW, 'STALE_PREVIEW')
-    let expectedEntries = [...document.snapshot.target]
+    const expectedByPath = new Map<string, TransferTreeEntry[]>()
+    for (const entry of document.snapshot.target) {
+      const entries = expectedByPath.get(entry.relativePath) ?? []
+      entries.push(entry)
+      expectedByPath.set(entry.relativePath, entries)
+    }
+    const preservedPaths = new Set<string>()
+    const itemsById = new Map(document.items.map(item => [item.id, item]))
     if (run) for (const result of this.store.results(run.id)) if (result.status === 'success' && result.object) {
-      expectedEntries = expectedEntries.filter(entry => entry.relativePath !== result.outputPath)
-      expectedEntries.push({ relativePath: result.outputPath, object: result.object })
+      if (preservedPaths.has(result.outputPath)) throw new TransferPlanError(MESSAGES.STALE_PREVIEW, 'STALE_PREVIEW')
+      expectedByPath.set(result.outputPath, [{ relativePath: result.outputPath, object: result.object }])
+      if (result.preserved) {
+        // Only recognize a backup that this run recorded after confirming its identity.
+        // Never ignore arbitrary similarly named files or changes to the saved backup.
+        const item = itemsById.get(result.itemId)
+        const backup = result.preserved, name = backup.object.name
+        const parentPath = path.posix.dirname(result.outputPath)
+        const expectedPath = path.posix.join(parentPath === '.' ? '' : parentPath, name)
+        if (!item || item.outputPath !== result.outputPath || item.action !== 'overwrite' || !item.target || item.source.isDir || backup.object.isDir
+          || !name.startsWith('.panlite-preserved-') || name.includes('/') || name.includes('\\')
+          || backup.relativePath !== expectedPath || backup.object.parentId !== result.object.parentId
+          || backup.object.size !== item.target.size || expectedByPath.has(backup.relativePath)) {
+          throw new TransferPlanError(MESSAGES.STALE_PREVIEW, 'STALE_PREVIEW')
+        }
+        expectedByPath.set(backup.relativePath, [backup])
+        preservedPaths.add(backup.relativePath)
+      }
     }
     // Directory modification times can legitimately change when our recorded
     // child writes succeed; retain IDs/names/types while comparing file evidence.
     const normalize = (entries: TransferTreeEntry[]): TransferTreeEntry[] => sorted(entries.map(entry => ({ ...entry, object: entry.object.isDir ? { ...entry.object, updatedAt: 0 } : entry.object })))
-    if (hash(normalize(fresh.target)) !== hash(normalize(expectedEntries))) throw new TransferPlanError(MESSAGES.STALE_PREVIEW, 'STALE_PREVIEW')
+    if (hash(normalize(fresh.target)) !== hash(normalize([...expectedByPath.values()].flat()))) throw new TransferPlanError(MESSAGES.STALE_PREVIEW, 'STALE_PREVIEW')
     return fresh
   }
   executePlan(input: Parameters<TransferPlansApi['executePlan']>[0]): ReturnType<TransferPlansApi['executePlan']> {

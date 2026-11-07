@@ -257,6 +257,91 @@ describe('saved transfer plans and real SQLite operation-journal execution', () 
     await executeTransferPlanTask(f.context(queued.taskId), { service: f.service, tempRoot: f.directory })
     expect(f.uploads).toEqual(['a.txt', 'b.txt'])
   })
+
+  it.each([false, true])('resumes with the verified retained backup after an overwrite (native=%s)', async native => {
+    const f = fixture(), account = native ? 'a' : 'b'
+    f.add('a', 'a-replace.txt', 'source', { content: 'new!', hash: false })
+    f.add(account, 'a-replace.txt', 'target', { content: 'old!', hash: false })
+    f.add('a', 'z-next.txt', 'source')
+    const plan = await f.plan({ sameAccount: native }), preview = await f.preview(plan)
+    const first = ok(await f.service.getPreview({ previewId: preview.id })).items.find(item => item.relativePath === 'a-replace.txt')!
+    const resolved = ok(await f.service.resolvePreview({ previewId: preview.id, decisions: [{ itemId: first.id, action: 'overwrite' }] })).preview
+    const queued = ok(await f.service.executePlan({ planId: plan.id, previewId: resolved.id }))
+    const controller = new AbortController()
+    const context = f.context(queued.taskId, controller, () => {
+      if (f.store.results(queued.run.id).some(item => item.status === 'success')) controller.abort(new Error('pause'))
+    })
+    await expect(executeTransferPlanTask(context, { service: f.service, tempRoot: f.directory })).rejects.toThrow('pause')
+    const saved = f.store.results(queued.run.id).find(item => item.status === 'success')!
+    expect(saved.preserved?.object.name).toMatch(/^\.panlite-preserved-/)
+    expect([...f.remote.get(account)!.values()].some(file => file.id === saved.preserved!.object.fileId)).toBe(true)
+    f.reopen()
+    await executeTransferPlanTask(f.context(queued.taskId), { service: f.service, tempRoot: f.directory })
+    expect(f.store.results(queued.run.id).filter(item => item.status === 'success')).toHaveLength(2)
+    expect([...f.remote.get(account)!.values()].some(file => file.parentId === 'target' && file.name === 'z-next.txt')).toBe(true)
+  })
+  it.each([false, true])('rejects a changed retained backup on resume (native=%s)', async native => {
+    const f = fixture(), account = native ? 'a' : 'b'
+    f.add('a', 'a-replace.txt', 'source', { content: 'new!', hash: false })
+    f.add(account, 'a-replace.txt', 'target', { content: 'old!', hash: false })
+    f.add('a', 'z-next.txt', 'source')
+    const plan = await f.plan({ sameAccount: native }), preview = await f.preview(plan)
+    const first = ok(await f.service.getPreview({ previewId: preview.id })).items.find(item => item.relativePath === 'a-replace.txt')!
+    const resolved = ok(await f.service.resolvePreview({ previewId: preview.id, decisions: [{ itemId: first.id, action: 'overwrite' }] })).preview
+    const queued = ok(await f.service.executePlan({ planId: plan.id, previewId: resolved.id }))
+    const controller = new AbortController()
+    const context = f.context(queued.taskId, controller, () => {
+      if (f.store.results(queued.run.id).some(item => item.status === 'success')) controller.abort(new Error('pause'))
+    })
+    await expect(executeTransferPlanTask(context, { service: f.service, tempRoot: f.directory })).rejects.toThrow('pause')
+    const backup = f.store.results(queued.run.id).find(item => item.status === 'success')!.preserved!
+    f.remote.get(account)!.get(backup.object.fileId)!.updatedAt++
+    await expect(executeTransferPlanTask(f.context(queued.taskId), { service: f.service, tempRoot: f.directory })).rejects.toMatchObject({ code: 'STALE_PREVIEW' })
+    expect([...f.remote.get(account)!.values()].some(file => file.parentId === 'target' && file.name === 'z-next.txt')).toBe(false)
+  })
+  it('does not ignore an unrecorded backup-like object on resume', async () => {
+    const f = fixture(); f.add('a', 'a-replace.txt', 'source', { content: 'new!', hash: false }); f.add('b', 'a-replace.txt', 'target', { content: 'old!', hash: false }); f.add('a', 'z-next.txt')
+    const plan = await f.plan(), preview = await f.preview(plan)
+    const first = ok(await f.service.getPreview({ previewId: preview.id })).items.find(item => item.relativePath === 'a-replace.txt')!
+    const resolved = ok(await f.service.resolvePreview({ previewId: preview.id, decisions: [{ itemId: first.id, action: 'overwrite' }] })).preview
+    const queued = ok(await f.service.executePlan({ planId: plan.id, previewId: resolved.id })), controller = new AbortController()
+    await expect(executeTransferPlanTask(f.context(queued.taskId, controller, () => {
+      if (f.store.results(queued.run.id).some(item => item.status === 'success')) controller.abort(new Error('pause'))
+    }), { service: f.service, tempRoot: f.directory })).rejects.toThrow('pause')
+    f.add('b', '.panlite-preserved-unknown', 'target')
+    await expect(executeTransferPlanTask(f.context(queued.taskId), { service: f.service, tempRoot: f.directory })).rejects.toMatchObject({ code: 'STALE_PREVIEW' })
+  })
+
+
+  it('does not retry backup deletion when its response is lost after staged replacement', async () => {
+    const f = fixture()
+    f.add('a', 'replace.txt', 'source', { content: 'new!' }); f.add('b', 'replace.txt', 'target', { content: 'old!' })
+    const remove = f.adapter.delete
+    f.adapter.delete = async (...args) => { await remove(...args); throw new Error('delete response lost') }
+    const plan = await f.plan(), { result } = await f.execute(plan, await f.preview(plan))
+    expect(result.partial).not.toBe(true)
+    expect(f.mutations.filter(value => value.startsWith('delete:'))).toHaveLength(1)
+    expect([...f.remote.get('b')!.values()].some(file => file.name === 'replace.txt')).toBe(true)
+  })
+
+
+  it.each([false, true])('resumes with retained backup after cleanup fails (native=%s)', async native => {
+    const f = fixture(), account = native ? 'a' : 'b'
+    f.add('a', 'a-replace.txt', 'source', { content: 'new!' })
+    f.add(account, 'a-replace.txt', 'target', { content: 'old!' })
+    f.add('a', 'z-next.txt', 'source')
+    f.adapter.delete = async () => { throw new Error('cleanup failed') }
+    const plan = await f.plan({ sameAccount: native }), preview = await f.preview(plan)
+    const queued = ok(await f.service.executePlan({ planId: plan.id, previewId: preview.id })), controller = new AbortController()
+    await expect(executeTransferPlanTask(f.context(queued.taskId, controller, () => {
+      if (f.store.results(queued.run.id).some(item => item.status === 'success')) controller.abort(new Error('pause'))
+    }), { service: f.service, tempRoot: f.directory })).rejects.toThrow('pause')
+    expect(f.store.results(queued.run.id)[0].preserved).toBeDefined()
+    await executeTransferPlanTask(f.context(queued.taskId), { service: f.service, tempRoot: f.directory })
+    expect(f.store.results(queued.run.id).filter(item => item.status === 'success')).toHaveLength(2)
+    expect([...f.remote.get(account)!.values()].some(file => file.parentId === 'target' && file.name === 'z-next.txt')).toBe(true)
+  })
+
   it('prevents duplicate Execute clicks and editing/deleting a queued plan', async () => {
     const f = fixture(); f.add('a', 'a.txt')
     const plan = await f.plan(), preview = await f.preview(plan)
@@ -341,6 +426,18 @@ describe('saved transfer plans and real SQLite operation-journal execution', () 
     expect(targets.some(file => file.name === 'replace.txt' && f.bodies.get(file.id)?.toString() === 'new!')).toBe(true)
     expect(targets.some(file => file.name.startsWith('.panlite-preserved-') && f.bodies.get(file.id)?.toString() === 'old!')).toBe(true)
   })
+  it.each([false, true])('preserves old bytes when no comparable content hash is available (native=%s)', async native => {
+    const f = fixture(), account = native ? 'a' : 'b'
+    f.add('a', 'replace.txt', 'source', { content: 'new!', hash: false }); f.add(account, 'replace.txt', 'target', { content: 'old!' })
+    const plan = await f.plan({ sameAccount: native }), preview = await f.preview(plan)
+    const item = ok(await f.service.getPreview({ previewId: preview.id })).items[0]
+    const resolved = ok(await f.service.resolvePreview({ previewId: preview.id, decisions: [{ itemId: item.id, action: 'overwrite' }] })).preview
+    const { result } = await f.execute(plan, resolved)
+    expect(result.partial).not.toBe(true)
+    const files = [...f.remote.get(account)!.values()].filter(file => file.parentId === 'target')
+    expect(files.some(file => file.name === 'replace.txt' && f.bodies.get(file.id)?.toString() === 'new!')).toBe(true)
+    expect(files.some(file => file.name.startsWith('.panlite-preserved-') && f.bodies.get(file.id)?.toString() === 'old!')).toBe(true)
+  })
   it('preserves old bytes if native copy commits but loses its response, without replaying the write', async () => {
     const f = fixture(); f.add('a', 'replace.txt', 'source', { content: 'new!' }); f.add('a', 'replace.txt', 'target', { content: 'old!' })
     const copy = f.adapter.copy!
@@ -394,6 +491,32 @@ describe('saved transfer plans and real SQLite operation-journal execution', () 
     expect(f.store.getPlan(plan.id)).toMatchObject({ status: 'draft' })
     expect(f.store.getPlan(other.id)).toMatchObject({ status: 'draft' })
     expect(f.store.listRuns(plan.id)[0]).toMatchObject({ status: 'failed' })
+  })
+  it('updates run counters atomically across item retries and rejects stale owners', async () => {
+    const f = fixture(), plan = await f.plan(), preview = await f.preview(plan)
+    const run = f.store.createRun(preview)
+    f.store.claimRun(run.id, 'task-for-counter-test', 'owner-token')
+    const item = { itemId: 'one', relativePath: 'a.txt', outputPath: 'a.txt', status: 'failed' as const, updatedAt: 1 }
+    f.store.putResult(run.id, item, 'owner-token')
+    f.store.putResult(run.id, item, 'owner-token')
+    expect(f.store.getRun(run.id)).toMatchObject({ failed: 1, succeeded: 0 })
+    f.store.putResult(run.id, { ...item, status: 'success' }, 'owner-token')
+    expect(f.store.getRun(run.id)).toMatchObject({ failed: 0, succeeded: 1 })
+    expect(() => f.store.putResult(run.id, { ...item, status: 'uncertain' }, 'stale-token')).toThrow('TASK_SUPERSEDED')
+    expect(f.store.getRun(run.id)).toMatchObject({ failed: 0, succeeded: 1, uncertain: 0 })
+    expect(f.store.results(run.id)).toMatchObject([{ itemId: 'one', status: 'success' }])
+  })
+  it('keeps full run summaries bounded while processing many skipped items', async () => {
+    const f = fixture()
+    for (let index = 0; index < 50; index++) {
+      f.add('a', `${index}.txt`, 'source', { content: 'same' })
+      f.add('b', `${index}.txt`, 'target', { content: 'same' })
+    }
+    const plan = await f.plan(), preview = await f.preview(plan)
+    const summaries = vi.spyOn(f.store, 'summarizeRun')
+    const { run } = await f.execute(plan, preview)
+    expect(f.store.getRun(run.id)).toMatchObject({ skipped: 50, succeeded: 0 })
+    expect(summaries).toHaveBeenCalledTimes(2)
   })
   it('implements 1000-file repeated migration: zero unchanged uploads, then only ten changed uploads', async () => {
     const f = fixture(), source: FileItem[] = []

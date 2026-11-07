@@ -9,8 +9,9 @@ export interface TransferSnapshot {
   failures: TransferPreview['failures']
 }
 export interface StoredTransferPreview { preview: TransferPreview; items: TransferPreviewItem[]; snapshot: TransferSnapshot }
-export interface StoredTransferResult extends TransferExecutionItem { object?: TransferPlanObject }
+export interface StoredTransferResult extends TransferExecutionItem { object?: TransferPlanObject; preserved?: TransferTreeEntry }
 interface JsonRow { data: string }
+const RESULT_COUNTER = { success: 'succeeded', skipped: 'skipped', failed: 'failed', uncertain: 'uncertain' } as const
 
 export function initializeTransferPlanSchema(db: Database.Database): void {
   db.transaction(() => {
@@ -137,10 +138,18 @@ export class TransferPlanStore {
     }).immediate()
   }
   putResult(runId: string, item: StoredTransferResult, token: string): void {
-    this.db.prepare(`INSERT INTO transfer_execution_items(run_id,item_id,data)
-      SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM transfer_runs WHERE id=? AND owner_token=?)
-      ON CONFLICT(run_id,item_id) DO UPDATE SET data=excluded.data`)
-      .run(runId, item.itemId, JSON.stringify(item), runId, token)
+    this.db.transaction(() => {
+      const owned = this.db.prepare('SELECT data FROM transfer_runs WHERE id=? AND owner_token=?').get(runId, token) as JsonRow | undefined
+      if (!owned) throw new Error('TASK_SUPERSEDED')
+      const run = JSON.parse(owned.data) as TransferRun
+      const oldRow = this.db.prepare('SELECT data FROM transfer_execution_items WHERE run_id=? AND item_id=?').get(runId, item.itemId) as JsonRow | undefined
+      const previous = oldRow ? JSON.parse(oldRow.data) as StoredTransferResult : undefined
+      if (previous) run[RESULT_COUNTER[previous.status]]--
+      run[RESULT_COUNTER[item.status]]++
+      this.db.prepare(`INSERT INTO transfer_execution_items(run_id,item_id,data) VALUES(?,?,?)
+        ON CONFLICT(run_id,item_id) DO UPDATE SET data=excluded.data`).run(runId, item.itemId, JSON.stringify(item))
+      this.patchRun(runId, { succeeded: run.succeeded, skipped: run.skipped, failed: run.failed, uncertain: run.uncertain }, token)
+    }).immediate()
   }
   results(runId: string): StoredTransferResult[] {
     return (this.db.prepare('SELECT data FROM transfer_execution_items WHERE run_id=? ORDER BY rowid').all(runId) as JsonRow[]).map(row => JSON.parse(row.data) as StoredTransferResult)
