@@ -45,6 +45,9 @@ export type TaskResumableDownloadOutcome =
 const TASK_FORMAT = 'panlite-task-resume-v1'
 const HEX = /^[a-f\d]{64}$/
 const live = new Set<string>()
+// Serialize task-wide cleanup with new attempts in this process. The per-file
+// download lock alone does not protect the job marker after parts are removed.
+const taskCleanups = new Map<string, Promise<void>>()
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex')
 const missing = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === 'ENOENT'
 const exists = (error: unknown): boolean => ['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException)?.code ?? '')
@@ -177,6 +180,19 @@ export async function downloadTaskResumable(options: TaskResumableDownloadOption
   if (inside(await canonicalPathWithMissingTail(root), target)) throw new Error('下载目标不能位于续传缓存目录内')
   await targetFile(target, options.overwrite === true)
   const directory = (await taskDirectory(root, record.taskDigest, true))!
+  // A cancellation can start clearing the previous attempt immediately before
+  // the user retries. Wait before claiming/registering any of its files.
+  while (taskCleanups.has(directory)) {
+    const cleanup = taskCleanups.get(directory)!
+    await new Promise<void>((resolve, reject) => {
+      const aborted = (): void => { signal.removeEventListener('abort', aborted); reject(signal.reason) }
+      if (signal.aborted) { aborted(); return }
+      signal.addEventListener('abort', aborted, { once: true })
+      void cleanup.then(() => { signal.removeEventListener('abort', aborted); resolve() })
+    })
+    assertActive()
+  }
+  assertActive()
   const key = path.join(directory, digest(record.resumeKey))
   if (live.has(key)) throw new ResumableDownloadBusyError()
   live.add(key)
@@ -254,19 +270,28 @@ export async function downloadTaskResumable(options: TaskResumableDownloadOption
 export async function clearTaskResumeCache(taskId: string, options: { cacheRoot?: string } = {}): Promise<void> {
   const taskDigest = identifier(taskId), directory = await taskDirectory(await cacheRoot(options.cacheRoot), taskDigest, false)
   if (!directory) return
-  const records: Array<{ file: string; record: CacheRecord }> = []
-  for (const item of await fsp.readdir(directory, { withFileTypes: true })) {
-    if (!/^job-[a-f\d]{64}\.json$/.test(item.name)) continue
-    const file = path.join(directory, item.name), raw = await readMarker(file)
-    if (raw.format !== 1 || raw.taskDigest !== taskDigest || typeof raw.accountDigest !== 'string' || !HEX.test(raw.accountDigest)
-      || typeof raw.fileDigest !== 'string' || !HEX.test(raw.fileDigest)) throw new Error('续传对象归属无效')
-    const record = recordFor(taskDigest, raw.accountDigest, raw.fileDigest)
-    if (raw.resumeKey !== record.resumeKey || item.name !== `job-${digest(record.resumeKey)}.json`) throw new Error('续传对象身份不匹配')
-    if (live.has(path.join(directory, digest(record.resumeKey)))) throw new ResumableDownloadBusyError()
-    records.push({ file, record })
-  }
-  for (const { file, record } of records) {
-    await discardResumableDownload({ resumeRoot: path.join(directory, 'parts'), resumeKey: record.resumeKey })
-    await fsp.unlink(file)
+  while (taskCleanups.has(directory)) await taskCleanups.get(directory)
+  let release!: () => void
+  const cleanup = new Promise<void>(resolve => { release = resolve })
+  taskCleanups.set(directory, cleanup)
+  try {
+    const records: Array<{ file: string; record: CacheRecord }> = []
+    for (const item of await fsp.readdir(directory, { withFileTypes: true })) {
+      if (!/^job-[a-f\d]{64}\.json$/.test(item.name)) continue
+      const file = path.join(directory, item.name), raw = await readMarker(file)
+      if (raw.format !== 1 || raw.taskDigest !== taskDigest || typeof raw.accountDigest !== 'string' || !HEX.test(raw.accountDigest)
+        || typeof raw.fileDigest !== 'string' || !HEX.test(raw.fileDigest)) throw new Error('续传对象归属无效')
+      const record = recordFor(taskDigest, raw.accountDigest, raw.fileDigest)
+      if (raw.resumeKey !== record.resumeKey || item.name !== `job-${digest(record.resumeKey)}.json`) throw new Error('续传对象身份不匹配')
+      if (live.has(path.join(directory, digest(record.resumeKey)))) throw new ResumableDownloadBusyError()
+      records.push({ file, record })
+    }
+    for (const { file, record } of records) {
+      await discardResumableDownload({ resumeRoot: path.join(directory, 'parts'), resumeKey: record.resumeKey })
+      await fsp.unlink(file)
+    }
+  } finally {
+    taskCleanups.delete(directory)
+    release()
   }
 }

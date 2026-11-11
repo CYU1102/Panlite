@@ -189,6 +189,57 @@ describe('task download integration with real loopback HTTP and owned disk cache
     expect(fs.readFileSync(foreign, 'utf8')).toBe('keep')
   })
 
+  it('does not remove a new attempt’s ownership marker during an overlapping cache clear', async () => {
+    await pauseAfter()
+    const originalUnlink = fsp.unlink.bind(fsp)
+    let unblockClear!: () => void, enteredClear!: () => void, enteredAttempt!: () => void, releaseAttempt!: () => void
+    const clearGate = new Promise<void>(resolve => { unblockClear = resolve })
+    const clearReady = new Promise<void>(resolve => { enteredClear = resolve })
+    const attemptReady = new Promise<void>(resolve => { enteredAttempt = resolve })
+    const attemptGate = new Promise<void>(resolve => { releaseAttempt = resolve })
+    vi.spyOn(fsp, 'unlink').mockImplementation(async file => {
+      if (/^job-[a-f\d]{64}\.json$/.test(path.basename(String(file)))) { enteredClear(); await clearGate }
+      return originalUnlink(file)
+    })
+    const clearing = clearTaskResumeCache(options.taskId, { cacheRoot: options.cacheRoot })
+    await clearReady
+    status = 'running'
+    const attempt = downloadTaskResumable({ ...options, getFreshFile: async () => { enteredAttempt(); await attemptGate; return freshFile({}) },
+      onCheckpoint: () => { status = 'paused' } })
+    try {
+      const early = await Promise.race([attemptReady.then(() => true), new Promise<false>(resolve => setTimeout(() => resolve(false), 300))])
+      expect(early).toBe(false)
+    } finally { unblockClear(); await clearing; releaseAttempt() }
+    await expect(attempt).rejects.toThrow()
+    expect(manifests()).toHaveLength(1)
+    expect(filesUnder(options.cacheRoot!).filter(file => /^job-[a-f\d]{64}\.json$/.test(path.basename(file)))).toHaveLength(1)
+    await clearTaskResumeCache(options.taskId, { cacheRoot: options.cacheRoot })
+    expect(manifests()).toHaveLength(0)
+  })
+
+  it('can cancel a new attempt while it waits for cache cleanup', async () => {
+    await pauseAfter()
+    const originalUnlink = fsp.unlink.bind(fsp)
+    let unblock!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { unblock = resolve }), ready = new Promise<void>(resolve => { entered = resolve })
+    vi.spyOn(fsp, 'unlink').mockImplementation(async file => {
+      if (/^job-[a-f\d]{64}\.json$/.test(path.basename(String(file)))) { entered(); await gate }
+      return originalUnlink(file)
+    })
+    const clearing = clearTaskResumeCache(options.taskId, { cacheRoot: options.cacheRoot })
+    await ready
+    status = 'running'
+    const controller = new AbortController()
+    const attempt = downloadTaskResumable({ ...options, signal: controller.signal })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      controller.abort(new Error('cancel while waiting'))
+      await expect(attempt).rejects.toThrow('cancel while waiting')
+      expect(methods.filter(method => method === 'HEAD')).toHaveLength(1)
+    } finally { unblock(); await clearing }
+    expect(manifests()).toHaveLength(0)
+  })
+
   it('removes owned parts when cancellation interrupts an active transfer', async () => {
     await expect(downloadTaskResumable({ ...options, onCheckpoint: () => { status = 'cancelled' } })).rejects.toThrow()
     expect(manifests()).toEqual([])
