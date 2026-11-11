@@ -254,6 +254,49 @@ describe('persistent catalog scans', () => {
     expect(f.db.prepare('SELECT COUNT(*) count FROM storage_analysis_evidence').get()).toEqual({ count: 1 })
   })
 
+  it('keeps identical large directory edges while publishing changed metadata', async () => {
+    const f = fixture(), scope = await f.scope()
+    const files = Array.from({ length: 500 }, (_, index) => file(`f-${index}`))
+    f.trees.set('a:root', listing('root', files)); await f.scan(scope.id)
+    f.db.exec(`CREATE TRIGGER reject_edge_delete BEFORE DELETE ON catalog_edges BEGIN SELECT RAISE(ABORT, 'edge rewritten'); END;
+      CREATE TRIGGER reject_edge_insert BEFORE INSERT ON catalog_edges BEGIN SELECT RAISE(ABORT, 'edge rewritten'); END;`)
+    f.trees.set('a:root', listing('root', files.map((entry, index) => index === 499 ? { ...entry, name: 'changed.txt' } : entry)))
+    await f.scan(scope.id)
+    expect(f.store.getScope(scope.id)).toMatchObject({ status: 'completed', entryCount: 500 })
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'f-499' })?.name).toBe('changed.txt')
+  })
+
+  it('replaces large directory edges when an entry changes despite an equal count', async () => {
+    const f = fixture(), scope = await f.scope()
+    const files = Array.from({ length: 500 }, (_, index) => file(`f-${index}`))
+    f.trees.set('a:root', listing('root', files)); await f.scan(scope.id)
+    f.trees.set('a:root', listing('root', [...files.slice(0, 499), file('replacement')]))
+    await f.scan(scope.id)
+    expect(f.store.getScope(scope.id)).toMatchObject({ status: 'completed', entryCount: 500 })
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'f-499' })).toBeUndefined()
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'replacement' })).toBeDefined()
+    expect(f.db.prepare('SELECT COUNT(*) count FROM catalog_edges WHERE scope_id=? AND parent_id=?').get(scope.id, 'root')).toEqual({ count: 500 })
+  })
+
+  it('rolls back changed metadata when an unchanged large edge set cannot finish publishing', async () => {
+    const f = fixture(), scope = await f.scope()
+    f.trees.set('a:root', listing('root', Array.from({ length: 500 }, (_, index) => file(`f-${index}`))))
+    await f.scan(scope.id)
+    f.store.startScan(scope.id)
+    const cursor = f.store.nextCursor()!
+    f.store.beginDirectory(cursor)
+    const staged: CatalogMetadata[] = Array.from({ length: 500 }, (_, index) => ({
+      accountId: 'a', fileId: `f-${index}`, parentId: 'root', name: index === 499 ? 'changed.txt' : `f-${index}.txt`,
+      path: index === 499 ? '/changed.txt' : `/f-${index}.txt`, isDir: false, size: 100, createdAt: 1, updatedAt: 2, fileType: 'document',
+    }))
+    for (let index = 0; index < staged.length; index += 200) f.store.writeBatch(cursor, staged.slice(index, index + 200))
+    f.db.exec("CREATE TRIGGER reject_finish BEFORE UPDATE OF updated_at ON catalog_scopes BEGIN SELECT RAISE(ABORT, 'finish failed'); END")
+    expect(() => f.store.finishDirectory(cursor)).toThrow('finish failed')
+    expect(f.store.getEntry({ accountId: 'a', fileId: 'f-499' })?.name).toBe('f-499.txt')
+    expect(f.db.prepare('SELECT COUNT(*) count FROM catalog_edges WHERE scope_id=? AND parent_id=?').get(scope.id, 'root')).toEqual({ count: 500 })
+    expect(f.store.nextCursor()?.directoryId).toBe('root')
+  })
+
   it('retains an unchanged large subtree after its parent folder is renamed', async () => {
     const f = fixture(), scope = await f.scope()
     f.trees.set('a:root', listing('root', [file('dir', 'root', { isDir: true, name: 'old' })]))

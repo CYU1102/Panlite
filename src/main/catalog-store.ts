@@ -272,8 +272,18 @@ export class CatalogStore {
           created_at=excluded.created_at,updated_at=excluded.updated_at,indexed_at=excluded.indexed_at,file_type=excluded.file_type`)
           .run(cursor.scopeId, cursor.directoryId)
       }
-      this.db.prepare('DELETE FROM catalog_edges WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
-      this.db.prepare('INSERT INTO catalog_edges SELECT scope_id,parent_id,file_id FROM catalog_candidates WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
+      // Avoid rewriting a large, identical edge set on rescans. Equal counts
+      // alone are insufficient: an item can have been replaced by another.
+      const edgeCount = stagedCount >= 500 ? (this.db.prepare('SELECT COUNT(*) count FROM catalog_edges WHERE scope_id=? AND parent_id=?')
+        .get(cursor.scopeId, cursor.directoryId) as { count: number }).count : -1
+      const sameEdges = edgeCount === count && !this.db.prepare(`SELECT 1 FROM catalog_candidates c
+        WHERE c.scope_id=? AND c.parent_id=? AND NOT EXISTS (
+          SELECT 1 FROM catalog_edges e WHERE e.scope_id=c.scope_id AND e.parent_id=c.parent_id AND e.file_id=c.file_id
+        ) LIMIT 1`).get(cursor.scopeId, cursor.directoryId)
+      if (!sameEdges) {
+        this.db.prepare('DELETE FROM catalog_edges WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
+        this.db.prepare('INSERT INTO catalog_edges SELECT scope_id,parent_id,file_id FROM catalog_candidates WHERE scope_id=? AND parent_id=?').run(cursor.scopeId, cursor.directoryId)
+      }
       this.db.prepare(`INSERT OR IGNORE INTO catalog_members(scope_id,account_id,file_id)
         SELECT scope_id,?,file_id FROM catalog_candidates WHERE scope_id=? AND parent_id=?`).run(cursor.accountId, cursor.scopeId, cursor.directoryId)
       this.db.prepare(`INSERT OR IGNORE INTO catalog_queue(scope_id,directory_id,path)
