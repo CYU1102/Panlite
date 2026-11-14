@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
-import { AccountRequestBudget } from './account-request-budget'
+import { describe, expect, it, vi } from 'vitest'
+import type { DriveAdapter } from '../adapters/base'
+import type { DriveAccount } from '../shared/types'
+import { AccountRequestBudget, budgetDriveAdapter } from './account-request-budget'
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done }); return { promise, resolve } }
 const tick = () => new Promise<void>(resolveTick => setImmediate(resolveTick))
@@ -52,5 +54,53 @@ describe('shared account request budgets', () => {
     expect(order[0]).toBe('t0')
     expect(order.indexOf('scan')).toBeLessThanOrEqual(4)
     expect(order).toHaveLength(9)
+  })
+
+  it.each(['saveSharedFiles', 'listSharedDirectory'] as const)('cancels a queued %s request before calling the provider', async method => {
+    const gate = deferred(), save = vi.fn(async () => ({ success: true }))
+    const adapter = budgetDriveAdapter({ listFiles: () => gate.promise, [method]: save } as unknown as DriveAdapter)
+    const account = { id: `share-budget-${method}` } as DriveAccount
+    const holding = [adapter.listFiles(account, 'root'), adapter.listFiles(account, 'root')]
+    await tick()
+    const controller = new AbortController()
+    const waiting = method === 'saveSharedFiles'
+      ? adapter.saveSharedFiles!(account, { url: 'https://example.invalid/share' }, 'target', { signal: controller.signal })
+      : adapter.listSharedDirectory!(account, { url: 'https://example.invalid/share' }, { signal: controller.signal })
+    const rejected = expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+    try {
+      controller.abort()
+      await rejected
+      expect(save).not.toHaveBeenCalled()
+    } finally { gate.resolve(); await Promise.allSettled([...holding, waiting]) }
+  })
+
+  it('preserves the provider receiver, arguments, result and rejection for newly budgeted methods', async () => {
+    const account = { id: 'share-budget-receiver' } as DriveAccount
+    const input = { url: 'https://example.invalid/share' }, result = { files: [] }, error = new Error('provider failure')
+    const raw = {
+      getShareDetail: vi.fn(async function (this: unknown, actualAccount: DriveAccount, actualInput: unknown) {
+        expect(this).toBe(raw); expect(actualAccount).toBe(account); expect(actualInput).toBe(input)
+        return result
+      }),
+      cancelShare: vi.fn(async function (this: unknown) { expect(this).toBe(raw); throw error }),
+    }
+    const adapter = budgetDriveAdapter(raw as unknown as DriveAdapter)
+    expect(await adapter.getShareDetail!(account, input)).toBe(result)
+    await expect(adapter.cancelShare!(account, 'share-id')).rejects.toBe(error)
+    expect(await adapter.getShareDetail!(account, input)).toBe(result)
+  })
+
+  it.each(['searchFiles', 'getShareDetail', 'listSharedDirectory', 'cancelShare'] as const)('budgets the actual %s adapter method', async method => {
+    const gate = deferred(), operation = vi.fn(async () => undefined)
+    const adapter = budgetDriveAdapter({ listFiles: () => gate.promise, [method]: operation } as unknown as DriveAdapter)
+    const account = { id: `actual-method-${method}` } as DriveAccount
+    const holding = [adapter.listFiles(account, 'root'), adapter.listFiles(account, 'root')]
+    await tick()
+    const waiting = (adapter[method] as unknown as (account: DriveAccount, argument: unknown) => Promise<unknown>)(account, 'fixture')
+    try {
+      await tick()
+      expect(operation).not.toHaveBeenCalled()
+    } finally { gate.resolve(); await Promise.allSettled([...holding, waiting]) }
+    expect(operation).toHaveBeenCalledTimes(1)
   })
 })

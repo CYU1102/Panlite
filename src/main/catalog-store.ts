@@ -323,17 +323,20 @@ export class CatalogStore {
       const done = (this.db.prepare("SELECT COUNT(*) count FROM catalog_queue WHERE scope_id=? AND state='done'").get(scope.id) as { count: number }).count
       this.db.prepare('UPDATE catalog_scopes SET status=?,updated_at=?,last_completed_at=CASE WHEN ?=0 THEN ? ELSE last_completed_at END WHERE id=?')
         .run(failed ? (done ? 'partial' : 'error') : 'completed', this.now(), failed, this.now(), scope.id)
-      this.pruneOrphans()
+      this.pruneOrphans(scope.account_id)
     })()
     return scopes.length
   }
-  private pruneOrphans(): void {
+  private pruneOrphans(accountId?: string): void {
     // Keep local annotations even when their remote reference is no longer in an indexed range.
-    this.db.prepare(`DELETE FROM catalog_entries AS e WHERE NOT ${IS_VISIBLE}
+    // Finishing a scan can orphan entries only in that account. Avoid scanning
+    // every other account inside this synchronous completion transaction.
+    this.db.prepare(`DELETE FROM catalog_entries AS e WHERE ${accountId === undefined ? '' : 'e.account_id=? AND '}NOT ${IS_VISIBLE}
       AND e.favorite=0 AND NOT EXISTS(SELECT 1 FROM catalog_tags t WHERE t.account_id=e.account_id AND t.file_id=e.file_id)
       AND NOT EXISTS(SELECT 1 FROM catalog_collection_members c WHERE c.account_id=e.account_id AND c.file_id=e.file_id)
       AND NOT EXISTS(SELECT 1 FROM catalog_scopes s WHERE s.account_id=e.account_id AND s.root_id=e.file_id)
-      AND NOT EXISTS(SELECT 1 FROM catalog_candidates c JOIN catalog_scopes s ON s.id=c.scope_id WHERE s.account_id=e.account_id AND c.file_id=e.file_id)`).run()
+      AND NOT EXISTS(SELECT 1 FROM catalog_candidates c JOIN catalog_scopes s ON s.id=c.scope_id WHERE s.account_id=e.account_id AND c.file_id=e.file_id)`)
+      .run(...(accountId === undefined ? [] : [accountId]))
   }
   private toEntries(rows: EntryRow[]): CatalogEntry[] {
     if (!rows.length) return []

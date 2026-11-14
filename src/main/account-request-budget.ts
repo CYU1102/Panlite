@@ -72,7 +72,18 @@ export class AccountRequestBudget {
 
 export const accountRequestBudget = new AccountRequestBudget(2)
 const wrappers = new WeakMap<DriveAdapter, Map<Priority, DriveAdapter>>()
-const controlled = new Set(['listFiles', 'getDownloadSource', 'getDownloadUrl', 'download', 'upload', 'copy', 'move', 'rename', 'delete', 'mkdir', 'createShare', 'getShareInfo', 'saveShare'])
+const budgetSources = new WeakMap<DriveAdapter, { adapter: DriveAdapter; priority: Priority }>()
+
+/** Allow a dispatch guard to run after admission, next to the actual provider call. */
+export function getAccountBudgetSource(adapter: DriveAdapter): Readonly<{ adapter: DriveAdapter; priority: Priority }> | undefined {
+  return budgetSources.get(adapter)
+}
+// Check names against the adapter contract so renamed methods cannot silently
+// bypass shared account limits or queued-request cancellation.
+const controlled: ReadonlySet<string> = new Set<keyof DriveAdapter>([
+  'listFiles', 'searchFiles', 'getDownloadSource', 'getDownloadUrl', 'download', 'upload', 'copy', 'move', 'rename', 'delete', 'mkdir',
+  'createShare', 'cancelShare', 'getShareDetail', 'listSharedDirectory', 'saveSharedFiles',
+])
 
 /** Provider-side asynchronous jobs remain provider-managed; this budgets client calls. */
 export function budgetDriveAdapter(adapter: DriveAdapter, priority: Priority = 'interactive'): DriveAdapter {
@@ -94,6 +105,7 @@ export function budgetDriveAdapter(adapter: DriveAdapter, priority: Priority = '
       }
     },
   })
+  budgetSources.set(wrapped, { adapter, priority })
   variants.set(priority, wrapped)
   return wrapped
 }

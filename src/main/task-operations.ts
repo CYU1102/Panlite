@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { DriveAdapter } from '../adapters/base'
 import { fatal } from '../adapters/errors'
 import { getDb, type DbTask } from './db'
+import { budgetDriveAdapter, getAccountBudgetSource } from './account-request-budget'
 
 type OperationOwner = Pick<DbTask, 'id' | 'execution_token'>
 
@@ -44,6 +45,10 @@ const MUTATIONS = new Set(['mkdir', 'rename', 'move', 'delete', 'copy', 'createS
 
 /** Keep provider implementations and their `this` binding intact. */
 export function guardTaskAdapterMutations(adapter: DriveAdapter): DriveAdapter {
+  const budget = getAccountBudgetSource(adapter)
+  // Waiting for an account permit must not mark a request as dispatched. Put
+  // the ownership fence inside the budget so pause/cancel can still prevent it.
+  if (budget) return budgetDriveAdapter(guardTaskAdapterMutations(budget.adapter), budget.priority)
   return new Proxy(adapter, {
     get(target, property) {
       const member = Reflect.get(target, property)

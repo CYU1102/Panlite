@@ -32,6 +32,7 @@ import { registerArchivesIpcHandlers } from './ipc/archives'
 import { wrapTrustedIpcHandler, type TrustedIpcHandler } from './ipc-security'
 import type { IpcMainInvokeEvent } from 'electron'
 import { createArchive, extractArchive } from './archive'
+import { accountRequestBudget } from './account-request-budget'
 
 let sequence = 0
 let remote: FileItem[] = []
@@ -322,6 +323,25 @@ afterAll(() => {
 })
 
 describe('task runner remote operation fencing', () => {
+  it.each(['cancelled', 'paused'] as const)('does not dispatch a %s share after waiting for an account permit, and can safely restart it', async state => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const holding = [accountRequestBudget.run('account', 'interactive', () => gate), accountRequestBudget.run('account', 'interactive', () => gate)]
+    mocks.adapter.createShare = vi.fn(async () => ({ id: `queued-share-${++sequence}`, platform: 'quark' as const, accountId: 'account', fileIds: ['source'], shareUrl: 'https://mock.invalid/queued-share', createdAt: 0 }))
+    const id = task('share', { items: [{ fileId: 'source', name: 'report.txt' }] })
+    enqueueTask(id)
+    try {
+      await vi.waitFor(() => expect(getDb().prepare('SELECT status FROM task_operations WHERE task_id=?').get(id)).toBeDefined())
+      expect(getDb().prepare('SELECT status FROM task_operations WHERE task_id=?').get(id)).toEqual({ status: 'prepared' })
+      expect(state === 'cancelled' ? cancelTask(id) : pauseTask(id)).toBe(true)
+    } finally { release(); await Promise.all(holding) }
+    await terminal(id, state)
+    expect(mocks.adapter.createShare).not.toHaveBeenCalled()
+    expect(getDb().prepare('SELECT status FROM task_operations WHERE task_id=?').get(id)).toBeUndefined()
+    expect(state === 'cancelled' ? retryTask(id) : resumeTask(id)).toBe(true)
+    await terminal(id, 'success')
+    expect(mocks.adapter.createShare).toHaveBeenCalledTimes(1)
+  })
   it.each(['native', 'shared', 'staged'] as const)('preserves the old target on a legacy %s overwrite collision', async mode => {
     remote = [remoteFile('old-target', 'report.txt')]
     const isShared = mode === 'shared'
